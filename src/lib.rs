@@ -23,6 +23,7 @@
 //! assert!(!model.objects().is_empty());
 //! ```
 
+#![forbid(unsafe_code)]
 // The lab's modules link their private parts in their docs
 #![cfg_attr(feature = "diagnostics", allow(rustdoc::private_intra_doc_links))]
 

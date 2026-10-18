@@ -19,7 +19,7 @@ pub(super) enum Model {
     Solid(DVec3),
     Linear(LinearFill),
     Radial(RadialFill),
-    Ramp(std::rc::Rc<RampFill>),
+    Ramp(std::sync::Arc<RampFill>),
 }
 
 impl Model {
@@ -53,9 +53,9 @@ pub(super) struct Planner<'a> {
     pub(super) drawn: Vec<f64>,
     /// Each node's ramp once fitted, which depends on its pixels alone and so holds over the
     /// rounds of planning.
-    pub(super) ramps: Vec<std::cell::OnceCell<Option<std::rc::Rc<RampFill>>>>,
+    pub(super) ramps: Vec<std::sync::OnceLock<Option<std::sync::Arc<RampFill>>>>,
     /// Each node's radial as painted once fitted, likewise.
-    pub(super) ellipses: Vec<std::cell::OnceCell<Option<std::rc::Rc<RampFill>>>>,
+    pub(super) ellipses: Vec<std::sync::OnceLock<Option<std::sync::Arc<RampFill>>>>,
     /// Under the weighted edge term, each node's pixels at their weights, the error's sums
     /// (see [`crate::edges::weighted_stats`]).
     pub(super) weighted: Option<Vec<Stats>>,
@@ -84,8 +84,8 @@ impl<'a> Planner<'a> {
             model,
             color,
             drawn: vec![0.; hierarchy.nodes.len()],
-            ramps: vec![std::cell::OnceCell::new(); hierarchy.nodes.len()],
-            ellipses: vec![std::cell::OnceCell::new(); hierarchy.nodes.len()],
+            ramps: vec![std::sync::OnceLock::new(); hierarchy.nodes.len()],
+            ellipses: vec![std::sync::OnceLock::new(); hierarchy.nodes.len()],
             weighted: None,
             tolerance: ctx.tolerance.as_ref().map(|t| {
                 let leaves = hierarchy
@@ -322,7 +322,7 @@ impl<'a> Planner<'a> {
             && gradient + stop < cheapest
             && let Some(ramp) = self.ramps[node as usize]
                 .get_or_init(|| {
-                    RampFill::fit(self.hierarchy, node, &f, stop).map(std::rc::Rc::new)
+                    RampFill::fit(self.hierarchy, node, &f, stop).map(std::sync::Arc::new)
                 })
                 .clone()
         {
@@ -358,7 +358,7 @@ impl<'a> Planner<'a> {
             && let Some(ellipse) = self.ellipses[node as usize]
                 .get_or_init(|| {
                     RampFill::fit_radial(self.hierarchy, node, f, self.ctx.segment_cost)
-                        .map(std::rc::Rc::new)
+                        .map(std::sync::Arc::new)
                 })
                 .clone()
         {

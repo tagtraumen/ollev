@@ -300,31 +300,20 @@ impl ShadingLines {
         let (w, b) = ((DVec3::ONE - o).as_vec3(), o.as_vec3());
         let (ww, bb) = (w.dot(w), b.dot(b));
         let (lw, lb) = (limit(ww), limit(bb));
-        {
-            let mut near = self.near.borrow_mut();
-            let [wx, wy, wz] = &self.white;
-            let [bx, by, bz] = &self.black;
-            let lines = [wx, wy, wz, bx, by, bz].map(|v| &v[..]);
-            let color = [w.x, w.y, w.z, ww, lw, b.x, b.y, b.z, bb, lb];
-            // eight lanes where the processor has them: the test is a filter with a margin
-            // far above any rounding, so how it rounds does not change what passes it
-            #[cfg(target_arch = "x86_64")]
-            if std::arch::is_x86_feature_detected!("avx2") {
-                // SAFETY: the processor has AVX2, checked just above
-                unsafe { near_avx2(&mut near, lines, color) };
-                drop(near);
-                return self.near.borrow();
-            }
-            near_lanes(&mut near, lines, color);
-        }
+        let [wx, wy, wz] = &self.white;
+        let [bx, by, bz] = &self.black;
+        let lines = [wx, wy, wz, bx, by, bz].map(|v| &v[..]);
+        let color = [w.x, w.y, w.z, ww, lw, b.x, b.y, b.z, bb, lb];
+        near_lanes(&mut self.near.borrow_mut(), lines, color);
         self.near.borrow()
     }
 }
 
 /// [`ShadingLines::near`]'s test over every image: the directions by channel, white's then
 /// black's, and the color's offsets from white and black, their squared lengths and limits.
+/// Every slice cut to one length, so the loop has no bounds checks and vectorizes.
 #[inline(always)]
-pub(super) fn near_lanes(near: &mut [bool], lines: [&[f32]; 6], color: [f32; 10]) {
+fn near_lanes(near: &mut [bool], lines: [&[f32]; 6], color: [f32; 10]) {
     let n = near.len();
     let [wx, wy, wz, bx, by, bz] = lines.map(|v| &v[..n]);
     let [cwx, cwy, cwz, ww, lw, cbx, cby, cbz, bb, lb] = color;
@@ -335,12 +324,6 @@ pub(super) fn near_lanes(near: &mut [bool], lines: [&[f32]; 6], color: [f32; 10]
         let pb = cbx * bx[i] + cby * by[i] + cbz * bz[i];
         near[i] = within(ww - pw * pw, lw) | within(bb - pb * pb, lb);
     }
-}
-
-#[cfg(target_arch = "x86_64")]
-#[target_feature(enable = "avx2")]
-pub(super) fn near_avx2(near: &mut [bool], lines: [&[f32]; 6], color: [f32; 10]) {
-    near_lanes(near, lines, color);
 }
 
 /// A color as white or black above an image `q` at an opacity t in (0, [`VEIL_MAX`]], the

@@ -357,23 +357,8 @@ async fn propose(
             && !hidden.contains(&i)
             && (o as usize == k || members.binary_search(&(o as usize)).is_ok())
     };
-    // Apart from a glow clipped to the ground: under shapes above it, or on a shape below the
-    // ground showing its own flat colour there, untinted; a tinted one is the glow's ground
-    let modes: std::cell::RefCell<crate::HashMap<u32, Option<Vec3>>> = std::cell::RefCell::default();
-    let apart = |i: usize| {
-        let o = bands.owner[i];
-        if o == NONE || hidden.contains(&i) || of(i) {
-            return false;
-        }
-        if o as usize > k {
-            return true;
-        }
-        let mode = *modes
-            .borrow_mut()
-            .entry(o)
-            .or_insert_with(|| ground_colour(ctx, &bands.pixels[o as usize]));
-        mode.is_some_and(|m| (ctx.target[i] - m).abs().max_element() <= GLOW_STEP)
-    };
+    let modes: std::cell::RefCell<crate::HashMap<u32, Option<Vec3>>> =
+        std::cell::RefCell::default();
     // The pixels the ground and its glow show, the rim against anything else left out
     let shown = |i: usize| of(i) && neighbours(i, w, h).all(of);
     let residual: HashSet<usize> = std::iter::once(k)
@@ -400,6 +385,23 @@ async fn propose(
     let mut glows: Vec<Shape> = Vec::new();
     for (_, piece) in &found {
         crate::progress::poll().await;
+        // Apart from a glow clipped to the ground: under shapes above it, or on a shape below
+        // the ground showing its own flat colour there, untinted (a tinted one is the glow's
+        // ground); made past the checkpoint, so no borrow of `modes` is held across it
+        let apart = |i: usize| {
+            let o = bands.owner[i];
+            if o == NONE || hidden.contains(&i) || of(i) {
+                return false;
+            }
+            if o as usize > k {
+                return true;
+            }
+            let mode = *modes
+                .borrow_mut()
+                .entry(o)
+                .or_insert_with(|| ground_colour(ctx, &bands.pixels[o as usize]));
+            mode.is_some_and(|m| (ctx.target[i] - m).abs().max_element() <= GLOW_STEP)
+        };
         let Some(mut glow) = fit_glow(ctx, piece, &shown, &of, &apart, &under, costs) else {
             continue;
         };

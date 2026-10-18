@@ -200,7 +200,7 @@ pub(crate) async fn traced(
         segment_price: target.accept_cost(),
     });
     timings.report(&format!("plan {:.1?}", start.elapsed()));
-    crate::progress::scene(&scene, true).await;
+    scene = crate::progress::scene(scene, true).await;
     (scene, layer)
 }
 
@@ -421,7 +421,7 @@ async fn trace_level_layer(
         .time("fills", async || fit_fills(&ctx, hierarchy, &plan).await)
         .await;
     let mut scene = Scene::with_background(width, height, fills[0]);
-    crate::progress::scene(&scene, show).await;
+    scene = crate::progress::scene(scene, show).await;
     crate::progress::stage("draw").await;
     let mut dropped = 0;
     // The scene id each plan entry got, or that of its nearest drawn ancestor if it was dropped
@@ -555,7 +555,7 @@ async fn trace_level_layer(
         let id = scene.insert(position, shape);
         ids[k] = id;
         planned.insert(id, k);
-        crate::progress::scene(&scene, show).await;
+        scene = crate::progress::scene(scene, show).await;
     }
     if crate::diagnostics::log() {
         eprintln!("plan: {dropped} planned shapes did not pay once fitted");

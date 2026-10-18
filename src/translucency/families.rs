@@ -204,7 +204,7 @@ pub async fn ranked_candidates(
     // the opaque scene's shapes with the blends and slivers dissolved ([`super::mixed`]),
     // and the thin objects over the beneath on them ([`super::above`]), for the holes of a
     // pinned family: shapes, not leaves, which blur breaks into thin slivers
-    let shapes_thin = std::cell::OnceCell::new();
+    let shapes_thin = std::sync::OnceLock::new();
     let shapes_thin = || {
         shapes_thin.get_or_init(|| {
             let labels = shape_labels(scene, width, height);

@@ -1,13 +1,15 @@
 //! The stack of shapes being built.
 
-use std::cell::{OnceCell, RefCell};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use crate::render::{FillRule, Gradient, Path, Subpath};
 use crate::tracer::Cubic;
 use glam::{Vec2, Vec3};
 
 use crate::Window;
+use kept::Kept;
+
+mod kept;
 
 /// What a shape is painted with: one color, or a gradient from that color at its start through
 /// its stops to another at its end, the rasterizer's, held constant beyond the ends.
@@ -107,12 +109,12 @@ pub struct Shape {
     pub primitive: Option<(usize, crate::tracer::primitives::Primitive)>,
     /// The shape's coverage of its bounding box, once something asked for it; cleared whenever
     /// the outline changes through [`Shape::update_bounds`].
-    pub raster: OnceCell<Raster>,
+    pub raster: OnceLock<Raster>,
     /// What a blurred shape paints over its box, its raster blurred; cleared with the raster.
-    pub painted: OnceCell<Raster>,
+    pub painted: OnceLock<Raster>,
     /// A gradient fill's paint over the painted box, the first time a render asks for it; kept
     /// with the fill and box it was read for, so a shape given another fill reads it again.
-    pub paint: RefCell<Option<Arc<Paint>>>,
+    pub paint: Kept<Option<Arc<Paint>>>,
     /// Where the trace found sharp corners, kept through every rebuild of the outline so a
     /// corner the fit rounded a little is not simplified away. Empty means the angle alone
     /// decides, see [`Shape::corner_flags`].
@@ -214,9 +216,9 @@ impl Shape {
             primitive: None,
             changed: 0,
             fitted: 0,
-            raster: OnceCell::new(),
-            painted: OnceCell::new(),
-            paint: RefCell::new(None),
+            raster: OnceLock::new(),
+            painted: OnceLock::new(),
+            paint: Kept::new(None),
             corners: Vec::new(),
             stroke: None,
             smooth: false,
@@ -349,8 +351,8 @@ impl Shape {
         let points = self.loops.iter().flatten().flatten();
         self.min = points.clone().fold(Vec2::INFINITY, |a, &p| a.min(p));
         self.max = points.fold(Vec2::NEG_INFINITY, |a, &p| a.max(p));
-        self.raster = OnceCell::new();
-        self.painted = OnceCell::new();
+        self.raster = OnceLock::new();
+        self.painted = OnceLock::new();
     }
 
     /// Moves the shape by `offset` (a window's trace into its frame), what it paints forgotten.
@@ -377,14 +379,14 @@ impl Shape {
             }
         }
         self.update_bounds();
-        *self.paint.borrow_mut() = None;
+        *self.paint.lock() = None;
     }
 
     /// The shape with its blur set to `sigma` pixels, what it paints forgotten.
     #[must_use]
     pub fn with_blur(mut self, sigma: f32) -> Self {
         self.blur = sigma;
-        self.painted = OnceCell::new();
+        self.painted = OnceLock::new();
         self
     }
 
@@ -422,7 +424,7 @@ impl Shape {
         self.fill.gradient?;
         let r = self.painted();
         let at = [r.x0, r.y0, r.w, r.h];
-        let mut kept = self.paint.borrow_mut();
+        let mut kept = self.paint.lock();
         if let Some(p) = kept.as_ref()
             && p.fill == self.fill
             && p.at == at
@@ -511,7 +513,7 @@ pub struct Scene {
     /// The whole scene rendered, with the count of changes it is current for: kept up to date
     /// while shapes are pushed on top, which is what fitting one shape after another does, and
     /// rendered again when something else changed it.
-    canvas: RefCell<Option<(u64, Vec<Vec3>)>>,
+    canvas: Kept<Option<(u64, Vec<Vec3>)>>,
     /// Objects drawn with the shapes but outside the scene's own render: a translucent layer's
     /// marks (see `translucency::vocabulary`), added once the scene is decided. A mark with a
     /// clip shows through the layer's shape, the first of the layer's group.
@@ -571,7 +573,7 @@ impl Scene {
             shapes: vec![background],
             next_id: 1,
             changes: 0,
-            canvas: RefCell::new(None),
+            canvas: Kept::new(None),
             marks: Vec::new(),
             marks_layer: None,
             fidelity: None,
@@ -601,7 +603,7 @@ impl Scene {
             },
         );
         // A shape on top keeps the canvas current by being drawn on it
-        let mut canvas = self.canvas.borrow_mut();
+        let mut canvas = self.canvas.lock();
         if let Some((current, pixels)) = canvas.as_mut()
             && *current == before
             && position + 1 == self.shapes.len()
@@ -673,7 +675,7 @@ impl Scene {
         background: [f32; 3],
     ) -> Vec<Vec3> {
         if range == (0..self.shapes.len()) && background == [1.; 3] {
-            let mut canvas = self.canvas.borrow_mut();
+            let mut canvas = self.canvas.lock();
             if canvas
                 .as_ref()
                 .is_none_or(|(current, _)| *current != self.changes)

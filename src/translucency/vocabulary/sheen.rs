@@ -163,7 +163,7 @@ pub async fn lenses(
     img: &Image,
     comp: &mut [DVec3],
     region: &[bool],
-    clip: &dyn Fn(usize) -> f64,
+    clip: &(dyn Fn(usize) -> f64 + Sync),
     above: Option<&crate::translucency::Above>,
     opt: &Options,
 ) -> Vec<Lens> {

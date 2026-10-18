@@ -1,15 +1,14 @@
-//! Progress and time slices: the trace is an `async` pipeline that asks the host at its
-//! checkpoints (the [`Ask`] futures below). [`drive`] polls it once with the host's callback
-//! installed; a checkpoint whose callback breaks suspends the trace there, to be resumed by the
-//! next [`drive`] (or dropped, which cancels it). No executor and no waker take part.
+//! Progress and time slices: the trace is an `async` pipeline that stops at its checkpoints
+//! (the [`Ask`] futures below). [`drive`] polls it, telling the host's callback of each
+//! checkpoint between two polls; a callback that breaks leaves the trace suspended there, to be
+//! resumed by the next [`drive`] (or dropped, which cancels it). No executor and no waker.
 
-use std::cell::Cell;
+use std::cell::RefCell;
 use std::future::Future;
 use std::ops::ControlFlow;
 #[cfg(feature = "diagnostics")]
 use std::panic::Location;
 use std::pin::Pin;
-use std::ptr::NonNull;
 use std::task::Poll;
 
 use crate::Scene;
@@ -38,7 +37,10 @@ impl Progress<'_> {
     #[must_use]
     pub fn model(&self) -> Option<Model> {
         let scene = self.scene?;
-        Some(self.finish.map_or_else(|| scene.model(), |f| f.model(scene)))
+        Some(
+            self.finish
+                .map_or_else(|| scene.model(), |f| f.model(scene)),
+        )
     }
 }
 
@@ -63,16 +65,24 @@ impl Answer for ControlFlow<()> {
     }
 }
 
-/// A trace's place between two slices: its stage, and where the last slice ended.
+/// A trace's place between two polls: what its checkpoints reach, and what makes its scenes
+/// the host's model.
 #[derive(Default)]
 pub(crate) struct Place {
+    track: Track,
+    finish: Option<crate::tracing::Finish>,
+}
+
+/// What the checkpoints of a trace reach while it is polled (see [`TRACK`]).
+#[derive(Default)]
+struct Track {
     stage: (&'static str, f64),
     /// How deep the traces beneath peeled layers are nested where the trace is.
     depth: usize,
-    /// The checkpoint the trace is suspended at: its stage and the scene it shows, which the
-    /// suspended trace holds borrowed, so it stands until the next [`drive`].
-    paused: Option<(&'static str, f64, Option<NonNull<Scene>>)>,
-    finish: Option<crate::tracing::Finish>,
+    /// Whether a checkpoint has suspended the trace in the poll.
+    asked: bool,
+    /// The scene the suspending checkpoint shows, lent until the trace is polled again.
+    shown: Option<Scene>,
     #[cfg(feature = "diagnostics")]
     gaps: Option<gaps::Gaps>,
 }
@@ -94,73 +104,85 @@ impl Place {
         }
     }
 
-    /// Where the last slice ended, valid while the trace stays suspended.
-    pub(crate) fn paused(&self) -> Progress<'_> {
-        let (stage, fraction, scene) = self.paused.unwrap_or((self.stage.0, self.stage.1, None));
+    /// The checkpoint the trace is suspended at.
+    pub(crate) fn progress(&self) -> Progress<'_> {
         Progress {
-            stage,
-            fraction,
-            // SAFETY: the scene is borrowed by the suspended trace, which `&self`'s owner
-            // does not poll again while this borrow lasts
-            scene: scene.map(|s| unsafe { s.as_ref() }),
+            stage: self.track.stage.0,
+            fraction: self.track.stage.1,
+            scene: self.track.shown.as_ref(),
             finish: self.finish.as_ref(),
         }
     }
 }
 
-/// What the checkpoints of the trace being polled reach: the host's callback and the place.
-struct Driver<'a> {
-    callback: &'a mut Callback<'a>,
-    place: &'a mut Place,
-}
-
 thread_local! {
-    /// The driver of the trace being polled; only [`drive`] sets it, for the time of a poll.
-    static DRIVER: Cell<Option<NonNull<Driver<'static>>>> = const { Cell::new(None) };
+    /// The track of the trace being polled; only [`drive`] sets it, for the time of a poll.
+    static TRACK: RefCell<Option<Track>> = const { RefCell::new(None) };
 }
 
-/// Puts back the driver a [`drive`] found, on any exit.
-struct Restore(Option<NonNull<Driver<'static>>>);
+/// A trace's track lent to [`TRACK`] for one poll; given back, and the track a nesting
+/// [`drive`] found put back, on any exit.
+struct Lent<'a> {
+    place: &'a mut Place,
+    outer: Option<Track>,
+}
 
-impl Drop for Restore {
-    fn drop(&mut self) {
-        DRIVER.set(self.0);
+impl<'a> Lent<'a> {
+    fn new(place: &'a mut Place) -> Self {
+        let outer = TRACK.replace(Some(std::mem::take(&mut place.track)));
+        Self { place, outer }
     }
 }
 
-/// Polls `trace` once with `callback` hearing its checkpoints: ready, or suspended at the
-/// first checkpoint whose callback breaks. Drives nest: a trace a callback starts is its own.
+impl Drop for Lent<'_> {
+    fn drop(&mut self) {
+        if let Some(track) = TRACK.replace(self.outer.take()) {
+            self.place.track = track;
+        }
+    }
+}
+
+/// Runs `trace` with `callback` hearing its checkpoints: ready, or suspended at the first
+/// checkpoint whose callback breaks. The callback runs between two polls, so a trace it
+/// starts is its own.
 pub(crate) fn drive<F: Future + ?Sized>(
-    trace: Pin<&mut F>,
+    mut trace: Pin<&mut F>,
     place: &mut Place,
     callback: &mut Callback,
 ) -> Poll<F::Output> {
-    place.paused = None;
     #[cfg(feature = "diagnostics")]
     {
-        if place.gaps.is_none() && crate::diagnostics::log() {
-            place.gaps = Some(gaps::Gaps::default());
+        let gaps = &mut place.track.gaps;
+        if gaps.is_none() && crate::diagnostics::log() {
+            *gaps = Some(gaps::Gaps::default());
         }
         // the host's time between two slices is no gap
-        if let Some(g) = &mut place.gaps {
+        if let Some(g) = gaps {
             g.resume();
         }
     }
-    let mut driver = Driver { callback, place };
-    // SAFETY: the pointer is only read while this frame lives (the guard takes it out on any
-    // exit, unwinding included), and by one checkpoint at a time
-    let erased: NonNull<Driver<'static>> =
-        unsafe { std::mem::transmute(NonNull::from(&mut driver)) };
-    let restore = Restore(DRIVER.replace(Some(erased)));
-    let poll = trace.poll(&mut std::task::Context::from_waker(std::task::Waker::noop()));
-    drop(restore);
-    #[cfg(feature = "diagnostics")]
-    if poll.is_ready()
-        && let Some(g) = driver.place.gaps.take()
-    {
-        g.report();
+    loop {
+        place.track.asked = false;
+        let lent = Lent::new(place);
+        let poll = trace
+            .as_mut()
+            .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()));
+        drop(lent);
+        if let Poll::Ready(value) = poll {
+            #[cfg(feature = "diagnostics")]
+            if let Some(g) = place.track.gaps.take() {
+                g.report();
+            }
+            return Poll::Ready(value);
+        }
+        assert!(
+            place.track.asked,
+            "a trace suspends only at its checkpoints"
+        );
+        if callback(&place.progress()).is_break() {
+            return Poll::Pending;
+        }
     }
-    poll
 }
 
 /// Runs `trace` to its end in one slice, hearing nothing.
@@ -175,11 +197,10 @@ pub fn finish<F: Future>(trace: F) -> F::Output {
     }
 }
 
-/// A checkpoint: asks the host on its first poll, and is ready on the next where the host's
-/// callback broke, the trace having been suspended in between.
-pub(crate) struct Ask<'a> {
+/// A checkpoint: its first poll tells the stage and suspends the trace, its next is ready.
+/// Where no trace is being driven, it is ready at once.
+pub(crate) struct Ask {
     set: Set,
-    scene: Option<&'a Scene>,
     asked: bool,
     #[cfg(feature = "diagnostics")]
     at: &'static Location<'static>,
@@ -193,65 +214,85 @@ enum Set {
     At(usize, usize),
 }
 
-impl Future for Ask<'_> {
-    type Output = ();
-
-    fn poll(mut self: Pin<&mut Self>, _: &mut std::task::Context) -> Poll<()> {
-        if std::mem::replace(&mut self.asked, true) {
-            return Poll::Ready(());
-        }
-        let Some(mut driver) = DRIVER.get() else {
-            return Poll::Ready(());
-        };
-        // SAFETY: set by `drive` for the time of this poll; the callback runs with no other
-        // reference to the driver in use
-        let driver = unsafe { driver.as_mut() };
-        let place = &mut *driver.place;
-        #[cfg(feature = "diagnostics")]
-        if let Some(g) = &mut place.gaps {
-            g.note(self.at);
-        }
-        match self.set {
-            Set::Nothing => {}
-            Set::Stage(stage) => place.stage = (stage, 0.),
-            Set::At(done, of) => place.stage.1 = done as f64 / of.max(1) as f64,
-        }
-        let progress = Progress {
-            stage: place.stage.0,
-            fraction: place.stage.1,
-            scene: self.scene,
-            finish: place.finish.as_ref(),
-        };
-        if (driver.callback)(&progress).is_continue() {
-            return Poll::Ready(());
-        }
-        place.paused = Some((place.stage.0, place.stage.1, self.scene.map(NonNull::from)));
-        Poll::Pending
+impl Ask {
+    /// Polls the checkpoint, lending the trace's track `scene` on suspending; the scene comes
+    /// back on the poll that is ready.
+    fn ask(&mut self, scene: &mut Option<Scene>) -> Poll<()> {
+        TRACK.with_borrow_mut(|track| {
+            let Some(track) = track else {
+                return Poll::Ready(());
+            };
+            if std::mem::replace(&mut self.asked, true) {
+                if let Some(shown) = track.shown.take() {
+                    *scene = Some(shown);
+                }
+                return Poll::Ready(());
+            }
+            #[cfg(feature = "diagnostics")]
+            if let Some(g) = &mut track.gaps {
+                g.note(self.at);
+            }
+            match self.set {
+                Set::Nothing => {}
+                Set::Stage(stage) => track.stage = (stage, 0.),
+                Set::At(done, of) => track.stage.1 = done as f64 / of.max(1) as f64,
+            }
+            track.asked = true;
+            track.shown = scene.take();
+            Poll::Pending
+        })
     }
 }
 
-/// `f` on the place of the trace being polled, if any.
-fn with_place<R>(f: impl FnOnce(&mut Place) -> R) -> Option<R> {
-    // SAFETY: set by `drive` for the time of this poll; no checkpoint is in its callback
-    DRIVER.get().map(|mut d| f(unsafe { d.as_mut() }.place))
+impl Future for Ask {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, _: &mut std::task::Context) -> Poll<()> {
+        self.ask(&mut None)
+    }
+}
+
+/// A checkpoint showing the host a scene, which it hands back.
+pub(crate) struct Show {
+    ask: Ask,
+    scene: Option<Scene>,
+    show: bool,
+}
+
+impl Future for Show {
+    type Output = Scene;
+
+    fn poll(mut self: Pin<&mut Self>, _: &mut std::task::Context) -> Poll<Scene> {
+        let Self { ask, scene, show } = &mut *self;
+        let mut shown = if *show { scene.take() } else { None };
+        let poll = ask.ask(&mut shown);
+        if shown.is_some() {
+            *scene = shown;
+        }
+        poll.map(|()| scene.take().expect("the scene shown"))
+    }
+}
+
+/// `f` on the track of the trace being polled, if any.
+fn with_track<R>(f: impl FnOnce(&mut Track) -> R) -> Option<R> {
+    TRACK.with_borrow_mut(|track| track.as_mut().map(f))
 }
 
 /// How deep the traces beneath peeled layers are nested where the trace is: 0 in the
 /// picture's own.
 pub(crate) fn depth() -> usize {
-    with_place(|p| p.depth).unwrap_or(0)
+    with_track(|t| t.depth).unwrap_or(0)
 }
 
 /// Enters a trace beneath a peeled layer (`deeper`), or leaves it.
 pub(crate) fn nest(deeper: bool) {
-    with_place(|p| p.depth = if deeper { p.depth + 1 } else { p.depth - 1 });
+    with_track(|t| t.depth = if deeper { t.depth + 1 } else { t.depth - 1 });
 }
 
 #[track_caller]
-fn ask(set: Set, scene: Option<&Scene>) -> Ask<'_> {
+fn ask(set: Set) -> Ask {
     Ask {
         set,
-        scene,
         asked: false,
         #[cfg(feature = "diagnostics")]
         at: Location::caller(),
@@ -260,25 +301,29 @@ fn ask(set: Set, scene: Option<&Scene>) -> Ask<'_> {
 
 /// Enters `stage` and asks the host.
 #[track_caller]
-pub(crate) fn stage(stage: &'static str) -> Ask<'static> {
-    ask(Set::Stage(stage), None)
+pub(crate) fn stage(stage: &'static str) -> Ask {
+    ask(Set::Stage(stage))
 }
 
 /// Tells the host `done` of `of` steps of the stage are done.
 #[track_caller]
-pub(crate) fn at(done: usize, of: usize) -> Ask<'static> {
-    ask(Set::At(done, of), None)
+pub(crate) fn at(done: usize, of: usize) -> Ask {
+    ask(Set::At(done, of))
 }
 
 /// Asks the host whether to go on.
 #[track_caller]
-pub(crate) fn poll() -> Ask<'static> {
-    ask(Set::Nothing, None)
+pub(crate) fn poll() -> Ask {
+    ask(Set::Nothing)
 }
 
-/// Shows the host the scene as it now stands, where `show` (the picture's own trace, not a
-/// trace beneath a layer).
+/// Shows the host `scene` as it now stands, where `show` (the picture's own trace, not a
+/// trace beneath a layer), and hands it back.
 #[track_caller]
-pub(crate) fn scene(scene: &Scene, show: bool) -> Ask<'_> {
-    ask(Set::Nothing, show.then_some(scene))
+pub(crate) fn scene(scene: Scene, show: bool) -> Show {
+    Show {
+        ask: ask(Set::Nothing),
+        scene: Some(scene),
+        show,
+    }
 }

@@ -231,7 +231,7 @@ fn set_params(scene: &mut Scene, slots: &[Slot], params: &[f32]) {
             let to = g.to_mut();
             to[..3].copy_from_slice(&params[j..j + 3]);
         }
-        *s.paint.borrow_mut() = None;
+        *s.paint.lock() = None;
     }
     scene.change();
 }

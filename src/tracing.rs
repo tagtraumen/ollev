@@ -39,7 +39,7 @@ pub fn trace_with<A: Answer>(
 /// A trace that runs in slices on the host's thread: each [`Tracing::step`] runs it until the
 /// host's callback ends the slice at a checkpoint, and the next step resumes it there. The
 /// checkpoints come at least about once a second; dropping the handle cancels the trace. The
-/// handle stays on the thread that made it.
+/// handle is `Send`: a host may step it on any one thread at a time.
 ///
 /// ```
 /// let pixels = [255u8, 0, 0, 255].repeat(16 * 16);
@@ -69,11 +69,17 @@ pub fn trace_with<A: Answer>(
 /// assert!(!model.objects().is_empty());
 /// ```
 pub struct Tracing {
-    trace: Option<Pin<Box<dyn Future<Output = crate::Scene>>>>,
+    trace: Option<Pin<Box<dyn Future<Output = crate::Scene> + Send>>>,
     place: Place,
     #[cfg(feature = "diagnostics")]
     diagnostics: crate::Diagnostics,
 }
+
+// A host may move a trace between threads between two steps
+const _: fn() = || {
+    fn send<T: Send>() {}
+    send::<Tracing>();
+};
 
 /// What a slice of a [`Tracing`] ends with.
 #[derive(Debug)]
@@ -158,7 +164,7 @@ impl Tracing {
                 self.trace = None;
                 Step::Done(self.place.model(&scene))
             }
-            Poll::Pending => Step::Paused(self.place.paused()),
+            Poll::Pending => Step::Paused(self.place.progress()),
         }
     }
 }
