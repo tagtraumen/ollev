@@ -1,0 +1,23 @@
+[package]
+name = "ollev"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "Raster images traced into layered vector scenes: shapes, strokes, gradients, blurs, repeats and translucent layers"
+readme = "README.md"
+repository = "https://github.com/tagtraumen/ollev"
+keywords = ["vectorization", "tracing", "svg", "raster", "graphics"]
+categories = ["graphics", "multimedia::images"]
+include = ["src/**/*", "Cargo.toml", "README.md"]
+
+[dependencies]
+glam = "0.33.12"
+resvg = { version = "0.48.1", optional = true }
+
+[features]
+# The SVG writer and its verify loop (`emit`), rendering each output with resvg.
+svg = ["dep:resvg"]
+# The developers' logs and dumps (see `diagnostics`): without it they are not compiled.
+diagnostics = ["svg"]
+# glam's argument checks as panics (Graphite's debug builds turn them on); no behaviour change.
+glam-assert = ["glam/glam-assert"]
