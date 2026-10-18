@@ -285,7 +285,7 @@ fn boxed(scene: &Scene, k: usize, window: Window) -> Option<Window> {
     let x1 = (r.x0 + r.w).min(window.x + window.width);
     let y0 = r.y0.max(window.y);
     let y1 = (r.y0 + r.h).min(window.y + window.height);
-    (x1 > x0 && y1 > y0).then_some(Window {
+    (x1 > x0 && y1 > y0).then(|| Window {
         x: x0 - window.x,
         y: y0 - window.y,
         width: x1 - x0,
