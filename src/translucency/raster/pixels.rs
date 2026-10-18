@@ -1,10 +1,10 @@
-//! Thin-line pixels, merging near values, the Chebyshev distance.
+//! Thin-line pixels and the Chebyshev distance.
 
-use super::*;
+use super::{DVec3, Image};
 
 /// Thin dark ridges: per pixel the most it is darker (the channels' mean) than both pixels
 /// r away along one of four directions, and the direction (dy, dx) across the line (outlines
-/// a pixel wide, as niabot's dress).
+/// a pixel wide).
 pub struct LinePixels {
     pub strength: Vec<f64>,
     pub normal: Vec<(i32, i32)>,
@@ -44,5 +44,3 @@ pub fn line_pixels_at(img: &Image, radii: &[isize]) -> LinePixels {
 pub fn cheb(a: DVec3, b: DVec3) -> f64 {
     (a - b).abs().max_element()
 }
-
-// ----------------------------------------------------------------------------- k-d tree

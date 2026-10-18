@@ -19,9 +19,10 @@ fn rgb(c: DVec3) -> String {
 
 /// A straight RGBA colour, its alpha written only where it is below one.
 fn rgba(c: [f64; 4]) -> String {
-    match c[3] < 1. {
-        true => format!("[{},{},{},{}]", c[0], c[1], c[2], c[3]),
-        false => format!("[{},{},{}]", c[0], c[1], c[2]),
+    if c[3] < 1. {
+        format!("[{},{},{},{}]", c[0], c[1], c[2], c[3])
+    } else {
+        format!("[{},{},{}]", c[0], c[1], c[2])
     }
 }
 
@@ -29,20 +30,17 @@ fn point(p: DVec2) -> String {
     format!("[{},{}]", p.x, p.y)
 }
 
+/// A JSON array of the elements written.
+fn list(elements: impl Iterator<Item = String>) -> String {
+    format!("[{}]", elements.collect::<Vec<_>>().join(","))
+}
+
 fn curves(cubics: &[Curve]) -> String {
-    let c: Vec<String> = cubics
-        .iter()
-        .map(|c| {
-            let p: Vec<String> = c.iter().map(|p| format!("[{},{}]", p.x, p.y)).collect();
-            format!("[{}]", p.join(","))
-        })
-        .collect();
-    format!("[{}]", c.join(","))
+    list(cubics.iter().map(|c| list(c.iter().map(|&p| point(p)))))
 }
 
 fn loops(loops: &[Vec<Curve>]) -> String {
-    let l: Vec<String> = loops.iter().map(|l| curves(l)).collect();
-    format!("[{}]", l.join(","))
+    list(loops.iter().map(|l| curves(l)))
 }
 
 fn opt(v: Option<usize>) -> String {
@@ -53,11 +51,11 @@ fn paint(p: &Paint) -> String {
     match p {
         Paint::Solid(c) => format!("{{\"solid\":{}}}", rgb(*c)),
         Paint::Gradient(g) => {
-            let stops: Vec<String> = g
-                .stops()
-                .iter()
-                .map(|s| format!("[{},{}]", s.offset, rgba(s.color)))
-                .collect();
+            let stops = list(
+                g.stops()
+                    .iter()
+                    .map(|s| format!("[{},{}]", s.offset, rgba(s.color))),
+            );
             let geometry = match g.shape() {
                 GradientShape::Linear { start, end } => format!(
                     "\"linear\":{{\"start\":{},\"end\":{}}}",
@@ -74,16 +72,13 @@ fn paint(p: &Paint) -> String {
                     closure,
                     near,
                     far,
-                } => {
-                    let closure: Vec<String> = closure.into_iter().map(point).collect();
-                    format!(
-                        "\"path\":{{\"curve\":{},\"closed\":{closed},\"closure\":[{}],\"near\":{near},\"far\":{far}}}",
-                        curves(&curve),
-                        closure.join(",")
-                    )
-                }
+                } => format!(
+                    "\"path\":{{\"curve\":{},\"closed\":{closed},\"closure\":{},\"near\":{near},\"far\":{far}}}",
+                    curves(&curve),
+                    list(closure.into_iter().map(point))
+                ),
             };
-            format!("{{{geometry},\"stops\":[{}]}}", stops.join(","))
+            format!("{{{geometry},\"stops\":{stops}}}")
         }
     }
 }
@@ -141,8 +136,8 @@ fn instance(i: &crate::model::Instance) -> String {
     )
 }
 
-fn items(list: &[Item]) -> String {
-    let i: Vec<String> = list
+fn items(entries: &[Item]) -> String {
+    let i: Vec<String> = entries
         .iter()
         .map(|i| match i {
             Item::Object(o) => object(o),
@@ -153,14 +148,11 @@ fn items(list: &[Item]) -> String {
             Item::Repeat {
                 structure: st,
                 instances,
-            } => {
-                let list: Vec<String> = instances.iter().map(instance).collect();
-                format!(
-                    "{{\"repeat\":{{\"structure\":{},\"instances\":[{}]}}}}",
-                    structure(st),
-                    list.join(",")
-                )
-            }
+            } => format!(
+                "{{\"repeat\":{{\"structure\":{},\"instances\":{}}}}}",
+                structure(st),
+                list(instances.iter().map(instance))
+            ),
         })
         .collect();
     format!("[\n{}\n]", i.join(",\n"))

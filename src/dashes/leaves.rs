@@ -1,8 +1,6 @@
-//! Dashes and dots the scene leaves undrawn: leaves of the segmentation shaped as a dash or a
-//! dot that the scene shows in another colour (potholders' stitches as holes to the ground,
-//! origami's folds as the ground between the cells, a pond's dotted rim as a dark band). They
-//! are chained as the scene's strokes are and drawn on top, the shapes beneath refitted free
-//! under the stroke's paint, and kept where the whole objective at the acceptance price falls.
+//! Dashes and dots the scene leaves undrawn: leaves of the segmentation shaped as a dash or dot
+//! that the scene shows in another colour, chained as its strokes are and drawn on top, the
+//! shapes beneath refitted, kept where the objective at the acceptance price falls.
 
 use glam::Vec3;
 
@@ -29,7 +27,7 @@ struct Leaf {
 
 /// The dash or dot a leaf's pixel statistics describe, if they describe one: a band of at most
 /// a stroke's width and at least two anti-aliasing steps across and along (narrower, a blend of
-/// an edge, as niabot's hair fragments), that its pixels fill.
+/// an edge), that its pixels fill.
 fn shaped(stats: &crate::hierarchy::Stats) -> Option<(Vec2, Vec2, f32, f32)> {
     let n = stats.n;
     if n < 2. {
@@ -78,8 +76,8 @@ fn undrawn(ctx: &Context, hierarchy: &Hierarchy, scene: &Scene) -> Vec<Leaf> {
     }
     let full = Window::full(ctx.width, ctx.height);
     let drawn = scene.render(full, 0..scene.shapes.len(), [1.; 3]);
-    // A stroke's pixels are drawn by it, if a little off (galewarning's dashed rings, whose
-    // rim leaves differ by a few levels): the leaves are for what the fills left
+    // A stroke's pixels are drawn by it, if a little off (its rim leaves may differ by a few
+    // levels): the leaves are for what the fills left
     let mut stroked = vec![false; ctx.width * ctx.height];
     for s in scene.shapes.iter().filter(|s| s.stroke.is_some()) {
         for (i, v) in s.raster().pixels(ctx.width) {
@@ -92,8 +90,8 @@ fn undrawn(ctx: &Context, hierarchy: &Hierarchy, scene: &Scene) -> Vec<Leaf> {
         .into_iter()
         .filter_map(|(node, (center, axis, length, width))| {
             let pixels = hierarchy.pixels(node);
-            // no evidence where a pixel may show anything (the rim a peel invents, single-09's
-            // beneath) or nothing says what it shows
+            // no evidence where a pixel may show anything (the rim a peel invents) or nothing
+            // says what it shows
             let open = |i: usize| {
                 ctx.tolerance_at(i) >= crate::uncertainty::ANYTHING
                     || ctx.free.as_ref().is_some_and(|f| f[i])
@@ -123,7 +121,7 @@ fn undrawn(ctx: &Context, hierarchy: &Hierarchy, scene: &Scene) -> Vec<Leaf> {
 
 /// Draws the chains of undrawn dash and dot leaves (see the module) where that lowers the
 /// scene's error with the edge term `edge` plus its price at the acceptance price.
-pub fn from_leaves(
+pub async fn from_leaves(
     ctx: &Context,
     hierarchy: &Hierarchy,
     scene: &mut Scene,
@@ -154,51 +152,39 @@ pub fn from_leaves(
             let half = leaf.axis * (leaf.length / 2.);
             let (a, b) = (leaf.center - half, leaf.center + half);
             let stroke = Stroke {
-                centerline: vec![[a, a.lerp(b, 1. / 3.), a.lerp(b, 2. / 3.), b]],
+                centerline: vec![line(a, b)],
                 closed: false,
                 width: leaf.width,
                 cap: Cap::Butt,
-                join: crate::stroke::Join::Miter,
+                join: Join::Miter,
                 corners: vec![false],
                 dashes: None,
             };
             dashes.push(Dash::new(k, stroke, Some(leaf.color)));
         }
     }
-    let mut planned: Vec<(Vec<usize>, Stroke, &str)> = Vec::new();
-    if dashes.len() >= MIN_DASHES {
-        for (members, dashed) in dash_chains(&dashes) {
-            planned.push((members, dashed, "dashes"));
-        }
-    }
-    for (members, dotted) in chain_dots(&dots) {
-        planned.push((members, dotted, "dots"));
-    }
+    let planned: Vec<(Vec<usize>, Stroke, &str)> = (dash_chains(&dashes).into_iter())
+        .map(|(members, dashed)| (members, dashed, "dashes"))
+        .chain(
+            chain_dots(&dots)
+                .into_iter()
+                .map(|(members, dotted)| (members, dotted, "dots")),
+        )
+        .collect();
     if planned.is_empty() {
         return;
     }
     let judge = Judge::new(ctx, edge);
     let first = scene.shapes.len();
     for (members, dashed, kind) in planned {
-        if crate::progress::poll() {
-            break;
-        }
+        crate::progress::poll().await;
         let mut colors: Vec<Vec3> = members.iter().map(|&m| leaves[m].color).collect();
         let color = median_color(&mut colors);
         try_leaf_chain(ctx, &judge, scene, dashed, color, kind);
     }
     if scene.shapes.len() > first {
-        refit_beneath(ctx, &judge, scene, first, tolerances);
+        refit_beneath(ctx, &judge, scene, first, tolerances).await;
     }
-}
-
-/// The median of each channel.
-fn median_color(colors: &mut [Vec3]) -> Vec3 {
-    let mut channel = |k: usize| {
-        colors.sort_by(|a, b| a[k].total_cmp(&b[k]));
-        colors[colors.len() / 2][k]
-    };
-    Vec3::new(channel(0), channel(1), channel(2))
 }
 
 /// The chain's stroke drawn on top of `scene` where the error with the edge term plus the
@@ -216,7 +202,7 @@ fn try_leaf_chain(
     proposed.smooth = true;
     let top = scene.shapes.len();
     // Fitted over the ground it lies on: what the stroke covers goes from the shapes beneath
-    // first (a hole to the ground under potholders' stitches is no ground of theirs)
+    // first (a hole to the ground under stitches is no ground of theirs)
     let mut ground = scene.clone();
     for k in 1..top {
         if let Some(s) = without_covered(&ground.shapes[k], &proposed) {
@@ -337,17 +323,15 @@ fn drop_under(judge: &Judge, scene: &mut Scene, top: usize) -> (Vec<usize>, Vec2
 /// Each shape below the strokes from `first` up that one of them overlaps, refitted with their
 /// paint free above it (as the redraw frees every outline under the shapes drawn later), kept
 /// where the error with the edge term plus its price falls.
-fn refit_beneath(
+async fn refit_beneath(
     ctx: &Context,
-    judge: &Judge,
+    judge: &Judge<'_>,
     scene: &mut Scene,
     first: usize,
     tolerances: &[f32],
 ) {
     for k in 1..first {
-        if crate::progress::poll() {
-            break;
-        }
+        crate::progress::poll().await;
         let over = scene.shapes[first..]
             .iter()
             .any(|s| overlap(&scene.shapes[k], s));
@@ -477,9 +461,9 @@ fn refit_under(ctx: &Context, scene: &mut Scene, k: usize, tolerances: &[f32]) -
 
 #[cfg(test)]
 mod tests {
-    /// Potholders' stitches: a row of cream dashes 2.5 px wide off the pixel grid on a red
-    /// square over a cream ground, which the trace leaves as holes to the ground, become one
-    /// dashed stroke over the square.
+    /// Stitches: a row of cream dashes 2.5 px wide off the pixel grid on a red square over a
+    /// cream ground, which the trace leaves as holes to the ground, become one dashed stroke
+    /// over the square.
     #[test]
     fn stitches_over_a_square_are_one_dashed_stroke() {
         use crate::plan;
@@ -507,7 +491,7 @@ mod tests {
             }
         }
         let detail = crate::tracer::auto_detail(&rgb, w, h);
-        let scene = plan::trace(&rgb, w, h, detail, plan::Options::default(), |_| ());
+        let scene = plan::trace(&rgb, w, h, detail, plan::Options::default());
         let dashed = scene
             .shapes
             .iter()

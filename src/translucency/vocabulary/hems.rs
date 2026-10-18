@@ -1,8 +1,11 @@
 //! The layer's lines: thin colour lines, hem lines and their chains.
 
-use super::*;
+use glam::DVec2;
 
-// ----------------------------------------------------------------------------- lines
+use super::{
+    Conn, Image, NOISE, crack_loops, label, length_px, map1, normals, resample, skeletonize,
+    ridge_radii, smooth_loop, smooth_open, trace_chains, unit_of,
+};
 
 /// The colour line test's four directions as (dy, dx): the pair of pixels it compares lies
 /// along it, across the line it finds.
@@ -40,11 +43,7 @@ pub fn colour_lines_at(img: &Image, u: f64) -> (Vec<f64>, Vec<u8>) {
 
 fn colour_lines_of(img: &Image, u: f64) -> (Vec<f64>, Vec<u8>) {
     let (w, h) = (img.width as isize, img.height as isize);
-    let mut radii: Vec<isize> = [1.0, 2.0]
-        .iter()
-        .map(|r: &f64| ((r * u).round() as isize).max(1))
-        .collect();
-    radii.dedup();
+    let radii = ridge_radii(u);
     let n = img.len();
     let mut best = vec![0.0f64; n];
     let mut dir = vec![0u8; n];

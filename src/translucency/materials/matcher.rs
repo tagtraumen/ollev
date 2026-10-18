@@ -1,6 +1,11 @@
 //! The exact score of a relation between two palettes: the matcher.
 
-use super::*;
+use std::cell::OnceCell;
+
+use glam::DVec3;
+
+use super::{NOISE, Palette, SHOW_THROUGH, witnesses};
+use crate::translucency::raster::{ChebTree, cheb, np_sum, rows_sum};
 
 /// The exact score of one relation ([`Matcher::score`]).
 #[derive(Clone, Debug)]
@@ -22,9 +27,6 @@ pub(super) struct Samples {
     pub(super) sb: Vec<DVec3>,
     pub(super) si: Vec<usize>,
 }
-
-/// How many relations have been scored, for the debug log.
-pub static SCORES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// Exact scoring of relations between an inside palette and an outside one.
 pub struct Matcher<'a> {
@@ -134,32 +136,30 @@ impl<'a> Matcher<'a> {
     }
 
     /// The relation's score: distinct materials, the inside colours matched and to what.
-    #[allow(clippy::needless_range_loop)]
     pub fn score(&self, k: f64, m: DVec3) -> Score {
-        SCORES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let (mat, jj) = self.matches(k, m);
         let nm = self.bmean.len();
         let mut w = vec![vec![0.0f64; nm.max(1)]; self.nj];
-        for i in 0..mat.len() {
-            if mat[i] >= 0 {
-                w[self.ojc[i]][mat[i] as usize] += self.ow[i];
+        for ((&mt, &j), &wt) in mat.iter().zip(&self.ojc).zip(&self.ow) {
+            if mt >= 0 {
+                w[j][mt as usize] += wt;
             }
         }
         let mut corr: Vec<(usize, usize, f64)> = Vec::new();
         if nm > 0 {
-            for j in 0..self.nj {
+            for (j, (row, &total)) in w.iter().zip(&self.wj).enumerate() {
                 let mut best = 0;
-                for i in 1..nm {
-                    if w[j][i] > w[j][best] {
+                for (i, &v) in row.iter().enumerate().skip(1) {
+                    if v > row[best] {
                         best = i;
                     }
                 }
-                let sh = w[j][best] / self.wj[j].max(1e-9);
+                let sh = row[best] / total.max(1e-9);
                 if self.multi {
                     // every material whose image within an inside cluster has MIN_MATERIAL_PX
-                    for i in 0..nm {
-                        if w[j][i] >= self.inside.min_px {
-                            corr.push((j, i, (w[j][i] / (0.5 * self.wj[j])).min(1.0)));
+                    for (i, &v) in row.iter().enumerate() {
+                        if v >= self.inside.min_px {
+                            corr.push((j, i, (v / (0.5 * total)).min(1.0)));
                         }
                     }
                 } else if sh >= 0.5 {
@@ -201,7 +201,7 @@ impl<'a> Matcher<'a> {
                 }
             }
         }
-        let mut order = per.clone();
+        let mut order = per;
         order.sort_by(|a, b| b.1.total_cmp(&a.1));
         let mut chosen: Vec<(usize, f64, usize)> = Vec::new();
         let mut images: Vec<ChebTree> = Vec::new();
@@ -233,14 +233,13 @@ impl<'a> Matcher<'a> {
             chosen.push((i, s, j));
             images.push(ChebTree::new(&ei));
         }
-        let mut sel = vec![false; mat.len()];
-        for &(i, _, j) in &chosen {
-            for e in 0..mat.len() {
-                if self.ojc[e] == j && mat[e] == i as i64 {
-                    sel[e] = true;
-                }
-            }
-        }
+        let sel: Vec<bool> = (0..mat.len())
+            .map(|e| {
+                chosen
+                    .iter()
+                    .any(|&(i, _, j)| self.ojc[e] == j && mat[e] == i as i64)
+            })
+            .collect();
         Score {
             n: chosen.len(),
             sel,
@@ -268,11 +267,11 @@ impl<'a> Matcher<'a> {
                     .zip(&w)
                     .map(|(&e, w)| *w * (self.ocol[e] - k * self.b[s.jj[e]])),
             ) / np_sum(&w);
-            if cheb(m2, m) < 0.25 / 255.0 {
-                m = m2;
+            let settled = cheb(m2, m) < 0.25 / 255.0;
+            m = m2;
+            if settled {
                 break;
             }
-            m = m2;
         }
         (m, self.score(k, m))
     }

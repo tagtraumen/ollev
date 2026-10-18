@@ -59,7 +59,7 @@ impl Adam {
         match kind {
             ParamKind::Point => *param -= self.lr_scale * self.lr_points * step,
             ParamKind::Color => {
-                *param = (*param - self.lr_scale * self.lr_colors * step).clamp(0., 1.)
+                *param = (*param - self.lr_scale * self.lr_colors * step).clamp(0., 1.);
             }
         }
     }

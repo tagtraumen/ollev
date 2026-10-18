@@ -62,9 +62,7 @@ fn quantized_palette(cols: impl Iterator<Item = DVec3>) -> Vec<DVec3> {
         .collect()
 }
 
-/// What the interior rule finds under one relation: per pixel whether it is explained and
-/// whether its peel is in gamut (to the noise amplified by 1/k), and the open palette (the
-/// quantized colors of the pixels whose peel leaves the gamut), sorted.
+/// What the interior rule finds under one relation: per pixel whether it is explained.
 pub struct Explained {
     pub mask: Vec<bool>,
 }

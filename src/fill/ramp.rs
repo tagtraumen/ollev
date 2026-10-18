@@ -5,17 +5,17 @@ use super::*;
 /// Sums over the samples in one stretch of a gradient's parameter `t`, enough for the least
 /// squares ramp over them.
 #[derive(Clone, Copy, Debug, Default)]
-pub(super) struct Moments {
-    pub(super) n: f64,
-    pub(super) t: f64,
-    pub(super) tt: f64,
-    pub(super) c: DVec3,
-    pub(super) tc: DVec3,
-    pub(super) cc: f64,
+struct Moments {
+    n: f64,
+    t: f64,
+    tt: f64,
+    c: DVec3,
+    tc: DVec3,
+    cc: f64,
 }
 
 impl Moments {
-    pub(super) fn add(&self, o: &Self) -> Self {
+    fn add(&self, o: &Self) -> Self {
         Self {
             n: self.n + o.n,
             t: self.t + o.t,
@@ -26,7 +26,7 @@ impl Moments {
         }
     }
 
-    pub(super) fn sub(&self, o: &Self) -> Self {
+    fn sub(&self, o: &Self) -> Self {
         Self {
             n: self.n - o.n,
             t: self.t - o.t,
@@ -39,7 +39,7 @@ impl Moments {
 }
 
 /// The samples a bin of a ramp's profile holds at least, on average.
-pub(super) const SAMPLES_PER_BIN: usize = 4;
+const SAMPLES_PER_BIN: usize = 4;
 
 /// How much the fit pulls each stop's color toward the two-stop ramp, per sample: a stop with
 /// no samples either side (a singular system) takes the ramp's; elsewhere the pull is tiny.
@@ -48,18 +48,18 @@ pub(super) const RIDGE: f64 = 1e-6;
 /// The samples' colors along a gradient's parameter, binned a pixel apart along the gradient,
 /// with prefix sums, so the least squares ramp through stops at any bin boundaries comes from
 /// a few sums per stop.
-pub(super) struct Profile {
-    pub(super) bins: usize,
+struct Profile {
+    bins: usize,
     /// `prefix[k]` sums the bins before `k`.
-    pub(super) prefix: Vec<Moments>,
+    prefix: Vec<Moments>,
     /// The two-stop ramp: its colors at 0 and 1.
-    pub(super) line: [DVec3; 2],
+    line: [DVec3; 2],
 }
 
 /// The sums a piece of the ramp from `a` to `a + w` contributes to the normal equations, with
 /// `u = (t - a) / w` running from 0 to 1 over it: the sums of `(1 - u)^2`, `u (1 - u)`, `u^2`,
 /// and of the colors times `1 - u` and `u`.
-pub(super) fn piece(m: &Moments, a: f64, w: f64) -> ([f64; 3], [DVec3; 2]) {
+fn piece(m: &Moments, a: f64, w: f64) -> ([f64; 3], [DVec3; 2]) {
     let su = (m.t - m.n * a) / w;
     let suu = (m.tt - 2. * a * m.t + m.n * a * a) / (w * w);
     let suc = (m.tc - m.c * a) / w;
@@ -67,7 +67,7 @@ pub(super) fn piece(m: &Moments, a: f64, w: f64) -> ([f64; 3], [DVec3; 2]) {
 }
 
 impl Profile {
-    pub(super) fn new(samples: &[(Vec2, Vec3)], gradient: &Gradient) -> Option<Self> {
+    fn new(samples: &[(Vec2, Vec3)], gradient: &Gradient) -> Option<Self> {
         // A pixel along the gradient per bin, so a stop lands within a pixel of where it fits,
         // and a few samples per bin, so the search compares stretches of the ramp rather than
         // single pixels where the samples are few
@@ -115,14 +115,14 @@ impl Profile {
 
     /// The least squares colors at the stops at bin boundaries `knots` (increasing, from 0 to
     /// the bin count), the ramp piecewise linear between them, and its squared error.
-    pub(super) fn solve(&self, knots: &[usize]) -> (Vec<DVec3>, f64) {
+    fn solve(&self, knots: &[usize]) -> (Vec<DVec3>, f64) {
         let (x, sse) = self.solve_in_place(knots);
         (x[..knots.len()].to_vec(), sse)
     }
 
     /// [`Profile::solve`] into an array, without allocating, for the searches that solve many
     /// times.
-    pub(super) fn solve_in_place(&self, knots: &[usize]) -> ([DVec3; MAX_STOPS + 2], f64) {
+    fn solve_in_place(&self, knots: &[usize]) -> ([DVec3; MAX_STOPS + 2], f64) {
         const K: usize = MAX_STOPS + 2;
         let k = knots.len();
         let tau = |i: usize| knots[i] as f64 / self.bins as f64;
@@ -176,7 +176,7 @@ impl Profile {
 
     /// The squared error over bins `a..b` of the piece of ramp from `p` at bin boundary `a` to
     /// `q` at `b`.
-    pub(super) fn piece_error(&self, a: usize, b: usize, p: DVec3, q: DVec3) -> f64 {
+    fn piece_error(&self, a: usize, b: usize, p: DVec3, q: DVec3) -> f64 {
         if b == a {
             return 0.;
         }
@@ -192,7 +192,7 @@ impl Profile {
     /// The knots with one more stop where it helps most (each free bin boundary judged by the
     /// piece it splits, ends held, in closed form), or None without room. Only bends: a hard
     /// step is an edge, which a shape draws.
-    pub(super) fn insertion(&self, knots: &[usize], colors: &[DVec3]) -> Option<Vec<usize>> {
+    fn insertion(&self, knots: &[usize], colors: &[DVec3]) -> Option<Vec<usize>> {
         if knots.len() >= MAX_STOPS + 2 {
             return None;
         }
@@ -234,7 +234,7 @@ impl Profile {
     /// Moves each stop between the ends to where the error is least with the others held, by
     /// a pattern search in bins from an eighth of the profile down to one; sweeps until nothing
     /// moves. Returns the error.
-    pub(super) fn polish(&self, knots: &mut [usize], mut sse: f64) -> f64 {
+    fn polish(&self, knots: &mut [usize], mut sse: f64) -> f64 {
         for _ in 0..POLISH_SWEEPS {
             let mut moved = false;
             for i in 1..knots.len() - 1 {
@@ -272,7 +272,7 @@ impl Profile {
 
 /// How many times the stops are swept over when moved to where they fit best: each sweep
 /// moves every stop given the others, and the second rarely moves anything.
-pub(super) const POLISH_SWEEPS: usize = 3;
+const POLISH_SWEEPS: usize = 3;
 
 /// The ramp along `gradient` fitting `samples` best: stops go in where they help most while each
 /// lowers the error by more than `stop_cost`, then are polished. Returns the start color and the
@@ -336,13 +336,13 @@ pub(super) fn with_stops(samples: &[(Vec2, Vec3)], fill: &Fill, stop_cost: f32) 
 }
 
 /// At most this many rounds of the focus search, see [`focal`].
-pub(super) const FOCAL_ROUNDS: usize = 8;
+const FOCAL_ROUNDS: usize = 8;
 
 /// How far from the center a radial gradient's focus may go, as a share of its radius.
-pub(super) const FOCUS_LIMIT: f32 = 0.95;
+const FOCUS_LIMIT: f32 = 0.95;
 
-/// `concentric` with its focus moved off center where the isolines are off-center circles (a
-/// sphere lit near its edge), searched from the sample nearest the start color with center and
+/// `concentric` with its focus moved off center where the isolines are off-center circles,
+/// searched from the sample nearest the start color with center and
 /// radius in turn. None when the focus stays at the center or leaves the `extent`.
 pub(super) fn focal(samples: &[(Vec2, Vec3)], concentric: &Fill, extent: &[Vec2]) -> Option<Fill> {
     let Some(Gradient::Radial { center, radius, .. }) = concentric.gradient else {
@@ -412,8 +412,7 @@ pub(super) fn focal(samples: &[(Vec2, Vec3)], concentric: &Fill, extent: &[Vec2]
     if focus.length() < 0.5 || best >= concentric_error {
         return None;
     }
-    // The focal point is on the shape: off it the start color is extrapolated from far away,
-    // as in `pixel_1up`'s ring, whose focus in the hole spilled over the rim
+    // The focal point is on the shape: off it the start color is extrapolated from far away
     let focal_point = center + focus;
     if !extent.iter().any(|p| p.distance_squared(focal_point) <= 1.) {
         return None;
@@ -435,9 +434,8 @@ pub(super) fn focal(samples: &[(Vec2, Vec3)], concentric: &Fill, extent: &[Vec2]
 const STRETCH_SAMPLES: usize = 2000;
 
 /// The radius, axis angle and minor to major ratio of the ellipse about `center` whose radial
-/// gradient (the colour linear in the elliptical radius up to the rim, held beyond) fits
-/// `samples` least, by a pattern search from the circle of `radius`; the circle where no
-/// ellipse fits better.
+/// gradient (linear in the elliptical radius up to the rim) fits `samples` least, by a pattern
+/// search from the circle of `radius`, which it stays where no ellipse fits better.
 pub fn stretch(samples: &[(Vec2, Vec3)], center: Vec2, radius: f32) -> (f32, f32, f32) {
     let stride = samples.len().div_ceil(STRETCH_SAMPLES);
     let few: Vec<(Vec2, Vec3)> = samples.iter().step_by(stride).copied().collect();
@@ -447,7 +445,7 @@ pub fn stretch(samples: &[(Vec2, Vec3)], center: Vec2, radius: f32) -> (f32, f32
         t_regression_error(&few, |p| ((back * (p - center)).length() / r).min(1.))
     };
     // Started from the circle or an ellipse along one of four axes, whichever fits best: from
-    // the circle alone the axis cannot move (b007-kiln-0401's tall arches)
+    // the circle alone the axis cannot move
     let starts = (0..4).map(|k| (radius, k as f32 * std::f32::consts::FRAC_PI_4, 0.75));
     let (mut best, mut least) = std::iter::once((radius, 0f32, 1f32))
         .chain(starts)
@@ -485,14 +483,15 @@ pub fn stretch(samples: &[(Vec2, Vec3)], center: Vec2, radius: f32) -> (f32, f32
 /// The plane map of the ellipse of axis `angle` and minor to major ratio `squash` (see
 /// [`stretch`]), the identity for a circle.
 pub fn ellipse_transform(angle: f32, squash: f32) -> glam::Mat2 {
-    match squash < 1. {
-        true => glam::Mat2::from_angle(angle) * glam::Mat2::from_diagonal(Vec2::new(1., squash)),
-        false => glam::Mat2::IDENTITY,
+    if squash < 1. {
+        glam::Mat2::from_angle(angle) * glam::Mat2::from_diagonal(Vec2::new(1., squash))
+    } else {
+        glam::Mat2::IDENTITY
     }
 }
 
-/// `concentric` stretched into the ellipse that fits `samples` best (an oval lit from its
-/// middle, `b004-radial-05`), or None where the circle fits best.
+/// `concentric` stretched into the ellipse that fits `samples` best, or None where the circle
+/// fits best.
 pub(super) fn elliptical(samples: &[(Vec2, Vec3)], concentric: &Fill) -> Option<Fill> {
     let Some(Gradient::Radial {
         center, radius, to, ..
@@ -515,7 +514,7 @@ pub(super) fn elliptical(samples: &[(Vec2, Vec3)], concentric: &Fill) -> Option<
 }
 
 /// The residual of the regression of the samples' colors on `t`.
-pub(super) fn t_regression_error(samples: &[(Vec2, Vec3)], t: impl Fn(Vec2) -> f32) -> f32 {
+fn t_regression_error(samples: &[(Vec2, Vec3)], t: impl Fn(Vec2) -> f32) -> f32 {
     let n = samples.len() as f32;
     let ts: Vec<f32> = samples.iter().map(|(p, _)| t(*p)).collect();
     let t_mean = ts.iter().sum::<f32>() / n;
@@ -535,7 +534,7 @@ pub(super) fn t_regression_error(samples: &[(Vec2, Vec3)], t: impl Fn(Vec2) -> f
 
 /// The point that gives the least `error`, by a pattern search in eight directions from
 /// `start` with steps from `step` halving down to a quarter of a pixel, and its error.
-pub(super) fn search2(start: Vec2, mut step: f32, error: impl Fn(Vec2) -> f32) -> (Vec2, f32) {
+fn search2(start: Vec2, mut step: f32, error: impl Fn(Vec2) -> f32) -> (Vec2, f32) {
     let (mut at, mut best) = (start, error(start));
     while step >= 0.25 {
         let next = (0..8)
@@ -555,7 +554,7 @@ mod tests {
     use super::*;
 
     /// Costs with a stop and a focus at half a gradient, as the segment costs have them.
-    pub(super) fn costs(gradient: f32) -> Costs {
+    fn costs(gradient: f32) -> Costs {
         Costs {
             gradient,
             stop: gradient / 2.,
@@ -564,10 +563,13 @@ mod tests {
         }
     }
 
+    /// The pixel centres of an `n` by `n` image.
+    fn pixels(n: usize) -> impl Iterator<Item = Vec2> {
+        (0..n).flat_map(move |y| (0..n).map(move |x| Vec2::new(x as f32 + 0.5, y as f32 + 0.5)))
+    }
+
     fn grid(f: impl Fn(Vec2) -> Vec3) -> Vec<(Vec2, Vec3)> {
-        (0..32)
-            .flat_map(|y| (0..32).map(move |x| Vec2::new(x as f32 + 0.5, y as f32 + 0.5)))
-            .map(|p| (p, f(p)))
+        pixels(32).map(|p| (p, f(p)))
             .collect()
     }
 
@@ -636,12 +638,6 @@ mod tests {
             );
         }
     }
-}
-
-#[cfg(test)]
-mod stop_tests {
-    use super::tests::costs;
-    use super::*;
 
     fn rows(height: usize, f: impl Fn(f32) -> Vec3) -> Vec<(Vec2, Vec3)> {
         (0..height)
@@ -650,7 +646,7 @@ mod stop_tests {
             .collect()
     }
 
-    /// Red to white to blue down the image, the turn halfway, as `b004-stop-count-01`.
+    /// Red to white to blue down the image, the turn halfway.
     #[test]
     fn three_colors_take_one_stop() {
         let (red, white, blue) = (
@@ -678,7 +674,7 @@ mod stop_tests {
         assert!(sse < 0.5, "sse {sse}");
     }
 
-    /// A disc lit from near its edge, as `b004-radial-06`: the focus is found.
+    /// A disc lit from near its edge: the focus is found.
     #[test]
     fn off_center_light_has_a_focus() {
         let (center, radius, focal) = (Vec2::new(64., 64.), 50., Vec2::new(100., 64.));
@@ -691,8 +687,7 @@ mod stop_tests {
             stops: Stops::NONE,
         };
         let from = Vec3::new(1., 0.95, 0.);
-        let samples: Vec<(Vec2, Vec3)> = (0..128)
-            .flat_map(|y| (0..128).map(move |x| Vec2::new(x as f32 + 0.5, y as f32 + 0.5)))
+        let samples: Vec<(Vec2, Vec3)> = pixels(128)
             .filter(|p| p.distance(center) < radius - 1.)
             .map(|p| (p, truth.color(from, truth.t(p))))
             .collect();
@@ -710,12 +705,6 @@ mod stop_tests {
         );
         assert!(sse < 1., "sse {sse}");
     }
-}
-
-#[cfg(test)]
-mod padded_tests {
-    use super::tests::costs;
-    use super::*;
 
     /// A disc lit from off its center by a gradient that reaches its end color at six tenths
     /// of the radius and holds it beyond, as a padded radial gradient paints.
@@ -723,8 +712,7 @@ mod padded_tests {
     fn padded_radial_recovers_its_end() {
         let (center, limit) = (Vec2::new(40., 36.), 60.);
         let (from, to) = (Vec3::new(0.9, 1.0, 0.56), Vec3::new(0.29, 0.08, 0.55));
-        let samples: Vec<(Vec2, Vec3)> = (0..128)
-            .flat_map(|y| (0..128).map(move |x| Vec2::new(x as f32 + 0.5, y as f32 + 0.5)))
+        let samples: Vec<(Vec2, Vec3)> = pixels(128)
             .filter(|p| p.distance(Vec2::new(64., 64.)) < 60.)
             .map(|p| (p, from.lerp(to, (p.distance(center) / limit).min(1.))))
             .collect();
@@ -741,21 +729,14 @@ mod padded_tests {
         assert!((radius - limit).abs() < 2., "radius {radius}");
         assert!(sse < 1., "sse {sse}");
     }
-}
 
-#[cfg(test)]
-mod ellipse_tests {
-    use super::tests::costs;
-    use super::*;
-
-    /// A tall oval lit from its middle, as `b007-kiln-0401`'s arches: the fit stretches the
-    /// circle into an upright ellipse and draws the oval within a few levels.
+    /// A tall oval lit from its middle: the fit stretches the circle into an upright ellipse
+    /// and draws the oval within a few levels.
     #[test]
     fn a_tall_oval_is_an_ellipse() {
         let (center, axes) = (Vec2::new(64., 64.), Vec2::new(30., 54.));
         let (from, to) = (Vec3::new(1., 0.8, 0.3), Vec3::new(0.48, 0.17, 0.07));
-        let samples: Vec<(Vec2, Vec3)> = (0..128)
-            .flat_map(|y| (0..128).map(move |x| Vec2::new(x as f32 + 0.5, y as f32 + 0.5)))
+        let samples: Vec<(Vec2, Vec3)> = pixels(128)
             .map(|p| (p, ((p - center) / axes).length()))
             .filter(|(_, r)| *r < 1.)
             .map(|(p, r)| (p, from.lerp(to, r)))

@@ -1,8 +1,6 @@
 //! Filters as scipy computes them: correlation, Gaussian, Sobel, interpolation.
 
-use super::*;
-
-// ----------------------------------------------------------------------------- filters
+use super::{DVec3, Image, np_sum};
 
 /// scipy's reflect extension ("d c b a | a b c d") of an index into a line of `n`.
 pub(super) fn reflect(mut i: isize, n: isize) -> usize {
@@ -28,60 +26,19 @@ pub fn correlate1d(
 ) -> Vec<f64> {
     let size = weights.len();
     let size1 = size / 2;
-    let mut symmetric = 0;
-    if size % 2 == 1 {
-        symmetric = 1;
-        for i in 1..=size / 2 {
-            if (weights[i + size1] - weights[size1 - i]).abs() > f64::EPSILON {
-                symmetric = 0;
-                break;
-            }
-        }
-        if symmetric == 0 {
-            symmetric = -1;
-            for i in 1..=size / 2 {
-                if (weights[size1 + i] + weights[size1 - i]).abs() > f64::EPSILON {
-                    symmetric = 0;
-                    break;
-                }
-            }
-        }
-    }
+    let folds = |sign: f64| {
+        (1..=size1).all(|i| (weights[size1 + i] + sign * weights[size1 - i]).abs() <= f64::EPSILON)
+    };
+    let symmetric = if size.is_multiple_of(2) {
+        0
+    } else if folds(-1.0) {
+        1
+    } else if folds(1.0) {
+        -1
+    } else {
+        0
+    };
     let size2 = (size - size1 - 1) as isize;
-    // One output line from `at(j)`, the input line shifted by j: tap by tap over the whole
-    // line, each pixel summed in the order `NI_Correlate1D` sums it
-    fn line<'a>(
-        o: &mut [f64],
-        at: &dyn Fn(isize) -> &'a [f64],
-        weights: &[f64],
-        symmetric: i32,
-        size2: isize,
-    ) {
-        let size1 = weights.len() / 2;
-        let fw = |j: isize| weights[(size1 as isize + j) as usize];
-        let first = if symmetric != 0 { 0 } else { size2 };
-        for (o, &v) in o.iter_mut().zip(at(first)) {
-            *o = v * fw(first);
-        }
-        if symmetric != 0 {
-            for j in -(size1 as isize)..0 {
-                let (a, b, f) = (at(j), at(-j), fw(j));
-                let pairs = o.iter_mut().zip(a).zip(b);
-                if symmetric > 0 {
-                    pairs.for_each(|((o, &a), &b)| *o += (a + b) * f);
-                } else {
-                    pairs.for_each(|((o, &a), &b)| *o += (a - b) * f);
-                }
-            }
-        } else {
-            for j in -(size1 as isize)..size2 {
-                let (a, f) = (at(j), fw(j));
-                for (o, &a) in o.iter_mut().zip(a) {
-                    *o += a * f;
-                }
-            }
-        }
-    }
     let mut out = vec![0.0; src.len()];
     if axis == 0 {
         // whole rows at once
@@ -109,6 +66,41 @@ pub fn correlate1d(
         line(o, &at, weights, symmetric, size2);
     }
     out
+}
+
+/// One output line of [`correlate1d`] from `at(j)`, the input line shifted by j: tap by tap
+/// over the whole line, each pixel summed in the order `NI_Correlate1D` sums it.
+fn line<'a>(
+    o: &mut [f64],
+    at: &dyn Fn(isize) -> &'a [f64],
+    weights: &[f64],
+    symmetric: i32,
+    size2: isize,
+) {
+    let size1 = weights.len() / 2;
+    let fw = |j: isize| weights[(size1 as isize + j) as usize];
+    let first = if symmetric == 0 { size2 } else { 0 };
+    for (o, &v) in o.iter_mut().zip(at(first)) {
+        *o = v * fw(first);
+    }
+    if symmetric == 0 {
+        for j in -(size1 as isize)..size2 {
+            let (a, f) = (at(j), fw(j));
+            for (o, &a) in o.iter_mut().zip(a) {
+                *o += a * f;
+            }
+        }
+    } else {
+        for j in -(size1 as isize)..0 {
+            let (a, b, f) = (at(j), at(-j), fw(j));
+            let pairs = o.iter_mut().zip(a).zip(b);
+            if symmetric > 0 {
+                pairs.for_each(|((o, &a), &b)| *o += (a + b) * f);
+            } else {
+                pairs.for_each(|((o, &a), &b)| *o += (a - b) * f);
+            }
+        }
+    }
 }
 
 /// scipy's `_gaussian_kernel1d(sigma, order, radius)` reversed, as `gaussian_filter1d`
@@ -211,7 +203,7 @@ const KEPT: usize = 3;
 /// agree are taken as one (a chance agreement is about one in 2^128).
 pub fn digest(px: &[DVec3]) -> (u64, u64) {
     let (mut a, mut b) = (0x243f_6a88_85a3_08d3u64, 0x1319_8a2e_0370_7344u64);
-    for v in px.iter().flat_map(|p| p.to_array()) {
+    for v in px.iter().flat_map(DVec3::to_array) {
         let x = v.to_bits();
         a = (a ^ x).wrapping_mul(0x9e37_79b9_7f4a_7c15).rotate_left(29);
         b = (b ^ x.rotate_left(17))
@@ -281,5 +273,3 @@ pub fn map1(plane: &[f64], width: usize, height: usize, x: f64, y: f64) -> f64 {
     }
     t
 }
-
-// ----------------------------------------------------------------------------- morphology

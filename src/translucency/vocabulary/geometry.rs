@@ -1,8 +1,8 @@
 //! Outlines and polylines: crack loops, smoothing, resampling, a polyline's coverage.
 
-use super::*;
+use glam::DVec2;
 
-// ----------------------------------------------------------------------------- geometry
+use super::{Bezier, bez, fit_cubics};
 
 /// The outline of a mask as closed loops through the midpoints of the cracks between pixels
 /// in and out (SVG units), the mask on each loop's left (y down); pixels touching only
@@ -21,7 +21,6 @@ pub fn crack_loops(mask: &[bool], width: usize, height: usize) -> Vec<Vec<DVec2>
     let corners = (width + 1) * (height + 1);
     let cid = |x: usize, y: usize| y * (width + 1) + x;
     let mut out_edges: Vec<Vec<usize>> = vec![Vec::new(); corners];
-    let mut used: Vec<Vec<bool>> = vec![Vec::new(); corners];
     for y in 0..height as isize {
         for x in 0..width as isize {
             if !inside(x, y) {
@@ -45,9 +44,7 @@ pub fn crack_loops(mask: &[bool], width: usize, height: usize) -> Vec<Vec<DVec2>
             }
         }
     }
-    for (u, e) in used.iter_mut().zip(&out_edges) {
-        *u = vec![false; e.len()];
-    }
+    let mut used: Vec<Vec<bool>> = out_edges.iter().map(|e| vec![false; e.len()]).collect();
     let pos = |c: usize| DVec2::new((c % (width + 1)) as f64, (c / (width + 1)) as f64);
     let mut loops = Vec::new();
     for start in 0..corners {
@@ -139,15 +136,6 @@ pub fn fit_loop(p: &[DVec2], tol: f64) -> Vec<Bezier> {
     out
 }
 
-/// An open polyline smoothed by [1, 2, 1] / 4 inside (the skeleton's staircase).
-pub fn smooth_open(p: &[DVec2]) -> Vec<DVec2> {
-    let mut q = p.to_vec();
-    for i in 1..p.len().saturating_sub(1) {
-        q[i] = 0.25 * p[i - 1] + 0.5 * p[i] + 0.25 * p[i + 1];
-    }
-    q
-}
-
 /// A closed polyline resampled at a spacing along its arc, back to its start.
 pub fn resample(p: &[DVec2], step: f64) -> Vec<DVec2> {
     let mut pts = p.to_vec();
@@ -195,7 +183,7 @@ pub fn flatten(cubics: &[Bezier]) -> Vec<DVec2> {
     for c in cubics {
         let len = (c[1] - c[0]).length() + (c[2] - c[1]).length() + (c[3] - c[2]).length();
         let n = ((len / 0.5).ceil() as usize).max(1);
-        let from = if out.is_empty() { 0 } else { 1 };
+        let from = usize::from(!out.is_empty());
         for i in from..=n {
             out.push(bez(c, i as f64 / n as f64));
         }

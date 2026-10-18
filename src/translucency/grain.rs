@@ -1,13 +1,14 @@
 //! The grain: lines (three times as long as wide, two units to [`WIDEST_LINE`] wide) whose shared
 //! boundary runs half the shorter's length are one object, slivers joined to their lines, so a
-//! lock of hair traced as many strands is one occluder with one contour.
+//! mass of strands traced as many shapes is one occluder with one contour.
 
 use std::collections::BTreeMap;
 
-use super::raster::{area_px, unit_of};
+use super::leaves::root as find;
+use super::raster::{area_px, forward, neighbours4, unit_of};
 
-/// The widest a line is, in units: twice the thin cue's reach ([`super::above`]), so a lock
-/// of niabot's hair (7 units at 660) is still a line.
+/// The widest a line is, in units: twice the thin cue's reach ([`super::above`]), so a thick
+/// strand is still a line.
 pub const WIDEST_LINE: f64 = 8.0;
 
 /// The grain read on the opaque scene's shapes, per pixel.
@@ -24,12 +25,7 @@ fn boundary_distance(shapes: &[u32], w: usize, h: usize) -> Vec<f64> {
     let big = (3 * (w + h)) as u32;
     let mut d: Vec<u32> = (0..w * h)
         .map(|i| {
-            let (x, y) = (i % w, i / w);
-            let l = shapes[i];
-            let boundary = (x > 0 && shapes[i - 1] != l)
-                || (x + 1 < w && shapes[i + 1] != l)
-                || (y > 0 && shapes[i - w] != l)
-                || (y + 1 < h && shapes[i + w] != l);
+            let boundary = neighbours4(i, w, h).any(|j| shapes[j] != shapes[i]);
             if boundary { 0 } else { big }
         })
         .collect();
@@ -99,11 +95,7 @@ pub fn grain_objects(shapes: &[u32], region: &[bool], w: usize, h: usize) -> Gra
     // (order dependent: a root's length is the root shape's own) do not depend on a hash seed
     let mut shared: BTreeMap<(u32, u32), usize> = BTreeMap::new();
     for i in 0..w * h {
-        let (x, y) = (i % w, i / w);
-        for j in [(x + 1 < w).then_some(i + 1), (y + 1 < h).then_some(i + w)]
-            .into_iter()
-            .flatten()
-        {
+        for j in forward(i, w, h) {
             if shapes[i] != shapes[j] {
                 let key = (shapes[i].min(shapes[j]), shapes[i].max(shapes[j]));
                 *shared.entry(key).or_default() += 1;
@@ -126,14 +118,6 @@ pub fn grain_objects(shapes: &[u32], region: &[bool], w: usize, h: usize) -> Gra
         .map(|l| (interior[l] as f64) < least && !line[l])
         .collect();
     let mut parent: Vec<u32> = (0..n as u32).collect();
-    fn find(parent: &mut [u32], mut a: u32) -> u32 {
-        while parent[a as usize] != a {
-            let p = parent[a as usize];
-            parent[a as usize] = parent[p as usize];
-            a = p;
-        }
-        a
-    }
     // the slivers, each into the line it shares the most boundary with
     let mut best: Vec<Option<(usize, u32)>> = vec![None; n];
     for (&(a, b), &c) in &shared {

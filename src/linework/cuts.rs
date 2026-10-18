@@ -65,21 +65,39 @@ pub(super) fn sides(
             }
         }
     }
-    let mode = |v: &mut Vec<u32>| {
-        v.sort_unstable();
-        let mut best = (0, 0);
-        let mut i = 0;
-        while i < v.len() {
-            let j = v[i..].iter().take_while(|&&l| l == v[i]).count();
-            if j > best.1 {
-                best = (v[i], j);
-            }
-            i += j;
-        }
-        best.0
-    };
     let (a, b) = (mode(&mut votes[0]), mode(&mut votes[1]));
     (a > 0 && b > 0 && a != b).then_some([a, b])
+}
+
+/// The label most of `v` hold, the least of equals; 0 for none.
+pub(super) fn mode(v: &mut [u32]) -> u32 {
+    v.sort_unstable();
+    let mut best = (0, 0);
+    let mut i = 0;
+    while i < v.len() {
+        let j = v[i..].iter().take_while(|&&l| l == v[i]).count();
+        if j > best.1 {
+            best = (v[i], j);
+        }
+        i += j;
+    }
+    best.0
+}
+
+/// The areas the samples 2 px either side of a line land in (every other point), sorted.
+pub(super) fn labels_beside(areas: &Areas, through: &[DVec2], w: usize, h: usize) -> Vec<u32> {
+    let nrm = normals(through);
+    let mut v: Vec<u32> = through
+        .iter()
+        .zip(&nrm)
+        .step_by(2)
+        .flat_map(|(p, n)| [*p + 2.0 * *n, *p - 2.0 * *n])
+        .filter(|q| q.x >= 0.0 && q.y >= 0.0 && (q.x as usize) < w && (q.y as usize) < h)
+        .map(|q| areas.label[q.y as usize * w + q.x as usize])
+        .filter(|&l| l > 0)
+        .collect();
+    v.sort_unstable();
+    v
 }
 
 /// A cut candidate: its fill and outline, what it saves and costs.

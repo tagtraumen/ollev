@@ -1,12 +1,12 @@
-//! The error of one solid path over a fixed backdrop, each pixel's error a quadratic in coverage
-//! (`a α² + b α + c`), computed from the outline's pixels and row prefix sums: equal to
-//! [`crate::render::render_over`] and its backward pass, at a cost growing with the outline, not area.
+//! The error of one solid path over a fixed backdrop, each pixel's a quadratic in coverage
+//! (`a α² + b α + c`), from the outline's pixels and row prefix sums: equal to
+//! [`crate::render::render_over`] and its backward pass, at a cost growing with the outline.
 
 use glam::Vec2;
 
 use crate::render::blur::Blurred;
 use crate::render::dual::Dual;
-use crate::render::raster::{Column, fill_coverage, line_contributions, lines};
+use crate::render::raster::{Column, fill_coverage, line_contributions, lines, pixel_box};
 use crate::render::scene::{FillRule, FlatPoint, Path, flatten};
 
 pub struct CoverageCost {
@@ -46,7 +46,7 @@ thread_local! {
 }
 
 /// A run of contributions to one pixel, or to everything left of the box (`col` -1).
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 struct Cell {
     row: u32,
     col: i32,
@@ -125,11 +125,7 @@ impl CoverageCost {
             return (value, d_points);
         }
         let polys = flatten(path);
-        let mut d_points: Vec<Vec<Vec2>> = path
-            .subpaths
-            .iter()
-            .map(|s| vec![Vec2::ZERO; s.points.len()])
-            .collect();
+        let mut d_points = path.zero_points();
         let Some(bbox) = self.bbox(&polys) else {
             return (self.constant as f32, d_points);
         };
@@ -194,16 +190,13 @@ impl CoverageCost {
             cell_of.clear();
             cell_of.resize(contributions.len(), 0);
             let mut last = (u32::MAX, i32::MIN);
-            for &k in order.iter() {
+            for &k in &*order {
                 let c = &contributions[k as usize];
                 if (c.row, c.col) != last {
                     cells.push(Cell {
                         row: c.row,
                         col: c.col,
-                        area: 0.,
-                        cover: 0.,
-                        d_area: 0.,
-                        d_cover: 0.,
+                        ..Cell::default()
                     });
                     last = (c.row, c.col);
                 }
@@ -241,9 +234,9 @@ impl CoverageCost {
         })
     }
 
-    /// The error with the blurred `path` drawn (see [`crate::render::blur`]), its color aside, over the
-    /// box its blur reaches; with `gradient`, its gradient by the points of each subpath and by
-    /// the blur's σ.
+    /// The error with the blurred `path` drawn (see [`crate::render::blur`]), its color aside,
+    /// over the box its blur reaches; with `gradient`, its gradient by the points of each
+    /// subpath and by the blur's σ.
     pub fn blurred(&self, path: &Path, gradient: bool) -> (f32, Vec<Vec<Vec2>>, f32) {
         let polys = flatten(path);
         let blurred = Blurred::new(polys, path.fill_rule, path.blur, self.width, self.height);
@@ -264,33 +257,14 @@ impl CoverageCost {
             return (error as f32, Vec::new(), 0.);
         }
         let (d_flat, d_sigma) = blurred.backward(&d_values);
-        let mut d_points: Vec<Vec<Vec2>> = path
-            .subpaths
-            .iter()
-            .map(|s| vec![Vec2::ZERO; s.points.len()])
-            .collect();
-        for ((poly, d_poly), d_subpath) in blurred.polys.iter().zip(&d_flat).zip(&mut d_points) {
-            for (point, d_point) in poly.iter().zip(d_poly) {
-                for (&src, &weight) in point.src.iter().zip(&point.weights) {
-                    d_subpath[src as usize] += weight * *d_point;
-                }
-            }
-        }
+        let d_points = path.points_gradient(&blurred.polys, &d_flat);
         (error as f32, d_points, d_sigma)
     }
 
     /// The box `[x0, x1, y0, y1]` the flattened path's pixels lie in, as the rasterizer clamps
     /// it, or `None` when nothing of it lies in the window.
     fn bbox(&self, polys: &[Vec<FlatPoint>]) -> Option<[i32; 4]> {
-        let (min, max) = lines(polys).fold(
-            (Vec2::INFINITY, Vec2::NEG_INFINITY),
-            |(min, max), (p, _)| (min.min(p.pos), max.max(p.pos)),
-        );
-        let x0 = (min.x.floor() as i32).max(0);
-        let y0 = (min.y.floor() as i32).max(0);
-        let x1 = (max.x.floor() as i32 + 1).min(self.width as i32);
-        let y1 = (max.y.floor() as i32 + 1).min(self.height as i32);
-        (x1 > x0 && y1 > y0).then_some([x0, x1, y0, y1])
+        pixel_box(polys, self.width as i32, self.height as i32)
     }
 
     /// The error with the merged contributions `cells` drawn, sorted by row and column, filling
@@ -405,7 +379,7 @@ mod tests {
             })
             .collect();
         let hole: Vec<Vec2> = [(12., 10.), (12., 16.), (18., 16.), (18., 10.)]
-            .map(|(x, y)| Vec2::new(x, y))
+            .map(Vec2::from)
             .to_vec();
         let path = Path {
             subpaths: vec![Subpath::polygon(&star), Subpath::polygon(&hole)],

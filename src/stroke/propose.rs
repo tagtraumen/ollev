@@ -11,7 +11,7 @@ pub(crate) struct Edges {
 }
 
 impl Edges {
-    pub(crate) fn new(ctx: &Context, place: &Place, fill: Fill) -> Self {
+    pub(crate) fn new(ctx: &Context, place: &Place, fill: &Fill) -> Self {
         let window = place.window;
         let coverage = window
             .pixels(ctx.width)
@@ -205,6 +205,7 @@ pub(super) fn band_end(
     edge: &dyn Fn(Vec2, Vec2) -> Edge,
     line: Option<(Vec2, Vec2)>,
 ) -> Vec2 {
+    const STEP: f32 = 0.5;
     let n = points.len();
     let k = ((width / 2.).ceil() as usize).max(2).min(n - 1);
     let (end, inner) = if at_start {
@@ -229,7 +230,6 @@ pub(super) fn band_end(
             .width
             .is_some()
     };
-    const STEP: f32 = 0.5;
     let limit = width * MITER_LIMIT;
     let mut s = 0f32;
     if sides_at(0.) {
@@ -245,23 +245,17 @@ pub(super) fn band_end(
     end + outward * s
 }
 
-/// A proposed stroke, caps and joins still to choose, with whether each end of its centerline
-/// sits at the band's extent (a cap reaching beyond then pulls the end in by its reach) or half
-/// a width short of a butt end, as a skeleton's does.
+/// A proposed stroke, caps and joins still to choose, its centerline ending where the band's
+/// sides stop running parallel.
 pub(crate) struct Proposal {
     pub(crate) stroke: Stroke,
     /// What the centerline is built from, for the simplification candidates.
     pub(crate) spec: Centerline,
-    pub(crate) ends_at_extent: [bool; 2],
-    /// The centerline's ends are where the sides stop running parallel: the end itself for a
-    /// butt or round cap, half a width past it for a square cap, whose sides run on.
-    pub(crate) from_pairs: bool,
 }
 
-/// The first estimate of a skeleton's stroke width, where it could be one: the thinned
-/// chain's distance to the mask's edge, the median over the chain's middle half (toward an
-/// open chain's ends it falls off), between a pixel and [`MAX_WIDTH`], the chain longer
-/// than its caps. Read before any placing, so a shape no stroke could be is not placed.
+/// The first estimate of a skeleton's stroke width, where it could be one: the median width
+/// over the chain's middle half (it falls off toward open ends), between a pixel and
+/// [`MAX_WIDTH`], the chain longer than its caps. Read before the shape is placed anywhere.
 pub(super) fn first_width(skeleton: &Skeleton) -> Option<f32> {
     let n = skeleton.chain.len();
     let mut middle: Vec<f32> = if skeleton.closed {
@@ -280,13 +274,13 @@ pub(super) fn first_width(skeleton: &Skeleton) -> Option<f32> {
 }
 
 /// A stroke for one skeleton of a shape, see [`fit_at`].
-pub(super) fn propose(skeleton: Skeleton, edges: &Edges) -> Option<Proposal> {
+pub(super) fn propose(skeleton: &Skeleton, edges: &Edges) -> Option<Proposal> {
     let n = skeleton.chain.len();
     // Rays in box coordinates (a chain pixel's center at its index) against the image
     let offset = skeleton.top_left.as_vec2() + 0.5;
     let edge = |p: Vec2, d: Vec2| -> Edge { edges.edge(p + offset, d, MAX_WIDTH) };
     // The width estimate sets the crossings' reach and heading window
-    let width = first_width(&skeleton)?;
+    let width = first_width(skeleton)?;
     let chain: Vec<Vec2> = skeleton.chain.iter().map(|p| p.as_vec2()).collect();
     let crossings = cross(&chain, skeleton.closed, width, &edge);
     let margin = if skeleton.closed {
@@ -403,26 +397,11 @@ pub(super) fn propose(skeleton: Skeleton, edges: &Edges) -> Option<Proposal> {
             return None;
         }
         let pca = |set: &[Vec2]| -> Option<(Vec2, Vec2)> {
-            let mean = set.iter().sum::<Vec2>() / set.len() as f32;
-            let (mut xx, mut xy, mut yy) = (0f32, 0f32, 0f32);
-            for p in set {
-                let d = *p - mean;
-                xx += d.x * d.x;
-                xy += d.x * d.y;
-                yy += d.y * d.y;
-            }
-            if (xx - yy).abs() < 1e-6 && xy.abs() < 1e-6 {
+            let s = spread(set);
+            if (s.xx - s.yy).abs() < 1e-6 && s.xy.abs() < 1e-6 {
                 return None;
             }
-            let top = 0.5 * (xx + yy) + (0.25 * (xx - yy).powi(2) + xy * xy).sqrt();
-            let axis = if xy.abs() > 1e-6 {
-                Vec2::new(xy, top - xx).normalize()
-            } else if xx >= yy {
-                Vec2::X
-            } else {
-                Vec2::Y
-            };
-            Some((mean, axis))
+            Some((s.mean, s.axis))
         };
         // The line through the middle half, then through everything of the piece within the
         // tolerance of it, which leaves out the bends toward the corners
@@ -574,8 +553,6 @@ pub(super) fn propose(skeleton: Skeleton, edges: &Edges) -> Option<Proposal> {
             dashes: None,
         },
         spec,
-        ends_at_extent: [false, false],
-        from_pairs: true,
     })
 }
 
@@ -623,7 +600,7 @@ pub(super) fn polish(simpler: &[Cubic], previous: &[Cubic], closed: bool) -> Vec
 /// `cubics`, a fit of `samples` at some tolerance, with each cubic fitted again by least
 /// squares to the samples between its ends, keeping its ends and tangents: a fit at a
 /// tolerance stops at the first cubic within it, a poor start for the optimizer.
-pub(crate) fn refit(cubics: Vec<Cubic>, samples: &[Vec2]) -> Vec<Cubic> {
+pub(crate) fn refit(cubics: &[Cubic], samples: &[Vec2]) -> Vec<Cubic> {
     const ITERATIONS: usize = 8;
     let nearest = |q: Vec2| -> usize {
         (0..samples.len())

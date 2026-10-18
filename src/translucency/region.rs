@@ -58,8 +58,7 @@ pub fn evidence(img: &Image, outside: &Palette, k: f64, c: DVec3, min_px: f64) -
             let best = cells
                 .iter()
                 .max_by(|a, b| a.1.total_cmp(b.1).then(b.0.cmp(a.0)))
-                .map(|(k, _)| *k)
-                .unwrap_or((0, 0, 0));
+                .map_or((0, 0, 0), |(k, _)| *k);
             let (mut sum, mut tot) = (DVec3::ZERO, 0.0);
             for (c, ww) in x.iter().zip(w) {
                 let q = (*c * 255.0).round();

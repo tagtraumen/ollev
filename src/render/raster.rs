@@ -44,6 +44,7 @@ pub fn fill_coverage(winding: f32, rule: FillRule) -> (f32, f32) {
 /// Clips the line `a -> b` to `min <= p[axis] < max`, keeping its direction. Only boundary
 /// crossings are interpolated, which keeps derivatives of nearly axis-aligned lines well
 /// conditioned (clipping in parameter space loses them to cancellation).
+#[inline]
 fn clip<S: Real>(
     a: [S; 2],
     b: [S; 2],
@@ -77,6 +78,7 @@ fn clip<S: Real>(
 /// Walks the pixels a line touches inside the box and emits the signed trapezoid area to the right
 /// of the line within the pixel, and the signed height (cover) the pixel passes on to everything
 /// to its right. The winding of a pixel is its area plus the cover of all pixels left of it.
+#[inline]
 pub(crate) fn line_contributions<S: Real>(
     p0: [S; 2],
     p1: [S; 2],
@@ -129,18 +131,24 @@ pub(crate) fn lines(polys: &[Vec<FlatPoint>]) -> impl Iterator<Item = (&FlatPoin
         .flat_map(|poly| poly.iter().zip(poly.iter().cycle().skip(1)))
 }
 
-pub fn rasterize(polys: &[Vec<FlatPoint>], width: u32, height: u32) -> Winding {
+/// The box `[x0, x1, y0, y1]` of the pixels the flattened path touches in a `width` x
+/// `height` frame, or `None` when it misses the frame.
+pub(crate) fn pixel_box(polys: &[Vec<FlatPoint>], width: i32, height: i32) -> Option<[i32; 4]> {
     let (min, max) = lines(polys).fold(
         (Vec2::INFINITY, Vec2::NEG_INFINITY),
         |(min, max), (p, _)| (min.min(p.pos), max.max(p.pos)),
     );
     let x0 = (min.x.floor() as i32).max(0);
     let y0 = (min.y.floor() as i32).max(0);
-    let x1 = (max.x.floor() as i32 + 1).min(width as i32);
-    let y1 = (max.y.floor() as i32 + 1).min(height as i32);
-    if x1 <= x0 || y1 <= y0 {
+    let x1 = (max.x.floor() as i32 + 1).min(width);
+    let y1 = (max.y.floor() as i32 + 1).min(height);
+    (x1 > x0 && y1 > y0).then_some([x0, x1, y0, y1])
+}
+
+pub fn rasterize(polys: &[Vec<FlatPoint>], width: u32, height: u32) -> Winding {
+    let Some([x0, x1, y0, y1]) = pixel_box(polys, width as i32, height as i32) else {
         return Winding::default();
-    }
+    };
     let (w, h) = ((x1 - x0) as usize, (y1 - y0) as usize);
 
     let mut values = vec![0.; w * h];

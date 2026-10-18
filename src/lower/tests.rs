@@ -35,7 +35,7 @@ fn solid(r: f64, g: f64, b: f64) -> Paint {
 fn model() -> Model {
     let (w, h) = (96, 64);
     let to32 =
-        |l: Vec<Curve>| -> Vec<[Vec2; 4]> { l.iter().map(|c| c.map(|p| p.as_vec2())).collect() };
+        |l: Vec<Curve>| -> Vec<[Vec2; 4]> { l.iter().map(|c| c.map(glam::DVec2::as_vec2)).collect() };
     let radial = |focus: Vec2, to: [f32; 4], stops: Stops, center: Vec2, radius: f32| {
         Paint::Gradient(Gradient::new(
             Vec3::new(1., 0.85, 0.4),
@@ -138,7 +138,7 @@ fn model() -> Model {
 }
 
 /// Whether the model uses a feature the host lacks.
-fn uses(model: &Model, host: &Capabilities) -> Vec<&'static str> {
+fn uses(model: &Model, host: Capabilities) -> Vec<&'static str> {
     let mut found = Vec::new();
     for o in model.objects() {
         if let Geometry::Fill {
@@ -155,7 +155,7 @@ fn uses(model: &Model, host: &Capabilities) -> Vec<&'static str> {
                 GradientShape::Radial { focus, .. }
                     if focus != DVec2::ZERO && !host.radial_focus =>
                 {
-                    found.push("focus")
+                    found.push("focus");
                 }
                 _ => {}
             }
@@ -227,7 +227,7 @@ fn each_capability_off_renders_as_the_model() {
     ];
     for (name, host) in hosts {
         let (lowered, report) = lower(&model, &host);
-        assert_eq!(uses(&lowered, &host), Vec::<&str>::new(), "{name}");
+        assert_eq!(uses(&lowered, host), Vec::<&str>::new(), "{name}");
         let rewritten =
             report.path_gradients + report.foci + report.layered + report.dashed + report.wound;
         assert!(rewritten > 0, "{name}: nothing rewritten");
@@ -262,7 +262,7 @@ fn crossing_loops_are_traced_afresh() {
         ..Capabilities::ALL
     };
     let (lowered, report) = lower(&model, &host);
-    assert_eq!(uses(&lowered, &host), Vec::<&str>::new());
+    assert_eq!(uses(&lowered, host), Vec::<&str>::new());
     let price = model.fidelity.as_ref().unwrap().segment_price;
     let miss = excess(&model, &lowered);
     assert!(miss <= price, "miss {miss} against {price}: {report}");

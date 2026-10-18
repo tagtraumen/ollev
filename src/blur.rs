@@ -2,6 +2,9 @@
 //! drawn with a Gaussian blur over its coverage. The blur is an option of the shape like a
 //! gradient, priced in segments and kept where the error it removes pays for it.
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use crate::render::coverage_cost::CoverageCost;
 
 use crate::refine::{MARGIN, Place, fit};
@@ -38,9 +41,8 @@ pub fn fit_blur(
     // The place where `blurred` reaches, with the shape as given and as `blurred` is clipped,
     // their costs and the given shape's error; each is made with room for σ to double twice,
     // kept for the next σ of its clip that fits it, its given place shared by both clips
-    type Places = std::rc::Rc<Made>;
-    let made: std::cell::RefCell<Vec<(f32, Option<usize>, Places)>> = Default::default();
-    let given_at: std::cell::RefCell<Vec<(f32, Given)>> = Default::default();
+    let made: RefCell<Vec<(f32, Option<usize>, Places)>> = RefCell::default();
+    let given_at: RefCell<Vec<(f32, Given)>> = RefCell::default();
     let places = |blurred: &Shape| -> Option<Places> {
         let fits = |(room, clip, _): &&(f32, Option<usize>, Places)| {
             *clip == blurred.clip && *room >= blurred.blur
@@ -54,25 +56,24 @@ pub fn fit_blur(
             .iter()
             .find(|(r, _)| *r == room)
             .map(|g| g.1.clone());
-        let given = match shared {
-            Some(g) => g,
-            None => {
-                let wide = shape.clone().with_blur(room);
-                let crop = |w: Window| w.pixels(ctx.width).map(|i| below[i]).collect();
-                let place = Place::over(ctx, scene, &wide, position, MARGIN, crop)?;
-                let cost = place.cost(ctx, shape.fill);
-                let hard = cost.value(&shape.path(place.window.origin())) as f64;
-                let g = std::rc::Rc::new((place, cost, hard));
-                given_at.borrow_mut().push((room, g.clone()));
-                g
-            }
+        let given = if let Some(g) = shared {
+            g
+        } else {
+            let wide = shape.clone().with_blur(room);
+            let crop = |w: Window| w.pixels(ctx.width).map(|i| below[i]).collect();
+            let place = Place::over(ctx, scene, &wide, position, MARGIN, crop)?;
+            let cost = place.cost(ctx, shape.fill);
+            let hard = cost.value(&shape.path(place.window.origin())) as f64;
+            let g = Rc::new((place, cost, hard));
+            given_at.borrow_mut().push((room, g.clone()));
+            g
         };
         let own = (blurred.clip != shape.clip).then(|| {
             let own = given.0.clipped(scene, blurred.clip);
             let cost = own.cost(ctx, shape.fill);
             (own, cost)
         });
-        let p = std::rc::Rc::new(Made { given, own });
+        let p = Rc::new(Made { given, own });
         made.borrow_mut().push((room, blurred.clip, p.clone()));
         Some(p)
     };
@@ -82,15 +83,11 @@ pub fn fit_blur(
         let origin = p.given.0.window.origin();
         Some(p.own_cost().value(&blurred.path(origin)) as f64 - p.given.2)
     };
-    let clips = [shape.clip, parent.filter(|_| shape.clip.is_none())];
+    let clips = std::iter::once(shape.clip).chain(parent.filter(|_| shape.clip.is_none()).map(Some));
     let mut best: Option<(f64, Shape)> = None;
-    for clip in clips
-        .iter()
-        .enumerate()
-        .filter(|(k, c)| *k == 0 || c.is_some())
-    {
+    for clip in clips {
         let candidate = Shape {
-            clip: *clip.1,
+            clip,
             ..shape.clone()
         };
         let mut sigma = LEAST as f32 * unit;
@@ -146,7 +143,10 @@ pub fn fit_blur(
 }
 
 /// The place of the shape as given, its cost and its error there.
-type Given = std::rc::Rc<(Place, CoverageCost, f64)>;
+type Given = Rc<(Place, CoverageCost, f64)>;
+
+/// A [`Made`] place, shared by the σ it has room for.
+type Places = Rc<Made>;
 
 /// A place [`fit_blur`] measures in: the shape as given (its place, cost and error) and, where
 /// the blur is clipped otherwise, the clipped place and its cost.
@@ -164,7 +164,7 @@ impl Made {
 /// Blurs each opaque filled shape of the decided `scene` where its blur pays (see
 /// [`fit_blur`]), judged under the shapes above it; the parent it may be clipped to is the
 /// nearest shape below whose box holds its box. Returns how many shapes were blurred.
-pub fn blur_scene(ctx: &Context, scene: &mut Scene) -> usize {
+pub async fn blur_scene(ctx: &Context, scene: &mut Scene) -> usize {
     let mut blurred = 0;
     // the render of the shapes below the place at hand, each composited on as the pass passes it
     let full = Window::full(ctx.width, ctx.height);
@@ -173,9 +173,7 @@ pub fn blur_scene(ctx: &Context, scene: &mut Scene) -> usize {
         scene.composite_onto(full, 0, &mut below);
     }
     for position in 1..scene.shapes.len() {
-        if crate::progress::poll() {
-            break;
-        }
+        crate::progress::poll().await;
         let s = &scene.shapes[position];
         if s.layer.is_some()
             || s.stroke.is_some()
@@ -218,22 +216,10 @@ pub fn blur_scene(ctx: &Context, scene: &mut Scene) -> usize {
 mod tests {
     use glam::{Vec2, Vec3};
 
+    use crate::scene::tests::square;
     use crate::{Scene, Shape, Window};
 
-    fn square(a: Vec2, b: Vec2) -> Vec<Vec<crate::tracer::Cubic>> {
-        let corners = [a, Vec2::new(b.x, a.y), b, Vec2::new(a.x, b.y)];
-        vec![
-            (0..4)
-                .map(|k| {
-                    let (p, q) = (corners[k], corners[(k + 1) % 4]);
-                    [p, p.lerp(q, 1. / 3.), p.lerp(q, 2. / 3.), q]
-                })
-                .collect(),
-        ]
-    }
-
-    /// A blurred shape clipped to the shape below is soft inside it and cut crisp at its
-    /// edge, and the SVG writes the blur and the clip on the one path.
+    /// A blurred shape clipped to the shape below is soft inside it and cut crisp at its edge.
     #[test]
     fn a_clipped_blur_is_soft_inside_and_crisp_at_the_clip() {
         let mut scene = Scene::with_background(24, 24, Vec3::ONE);

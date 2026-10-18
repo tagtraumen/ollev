@@ -9,7 +9,7 @@ use crate::translucency::raster::{Image, NOISE, di_zenzo, length_px};
 
 /// The larger gradient scale, in multiples of [`SIGMA`]: a step blurred by `s` peaks at
 /// `h / sqrt(2 pi (s^2 + sigma^2))`, so the ratio of the peaks at the two scales gives `s`
-/// (so blurred edges such as niabot's sky are uncertain over their whole transition).
+/// (so blurred edges are uncertain over their whole transition).
 pub const BLUR_SCALE: f64 = 2.0;
 /// The widest transition the two scales resolve, in multiples of [`SIGMA`].
 pub const WIDEST: f64 = 2.0 * BLUR_SCALE;
@@ -99,7 +99,7 @@ fn edge_part(img: &Image) -> Vec<f32> {
 
 /// The spread a JPEG's quantization leaves in each pixel, times [`GRAIN_RANGE`], when the
 /// pixels show the compression ([`crate::tracer::jpeg::detect`]): what the encoder rounded away is
-/// unknown, so `emoji_fox_jpeg`'s 8 x 8 block steps are not drawn as shapes.
+/// unknown, so its 8 x 8 block steps are not drawn as shapes.
 fn compression(img: &Image) -> Option<Vec<f32>> {
     let rgb: Vec<u8> = img
         .px
@@ -158,7 +158,7 @@ pub fn sliding_median(v: &[u16], w: usize, h: usize, r: usize) -> Vec<u16> {
     let mut hist = vec![0u32; BINS];
     for y in 0..h {
         let (y0, y1) = (y.saturating_sub(r), (y + r).min(h - 1));
-        hist.iter_mut().for_each(|c| *c = 0);
+        hist.fill(0);
         let mut count = 0u32;
         // the running median and the count strictly below it, kept as columns enter and leave
         let (mut med, mut below) = (0usize, 0u32);
@@ -421,7 +421,7 @@ mod tests {
         let trace = |rgb: &[u8]| {
             let detail = crate::tracer::auto_detail(rgb, size, size);
             let options = plan::Options::default();
-            plan::trace(rgb, size, size, detail, options, |_| ())
+            plan::trace(rgb, size, size, detail, options)
         };
         let plain = trace(&disc(size, false));
         assert_eq!(plain.shapes.len(), 2, "the ground and the disc");
@@ -468,7 +468,7 @@ mod tests {
                         s.push(v[yy * w + xx]);
                     }
                 }
-                s.sort();
+                s.sort_unstable();
                 assert_eq!(m[y * w + x], s[s.len() / 2], "at {x} {y}");
             }
         }

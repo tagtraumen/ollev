@@ -9,14 +9,6 @@ pub struct AntialiasParams {
     pub residual: f64,
 }
 
-/// Coverage of a blended pixel by the side it was assigned to, kept for placing edges at sub-pixel
-/// positions later.
-#[derive(Clone, Copy, Debug)]
-#[allow(dead_code, reason = "not used for edge placement yet")]
-pub struct Blend {
-    pub coverage: f64,
-}
-
 /// Neighbor pairs on opposite sides of a pixel, including offset pairs that span blends two pixels
 /// wide (as left by downscaling), where each blended pixel sits between a pure color and another
 /// blended pixel.
@@ -52,20 +44,19 @@ pub fn unmix(
     width: usize,
     height: usize,
     params: &AntialiasParams,
-) -> (Vec<DVec3>, Vec<Option<Blend>>) {
+) -> Vec<DVec3> {
     let (w, h) = (width as i32, height as i32);
     let at = |p: IVec2| {
         (p.x >= 0 && p.y >= 0 && p.x < w && p.y < h).then(|| colors[(p.y * w + p.x) as usize])
     };
 
     let mut out = colors.to_vec();
-    let mut blends = vec![None; colors.len()];
     for y in 0..h {
         for x in 0..w {
             let p = IVec2::new(x, y);
             let c = colors[(y * w + x) as usize];
             // The strongest edge this pixel is a blend across
-            let mut best: Option<(f64, DVec3, f64)> = None;
+            let mut best: Option<(f64, DVec3)> = None;
             for (da, db) in PAIRS {
                 let (Some(a), Some(b)) = (at(p + da), at(p + db)) else {
                     continue;
@@ -73,26 +64,20 @@ pub fn unmix(
                 let axis = a - b;
                 let contrast = axis.length_squared();
                 if contrast < params.edge_contrast * params.edge_contrast
-                    || best.is_some_and(|(s, _, _)| s >= contrast)
+                    || best.is_some_and(|(s, _)| s >= contrast)
                 {
                     continue;
                 }
                 let alpha = (c - b).dot(axis) / contrast;
                 let residual = (c - (b + alpha * axis)).length();
                 if alpha > 0.05 && alpha < 0.95 && residual < params.residual {
-                    let (pure, coverage) = if alpha >= 0.5 {
-                        (a, alpha)
-                    } else {
-                        (b, 1. - alpha)
-                    };
-                    best = Some((contrast, pure, coverage));
+                    best = Some((contrast, if alpha >= 0.5 { a } else { b }));
                 }
             }
-            if let Some((_, pure, coverage)) = best {
+            if let Some((_, pure)) = best {
                 out[(y * w + x) as usize] = pure;
-                blends[(y * w + x) as usize] = Some(Blend { coverage });
             }
         }
     }
-    (out, blends)
+    out
 }

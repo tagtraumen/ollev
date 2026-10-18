@@ -1,9 +1,10 @@
 //! How a planned shape is fitted: its simplification tolerances and completion.
 
 use super::*;
+use crate::render::coverage_cost::CoverageCost;
 
 /// The simplification tolerances: [`SIMPLIFY`], scaled down on images smaller than
-/// [`TYPICAL_SIZE`] (8 px is a tenth of a 72 px emoji).
+/// [`TYPICAL_SIZE`].
 pub(super) fn tolerances(ctx: &Context) -> Vec<f32> {
     let scale = (ctx.frame / TYPICAL_SIZE).min(1.);
     SIMPLIFY.iter().map(|t| t * scale).collect()
@@ -11,11 +12,11 @@ pub(super) fn tolerances(ctx: &Context) -> Vec<f32> {
 
 /// Image size, as the square root of its area, at and above which the simplification
 /// tolerances are what [`SIMPLIFY`] says.
-pub(super) const TYPICAL_SIZE: f32 = 256.;
+const TYPICAL_SIZE: f32 = 256.;
 
 /// Spread per pixel below which a region is one color, as far as primitives are concerned:
 /// about one 8-bit level per channel of noise.
-pub(super) const FLAT_SPREAD: f64 = 0.01;
+const FLAT_SPREAD: f64 = 0.01;
 
 /// What completion proposes for a shape: primitives for smooth single-color objects, to
 /// within half the scale they are smooth at (see [`smooth_at`]), and bridges across every
@@ -27,6 +28,13 @@ pub(super) fn completion(smooth: Option<i32>, allowance: f32, primitives: bool) 
             .max(smooth.unwrap_or(1) as f32 / 2.),
         primitive_allowance: allowance,
     }
+}
+
+/// [`clean_in`] from the shape's error over `place` as it stands.
+pub(super) fn clean_at(fit: &Context, cost: &CoverageCost, place: &Place, shape: &mut Shape) {
+    let origin = place.window.origin();
+    let error = cost.value(&shape.path(origin));
+    clean_in(fit, cost, origin, shape, error);
 }
 
 /// The error a region's blocks at scale `smooth` cost against the smooth shape they render,
@@ -61,12 +69,8 @@ pub(super) fn smooth_at(
     let mean = ctx
         .rgb(hierarchy.nodes[node as usize].stats.mean())
         .as_dvec3();
-    let scale = hierarchy.antialias_scale(node, &ctx.target, mean, ANTIALIASED);
-    let Some(scale) = scale else {
-        return EdgeReading {
-            antialiased: None,
-            smooth: None,
-        };
+    let Some(scale) = hierarchy.antialias_scale(node, &ctx.target, mean, ANTIALIASED) else {
+        return EdgeReading::default();
     };
     // Anti-aliased: the band along the outline, past the blur. In blocks: the outermost block,
     // past its own edge pixel, since the next block in is the next step of the gradient
@@ -87,19 +91,19 @@ pub(super) fn smooth_at(
 }
 
 /// How a region's edge reads, see [`smooth_at`].
+#[derive(Default)]
 pub(super) struct EdgeReading {
     /// The scale the rim is anti-aliased at, `None` for a crisp edge; strokes use it whatever
-    /// the colours inside (the wall's grid under glassware's glass).
+    /// the colours inside.
     pub(super) antialiased: Option<i32>,
     /// That scale where the region is one colour along its outline too, so a primitive may
     /// stand for it.
     pub(super) smooth: Option<i32>,
 }
 
-/// Share of a region's rim that has to be mixed pixels for its edge to count as anti-aliased:
-/// pixel art measures 0, anti-aliased edges 0.5 to 1.0, a pixel-art coin's banded rings 0.28
-/// to 0.31 at the scale of their blocks, see [`Hierarchy::mixed_rim`].
-pub(super) const ANTIALIASED: f64 = 0.2;
+/// Share of a region's rim that has to be mixed pixels for its edge to count as anti-aliased
+/// (see [`Hierarchy::antialias_scale`]): pixel art has none, anti-aliased edges half or more.
+const ANTIALIASED: f64 = 0.2;
 
 /// How far from the outline the band judged for flatness reaches, in pixels.
-pub(super) const FLAT_BAND: i32 = 4;
+const FLAT_BAND: i32 = 4;

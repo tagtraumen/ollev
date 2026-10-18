@@ -20,8 +20,7 @@ pub const GRADIENT_SEGMENTS: f64 = 2.;
 /// with one click like one point of an outline, far cheaper than splitting the shape.
 pub const STOP_SEGMENTS: f64 = 1.;
 /// What moving a radial gradient's focal point off its center costs, in segments: one more
-/// point to place (`b004-radial-06`, a sphere lit from near its edge); an ellipse's axes cost
-/// as much (a spotlight's pool).
+/// point to place; an ellipse's axes cost as much.
 pub const FOCUS_SEGMENTS: f64 = 1.;
 /// How many pixels from anything else a pixel has to lie for its color to be the shape's own
 /// and not a mixture across the boundary, which a fill fitted to the rim would take for
@@ -57,23 +56,20 @@ impl Costs {
 
     /// What `fill` costs on top of one color.
     pub fn of(&self, fill: &Fill) -> f32 {
-        match &fill.gradient {
-            None => 0.,
-            Some(g) => {
-                let focus = match g {
-                    Gradient::Radial {
-                        focus, transform, ..
-                    } => {
-                        let off = if *focus != Vec2::ZERO { self.focus } else { 0. };
-                        let stretched = *transform != glam::Mat2::IDENTITY;
-                        off + if stretched { self.focus } else { 0. }
-                    }
-                    Gradient::Path { contour, .. } => self.segment * contour.len() as f32,
-                    _ => 0.,
-                };
-                self.gradient + self.stop * g.stops().len() as f32 + focus
+        let Some(g) = &fill.gradient else {
+            return 0.;
+        };
+        let focus = match g {
+            Gradient::Radial {
+                focus, transform, ..
+            } => {
+                let off = if *focus == Vec2::ZERO { 0. } else { self.focus };
+                off + if *transform == glam::Mat2::IDENTITY { 0. } else { self.focus }
             }
-        }
+            Gradient::Path { contour, .. } => self.segment * contour.len() as f32,
+            Gradient::Linear { .. } => 0.,
+        };
+        self.gradient + self.stop * g.stops().len() as f32 + focus
     }
 }
 
@@ -92,6 +88,7 @@ pub fn erosion(counts: &[usize]) -> usize {
         .find(|&e| counts[e + 1..].iter().sum::<usize>() as f32 >= RIM_SHARE * total)
         .unwrap_or(1)
 }
+
 /// The fill for `samples` (pixel centers and colors) and its error over them: `solid` unless a
 /// linear or radial gradient, with paying stops and focus, lowers the error (beyond `tolerance`)
 /// by more than `costs`. A gradient spans `extent`, the whole shape's pixels (empty: samples).
@@ -333,10 +330,9 @@ fn radial_geometry(samples: &[(Vec2, Vec3)], start: Vec2) -> Option<(Vec2, f32)>
     Some((center, limit))
 }
 
-/// The center with the least `error`, by a pattern search from `start`, steps from a quarter
-/// of the shape's extent down to a quarter pixel. It stays within one extent of the shape:
-/// farther out the rays are all but parallel and the radial only imitates a linear gradient.
-/// No samples, no center (their bounds would be empty, min past max).
+/// The center with the least `error`, by a pattern search from `start` in steps from a quarter
+/// of the shape's extent down to a quarter pixel, within one extent of the shape (farther, a
+/// radial only imitates a linear gradient). None without samples.
 fn radial_center(few: &[(Vec2, Vec3)], start: Vec2, error: impl Fn(Vec2) -> f32) -> Option<Vec2> {
     if few.is_empty() {
         return None;

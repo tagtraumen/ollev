@@ -9,14 +9,15 @@ pub(super) type Fitted = (f32, Vec<(Stroke, Fill)>, Option<Shape>, Vec<Shape>);
 /// The strokes `shape` is, fitted in `place`: one for a band in the shape's fill, or one per
 /// line of a network (see [`network`]), each fitted on its own in its colour from the image
 /// ([`line_fill`]), with the region's thick parts left as a fill ([`thick_remainder`]).
-pub(super) fn fit_at(
+pub(super) async fn fit_at(
     ctx: &Context,
     hierarchy: &Hierarchy,
     place: &Place,
     cost: &CoverageCost,
     shape: &Shape,
 ) -> Option<Fitted> {
-    let edges = Edges::new(ctx, place, shape.fill);
+    let edges = Edges::new(ctx, place, &shape.fill);
+    crate::progress::poll().await;
     // A network by its skeleton, whatever the one-pen rule and the proposals left of it: a
     // line that fails either leaves its pixels to the remainder
     let (network, skeletons) = match skeletons_of_shape(shape, Some(hierarchy)) {
@@ -25,26 +26,27 @@ pub(super) fn fit_at(
         None => (false, Vec::new()),
     };
     let proposals: Vec<Proposal> = skeletons
-        .into_iter()
+        .iter()
         .filter_map(|skeleton| propose(skeleton, &edges))
         .collect();
     if proposals.is_empty() {
         return None;
     }
     let origin = place.window.origin();
-    let fitted: Vec<(f32, Stroke, Fill)> = proposals
-        .into_iter()
-        .filter_map(|p| {
-            let fill = if network {
-                line_fill(ctx, place, &p.stroke, shape.fill)
-            } else {
-                shape.fill
-            };
-            let own_cost = (fill != shape.fill).then(|| place.cost(ctx, fill));
-            fit_proposal(ctx, own_cost.as_ref().unwrap_or(cost), origin, p)
-                .map(|(e, s)| (e, s, fill))
-        })
-        .collect();
+    let mut fitted: Vec<(f32, Stroke, Fill)> = Vec::new();
+    for p in proposals {
+        crate::progress::poll().await;
+        let fill = if network {
+            line_fill(ctx, place, &p.stroke, &shape.fill)
+        } else {
+            shape.fill
+        };
+        let own_cost = (fill != shape.fill).then(|| place.cost(ctx, fill));
+        if let Some((e, s)) = fit_proposal(ctx, own_cost.as_ref().unwrap_or(cost), origin, p).await
+        {
+            fitted.push((e, s, fill));
+        }
+    }
     // A network stays a network however many of its lines fitted, so one fitted line never
     // stands for the whole shape; what the lines left is the remainder's
     match (network, fitted.len()) {
@@ -57,20 +59,20 @@ pub(super) fn fit_at(
             let mut lines: Vec<(Stroke, Fill)> =
                 fitted.into_iter().map(|(_, s, f)| (s, f)).collect();
             // One pen, read again on the fitted widths: a line the fit widened past the pen's
-            // slack goes to the remainder (as glassware's grid line where completion smeared
-            // it under the condenser tube)
+            // slack goes to the remainder
             let mut widths: Vec<f32> = lines.iter().map(|(s, _)| s.width).collect();
             widths.sort_by(f32::total_cmp);
             let pen = widths[widths.len() / 2];
             lines.retain(|(s, _)| (s.width - pen).abs() <= (WIDTH_SLACK * pen).max(WIDTH_QUANTUM));
             // A line that draws beyond the shape ([`draws_beyond`]) goes to the remainder too,
-            // and the network stands on the rest, so one spilling line (as a piece of
-            // glassware's condenser outline in the grid's region) does not throw out the grid
+            // and the network stands on the rest, so one spilling line does not throw it out
             lines.retain(|(s, _)| !draws_beyond(hierarchy, shape, s, &[], ctx.width, ctx.height));
             if lines.is_empty() {
                 return None;
             }
+            crate::progress::poll().await;
             let (lines, bridges) = join_lines(ctx, place, shape, lines);
+            crate::progress::poll().await;
             let mut shapes: Vec<Shape> = lines.iter().map(|(s, f)| s.shape(*f)).collect();
             let remainder = thick_remainder(ctx, hierarchy, place, shape, &shapes);
             shapes.extend(remainder.clone());
@@ -80,9 +82,9 @@ pub(super) fn fit_at(
     }
 }
 
-/// What a network's lines leave of the shape (as the deep band in one region with glassware's
-/// grid): the region's pixels no line touches, as a fill in their own colour over the lines,
-/// traced and refitted in place; `None` where the lines cover the region.
+/// What a network's lines leave of the shape: the region's pixels no line touches, as a fill
+/// in their own colour over the lines, traced and refitted in place; `None` where the lines
+/// cover the region.
 pub(super) fn thick_remainder(
     ctx: &Context,
     hierarchy: &Hierarchy,
@@ -91,16 +93,8 @@ pub(super) fn thick_remainder(
     lines: &[Shape],
 ) -> Option<Shape> {
     let (mask, w, h, top_left) = mask_of(shape, Some(hierarchy));
-    let rasters: Vec<&Raster> = lines.iter().map(|l| l.raster()).collect();
-    let touched = |x: usize, y: usize| {
-        rasters.iter().any(|r| {
-            x >= r.x0
-                && y >= r.y0
-                && x < r.x0 + r.w
-                && y < r.y0 + r.h
-                && r.values[(y - r.y0) * r.w + x - r.x0] > 0.
-        })
-    };
+    let rasters: Vec<&Raster> = lines.iter().map(Shape::raster).collect();
+    let touched = |i: usize| rasters.iter().any(|r| r.at(i, ctx.width) > 0.);
     let left = |i: usize| -> bool {
         let (x, y) = (i % ctx.width, i / ctx.width);
         let (bx, by) = (
@@ -112,7 +106,7 @@ pub(super) fn thick_remainder(
             && (bx as usize) < w
             && (by as usize) < h
             && mask[by as usize * w + bx as usize]
-            && !touched(x, y)
+            && !touched(i)
     };
     let min = top_left;
     let max = top_left + IVec2::new(w as i32 - 2, h as i32 - 2);
@@ -128,7 +122,7 @@ pub(super) fn thick_remainder(
         })
         .filter(|&i| left(i))
         .map(|i| (i, 1.));
-    let fill = fill_over(ctx, place, pixels, shape.fill);
+    let fill = fill_over(ctx, place, pixels, &shape.fill);
     let mut remainder = Shape {
         smooth: shape.smooth,
         antialiased: shape.antialiased,
@@ -142,9 +136,9 @@ pub(super) fn thick_remainder(
 
 /// The colour of one line of a network, read from the image over the pixels the proposed
 /// stroke covers (see [`fill_over`]), since the lines of one region need not share its mean.
-pub(super) fn line_fill(ctx: &Context, place: &Place, stroke: &Stroke, fill: Fill) -> Fill {
+pub(super) fn line_fill(ctx: &Context, place: &Place, stroke: &Stroke, fill: &Fill) -> Fill {
     let read = |s: &Stroke| {
-        let drawn = s.shape(fill);
+        let drawn = s.shape(*fill);
         let raster = drawn.raster();
         let pixels = (raster.y0..(raster.y0 + raster.h).min(ctx.height)).flat_map(|y| {
             (raster.x0..(raster.x0 + raster.w).min(ctx.width)).map(move |x| {
@@ -158,8 +152,7 @@ pub(super) fn line_fill(ctx: &Context, place: &Place, stroke: &Stroke, fill: Fil
     };
     let whole = read(stroke);
     // Also read on the core, an anti-aliasing scale in from either side, which a proposal too
-    // wide keeps on its line (wingchair's coils, pale over their rims) and one off it does not
-    // (trellis' vine): the reading that screens better is kept
+    // wide keeps on its line and one off it does not: the reading that screens better is kept
     let core = Stroke {
         width: stroke.width - 2. * crate::edges::SIGMA as f32,
         ..stroke.clone()
@@ -192,10 +185,10 @@ pub(super) fn fill_over(
     ctx: &Context,
     place: &Place,
     pixels: impl Iterator<Item = (usize, f32)>,
-    fill: Fill,
+    fill: &Fill,
 ) -> Fill {
     if fill.gradient.is_some() {
-        return fill;
+        return *fill;
     }
     let (mut whole, mut half) = ((Vec3::ZERO, 0usize), (Vec3::ZERO, 0usize));
     for (i, c) in pixels {
@@ -220,17 +213,17 @@ pub(super) fn fill_over(
     }
     let (sum, n) = if whole.1 > 0 { whole } else { half };
     if n == 0 {
-        return fill;
+        return *fill;
     }
     Fill {
         color: sum / n as f32,
-        ..fill
+        ..*fill
     }
 }
 
 /// One proposed stroke fitted against `cost`, with its error: each cap fitted, the join picked
 /// on the fitted geometry, and the centerline simplified while that pays.
-pub(super) fn fit_proposal(
+pub(super) async fn fit_proposal(
     ctx: &Context,
     cost: &CoverageCost,
     origin: Vec2,
@@ -239,8 +232,6 @@ pub(super) fn fit_proposal(
     let Proposal {
         stroke: proposal,
         spec,
-        ends_at_extent,
-        from_pairs,
     } = proposal;
     // Each kind of cap is fitted, since the ends move with it; the join is chosen on
     // the fitted geometry, where the kinds differ only at the corners
@@ -249,31 +240,28 @@ pub(super) fn fit_proposal(
     } else {
         vec![Cap::Butt, Cap::Round, Cap::Square]
     };
-    // The end moves by what the cap reaches beyond it, from the band's extent, or out to a
-    // butt end from where the skeleton stopped
+    // The ends sit where the band's sides stop running parallel: a square cap, whose sides
+    // run on, pulls each in by half a width
     let half = proposal.width / 2.;
     let moves = |cap: Cap| {
-        let by = |at_extent: bool| match (cap, at_extent, proposal.closed) {
-            (_, _, true) => 0.,
-            (Cap::Square, _, _) if from_pairs => -half,
-            (_, _, _) if from_pairs => 0.,
-            (Cap::Butt, false, _) => half,
-            (Cap::Butt, true, _) => 0.,
-            (_, true, _) => -half,
-            (_, false, _) => 0.,
-        };
-        (by(ends_at_extent[0]), by(ends_at_extent[1]))
+        if cap == Cap::Square && !proposal.closed {
+            (-half, -half)
+        } else {
+            (0., 0.)
+        }
     };
     let candidates: Vec<(Stroke, f32)> = caps
         .iter()
         .filter_map(|&cap| {
             let (a, b) = moves(cap);
-            let mut candidate = extended(&proposal, a, b);
+            let mut candidate = proposal.clone();
+            candidate.extend_ends(a, b);
             candidate.cap = cap;
             (!candidate.outline().is_empty()).then_some((candidate, 1.))
         })
         .collect();
-    let (mut error, mut stroke) = fit_screened(cost, origin, candidates, |e, _| e as f64)?;
+    let (mut error, mut stroke) = fit_screened(cost, origin, candidates, |e, _| e as f64).await?;
+    crate::progress::poll().await;
     let cap_moves = moves(stroke.cap);
     if stroke.corners.iter().any(|&c| c) {
         for join in [Join::Round, Join::Bevel] {
@@ -298,6 +286,7 @@ pub(super) fn fit_proposal(
     // narrow: a fresh fit of the crossings, and the current centerline simplified and polished
     let total = |e: f32, segments: usize| e as f64 + segments as f64 * ctx.segment_cost;
     for tolerance in SIMPLIFY_TOLERANCES {
+        crate::progress::poll().await;
         let mut candidates: Vec<Stroke> = Vec::new();
         if let Some((centerline, corners)) = spec.build(tolerance) {
             let mut candidate = Stroke {
@@ -306,7 +295,7 @@ pub(super) fn fit_proposal(
                 ..stroke.clone()
             };
             if !candidate.closed {
-                candidate = extended(&candidate, cap_moves.0, cap_moves.1);
+                candidate.extend_ends(cap_moves.0, cap_moves.1);
             }
             candidates.push(candidate);
         }
@@ -342,7 +331,7 @@ pub(super) fn fit_proposal(
             continue;
         }
         // none fitting ends the simplification, as a simpler one fitting worse does
-        let Some((e, simpler)) = fit_screened(cost, origin, candidates, rank) else {
+        let Some((e, simpler)) = fit_screened(cost, origin, candidates, rank).await else {
             break;
         };
         if total(e, simpler.centerline.len()) < total(error, stroke.centerline.len()) {

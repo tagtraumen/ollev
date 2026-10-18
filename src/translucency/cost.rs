@@ -51,16 +51,10 @@ impl LayerTerms {
 /// fit at the candidate's `k` and `m` ([`super::inner::fit_fixed`]), then [`super::rank::contact`]
 /// within [`super::rank::reach`]. The ranking's cue for a real layer, here a gate on the terms.
 pub fn meeting(ctx: &Context, candidate: &super::Candidate) -> usize {
-    use super::raster::{DVec3, Image};
-    let img = Image::from_target(&ctx.target, ctx.width);
+    let img = super::raster::Image::from_target(&ctx.target, ctx.width);
     let rim = super::materials::rim_of(&img);
     let inp = super::inner::InnerInputs::new(&img, &candidate.mask, &rim, None);
-    let m = candidate.m;
-    let fit = super::inner::fit_fixed(
-        &inp,
-        candidate.k as f64,
-        DVec3::new(m.x as f64, m.y as f64, m.z as f64),
-    );
+    let fit = super::inner::fit_fixed(&inp, candidate.k as f64, candidate.m.as_dvec3());
     super::rank::contact(&inp, &fit, super::rank::reach(ctx.width)).meeting
 }
 
@@ -68,16 +62,13 @@ pub fn meeting(ctx: &Context, candidate: &super::Candidate) -> usize {
 /// `b` in the unit cube, to the show-through ([`super::beneath::outside_image`]): where the
 /// `1 / k` weights hold, as elsewhere the pixel is not under the layer and its error is raw.
 pub fn seen_through(ctx: &Context, candidate: &super::Candidate) -> Vec<bool> {
-    use super::raster::DVec3;
-    let (k, m) = (candidate.k as f64, candidate.m);
-    let m = DVec3::new(m.x as f64, m.y as f64, m.z as f64);
+    let (k, m) = (candidate.k as f64, candidate.m.as_dvec3());
     candidate
         .mask
         .iter()
         .zip(ctx.target.iter())
         .map(|(&inside, c)| {
-            let c = DVec3::new(c.x as f64, c.y as f64, c.z as f64);
-            inside && super::beneath::outside_image(c, k, m) <= SHOW_THROUGH as f64
+            inside && super::beneath::outside_image(c.as_dvec3(), k, m) <= SHOW_THROUGH as f64
         })
         .collect()
 }

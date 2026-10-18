@@ -192,7 +192,7 @@ impl Stats {
             xy - n * pc.x * pc.y,
             yy - n * pc.y * pc.y,
         );
-        let (s_r, s_r2, _) = self.radial_sums(pc);
+        let (s_r, s_r2, s_cr) = self.radial_sums(pc);
         // Sums of x' r'^2 and y' r'^2: the radial sums about pc, moved
         let [rx, ry, _] = self.radial_moments;
         // The sum of (p_a - pc_a) |p - pc|^2 along axis a, expanded: sum p_a r^2
@@ -208,7 +208,6 @@ impl Stats {
             [0., sxy, syy, syr],
             [s_r, sxr, syr, s_r2],
         ];
-        let (_, _, s_cr) = self.radial_sums(pc);
         let tx = self.color_positions[0] - self.sum * pc.x;
         let ty = self.color_positions[1] - self.sum * pc.y;
         let rhs = [self.sum, tx, ty, s_cr];

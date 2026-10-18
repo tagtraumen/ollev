@@ -1,6 +1,6 @@
-//! Linework for the target edges no shape of a traced scene draws (the contour between two
-//! thighs on skin): a ridge becomes a stroke along its centreline, a step a cut that splits
-//! the shape spanning it, each kept when its gain, edges weighted, exceeds its price.
+//! Linework for the target edges no shape of a traced scene draws: a ridge becomes a stroke
+//! along its centreline, a step a cut that splits the shape spanning it, each kept when its
+//! gain, edges weighted, exceeds its price.
 
 use glam::{DMat3, DMat4, DVec2, DVec3, DVec4};
 
@@ -12,7 +12,7 @@ use crate::translucency::lines::{
 use crate::translucency::raster::{
     Conn, Image, NOISE, di_zenzo, dilate, label, length_px, map1, skeletonize, unit_of,
 };
-use crate::translucency::vocabulary::{colour_lines_at, flatten, outline};
+use crate::translucency::vocabulary::{Keep, Mark, MarkKind, colour_lines_at, flatten, outline};
 
 mod chains;
 mod closing;
@@ -20,24 +20,24 @@ mod cuts;
 mod paint;
 mod planner;
 
-pub use chains::*;
+use chains::*;
 use closing::*;
 use cuts::*;
-pub use paint::*;
+use paint::*;
 pub use planner::*;
 
 /// The price of a segment and a path in squared RGB error (`Context::segment_cost` and
 /// `path_cost`), the edge term's weight `lambda` (0 for the plain error).
 #[derive(Clone, Copy, Debug)]
-pub struct Options {
-    pub segment_cost: f64,
-    pub path_cost: f64,
-    pub edge: f64,
+struct Options {
+    segment_cost: f64,
+    path_cost: f64,
+    edge: f64,
 }
 
 /// A cut's fill: flat, or linear along `from` to `to` (user space) between two colours.
 #[derive(Clone, Copy, Debug)]
-pub enum CutFill {
+enum CutFill {
     Flat(DVec3),
     Linear {
         from: DVec2,
@@ -48,7 +48,7 @@ pub enum CutFill {
 }
 
 impl CutFill {
-    pub fn at(&self, p: DVec2) -> DVec3 {
+    fn at(&self, p: DVec2) -> DVec3 {
         match *self {
             CutFill::Flat(c) => c,
             CutFill::Linear { from, to, c0, c1 } => {
@@ -63,13 +63,13 @@ impl CutFill {
 /// The target's edges the render does not reproduce within the anti-aliasing reach: lines
 /// with no render line near, steps (off the lines' flanks) with no render edge of either
 /// kind near; and every edge of either image, which bounds a cut.
-pub struct Missing {
-    pub lines: Vec<bool>,
-    pub steps: Vec<bool>,
-    pub barrier: Vec<bool>,
+struct Missing {
+    lines: Vec<bool>,
+    steps: Vec<bool>,
+    barrier: Vec<bool>,
 }
 
-pub fn missing(target: &Image, render: &Image) -> Missing {
+fn missing(target: &Image, render: &Image) -> Missing {
     let (w, h) = (target.width, target.height);
     let u = unit_of(w);
     let t_step = edges_of(target, SIGMA);
@@ -93,15 +93,18 @@ pub fn missing(target: &Image, render: &Image) -> Missing {
     }
 }
 
+/// The candidate chosen in a group: its index, choice and the variant of the scene it goes with.
+type Chosen = Option<(usize, Choice, Variant)>;
+
 /// Strokes and cuts for the target edges the scene does not draw, each tried at its
 /// [`positions`] under the objective (edge term at `lambda`, discounted) and kept by `keep`,
 /// best net first, refitted on what was taken.
-pub fn into_scene(
+pub async fn into_scene(
     ctx: &crate::Context,
     scene: &mut crate::Scene,
     field: &EdgeField,
     lambda: f64,
-    keep: crate::translucency::vocabulary::Keep,
+    keep: Keep,
 ) -> Planned {
     let (w, h) = (ctx.width, ctx.height);
     let target = Image::from_target(&ctx.target, w);
@@ -137,13 +140,11 @@ pub fn into_scene(
     // the followed lines are candidates beside the detected ones, not in their place (a row
     // of stitches is followed through its gaps into one solid line); only the chains the
     // following changed
-    let seen: crate::HashSet<(i64, i64, i64)> = chains
-        .iter()
-        .map(|c| (c.p[0].x as i64, c.p[0].y as i64, (c.length * 4.0) as i64))
-        .collect();
+    let key = |c: &Chain| (c.p[0].x as i64, c.p[0].y as i64, (c.length * 4.0) as i64);
+    let seen: crate::HashSet<(i64, i64, i64)> = chains.iter().map(key).collect();
     let followed_chains: Vec<Chain> = chains_of(&target, &followed, true)
         .into_iter()
-        .filter(|c| !seen.contains(&(c.p[0].x as i64, c.p[0].y as i64, (c.length * 4.0) as i64)))
+        .filter(|c| !seen.contains(&key(c)))
         .collect();
     let followed_lines = linked(&followed_chains);
     let opt = Options {
@@ -155,26 +156,12 @@ pub fn into_scene(
     // dashes, its members together or alone) compete with each other, the best taken first
     // and the rest refitted with it drawn
     let mut groups: Vec<Vec<Candidate>> = Vec::new();
-    for l in lines.iter().filter(|l| l.ridge) {
-        if crate::progress::poll() {
-            break;
-        }
-        let g: Vec<Candidate> = stroke_candidates(&target, &comp, field, &weak, &opt, &chains, l)
-            .into_iter()
-            .map(Candidate::Stroke)
-            .collect();
-        groups.push(g);
-    }
-    for l in &followed_lines {
-        if crate::progress::poll() {
-            break;
-        }
-        let g: Vec<Candidate> =
-            stroke_candidates(&target, &comp, field, &weak, &opt, &followed_chains, l)
-                .into_iter()
-                .map(Candidate::Stroke)
-                .collect();
-        groups.push(g);
+    let ridges = (lines.iter().filter(|l| l.ridge).map(|l| (&chains, l)))
+        .chain(followed_lines.iter().map(|l| (&followed_chains, l)));
+    for (pool, l) in ridges {
+        crate::progress::poll().await;
+        let g = stroke_candidates(&target, &comp, field, &weak, &opt, pool, l);
+        groups.push(g.into_iter().map(Candidate::Stroke).collect());
     }
     let cuts: Vec<&Linked> = lines.iter().filter(|l| !l.ridge).collect();
     if !cuts.is_empty() {
@@ -190,7 +177,8 @@ pub fn into_scene(
             &cuts,
             &mut a,
             &mut closed,
-        );
+        )
+        .await;
         groups.extend(found.into_iter().map(|c| vec![Candidate::Cut(c)]));
         out.closed = closed;
     }
@@ -217,30 +205,30 @@ pub fn into_scene(
     // the areas a line's cut takes ([`line_cuts`]), made on the first that asks
     let mut line_areas: Option<Areas> = None;
     // each area's cut, fitted once: many lines bound the same area
-    let mut fitted_cuts: crate::HashMap<u32, Option<CutFit>> = Default::default();
-    for mut g in groups {
-        if crate::progress::poll() {
-            break;
+    let mut fitted_cuts: crate::HashMap<u32, Option<CutFit>> = crate::HashMap::default();
+    // a choice taken where kept and better than the chosen; the choice back otherwise
+    let offer = |chosen: &mut Chosen, i: usize, ch: Choice, v: Variant| {
+        if ch.kept(keep, ctx.segment_cost) && chosen.as_ref().is_none_or(|b| ch.net > b.1.net) {
+            *chosen = Some((i, ch, v));
+            return None;
         }
+        Some(ch)
+    };
+    for mut g in groups {
+        crate::progress::poll().await;
         loop {
-            // (index, choice, the variant of the scene it goes with)
-            let mut chosen: Option<(usize, Choice, Variant)> = None;
+            let mut chosen: Chosen = None;
             let mut seen: Option<(usize, Choice)> = None;
             for (i, c) in g.iter().enumerate() {
                 let choice = match c {
                     Candidate::Stroke(f) => {
-                        try_stroke(ctx, scene, &target, field, lambda, f, Variant::Same)
+                        try_stroke(ctx, scene, &target, field, lambda, f, &Variant::Same)
                     }
                     Candidate::Cut(cf) => try_cut(ctx, scene, &target, field, lambda, cf),
                 };
-                let Some(ch) = choice else {
-                    continue;
-                };
-                if ch.kept(keep, ctx.segment_cost)
-                    && chosen.as_ref().is_none_or(|b| ch.net > b.1.net)
+                if let Some(ch) = choice.and_then(|ch| offer(&mut chosen, i, ch, Variant::Same))
+                    && seen.as_ref().is_none_or(|b| ch.net > b.1.net)
                 {
-                    chosen = Some((i, ch, Variant::Same));
-                } else if seen.as_ref().is_none_or(|b| ch.net > b.1.net) {
                     seen = Some((i, ch));
                 }
             }
@@ -259,9 +247,8 @@ pub fn into_scene(
                     (_, Some((j, ch))) if *j == i => Some(ch),
                     _ => None,
                 };
-                let window = window_of(&alone.map_or_else(Vec::new, |a| a.shapes.clone()), w, h);
-                let window = if alone.is_some() {
-                    window
+                let window = if let Some(a) = alone {
+                    window_of(&a.shapes, w, h)
                 } else {
                     let win = Win::around(&f.flat, f.width / 2.0 + 2.0, w, h);
                     crate::Window {
@@ -276,11 +263,7 @@ pub fn into_scene(
                     .filter_map(|k| joint_move(ctx, scene, &target, field, lambda, f, alone, k))
                     .collect();
                 for (ch, v) in joints {
-                    if ch.kept(keep, ctx.segment_cost)
-                        && chosen.as_ref().is_none_or(|b| ch.net > b.1.net)
-                    {
-                        chosen = Some((i, ch, v));
-                    }
+                    offer(&mut chosen, i, ch, v);
                 }
             }
             // the line's best form over a cut along it, the cut on either side ([`line_cuts`])
@@ -293,16 +276,16 @@ pub fn into_scene(
                     }
                 }
                 (Some((i, ch, Variant::Same)), None) => Some((*i, ch)),
-                (Some(_), Some((j, s))) | (None, Some((j, s))) => Some((*j, s)),
+                (_, Some((j, s))) => Some((*j, s)),
                 _ => None,
             };
             let mut cuts: Vec<(usize, Choice)> = Vec::new();
             if let Some((i, line)) = line
                 && let Candidate::Stroke(f) = &g[i]
-                && line.kind == crate::translucency::vocabulary::MarkKind::Line
+                && line.kind == MarkKind::Line
             {
                 let a = line_areas.get_or_insert_with(|| areas(&miss.barrier, w, h));
-                for ch in line_cuts(
+                let found = line_cuts(
                     ctx,
                     scene,
                     &target,
@@ -313,25 +296,18 @@ pub fn into_scene(
                     line,
                     a,
                     &mut fitted_cuts,
-                ) {
-                    cuts.push((i, ch));
-                }
+                );
+                cuts.extend(found.into_iter().map(|ch| (i, ch)));
             }
-            {
-                for (i, ch) in cuts {
-                    if ch.kept(keep, ctx.segment_cost)
-                        && chosen.as_ref().is_none_or(|b| ch.net > b.1.net)
-                    {
-                        chosen = Some((i, ch, Variant::Same));
-                    }
-                }
+            for (i, ch) in cuts {
+                offer(&mut chosen, i, ch, Variant::Same);
             }
             let Some((i, ch, v)) = chosen else {
                 break;
             };
             match ch.kind {
-                crate::translucency::vocabulary::MarkKind::Cut => out.cuts += 1,
-                _ => out.strokes += 1,
+                MarkKind::Cut => out.cuts += 1,
+                MarkKind::Line => out.strokes += 1,
             }
             let mut position = ch.position;
             match v {
@@ -378,17 +354,14 @@ mod tests {
         ];
         vec![
             (0..4)
-                .map(|k| {
-                    let (a, b) = (c[k], c[(k + 1) % 4]);
-                    [a, a.lerp(b, 1. / 3.), a.lerp(b, 2. / 3.), b]
-                })
+                .map(|k| crate::stroke::line(c[k], c[(k + 1) % 4]))
                 .collect(),
         ]
     }
 
     /// The planner's pass over a scene of one skin-coloured background, for the dark line
-    /// on skin it lacks (the thighs' contour): one stroke goes into the stack, kept by the
-    /// plan's keep rule, and the render shows the line.
+    /// on skin it lacks: one stroke goes into the stack, kept by the plan's keep rule, and the
+    /// render shows the line.
     #[test]
     fn the_planner_draws_a_missing_line_into_the_stack() {
         let (w, h) = (330, 40);
@@ -406,7 +379,13 @@ mod tests {
         let ctx = crate::Context::new(&rgb8(&px), w, h, 1.0);
         let mut scene = crate::Scene::with_background(w, h, skin.as_vec3());
         let field = EdgeField::of_target(&ctx.target, w, h);
-        let out = into_scene(&ctx, &mut scene, &field, 1.0, crate::plan::keep_mark);
+        let out = crate::progress::finish(into_scene(
+            &ctx,
+            &mut scene,
+            &field,
+            1.0,
+            crate::plan::keep_mark,
+        ));
         assert_eq!(out.strokes, 1, "{out:?}");
         assert_eq!(scene.shapes.len(), 2);
         assert!(scene.shapes[1].stroke.is_some());
@@ -419,8 +398,8 @@ mod tests {
     }
 
     /// A band of the line's darkness spread wide, the trace's stand-in for a thin dark line
-    /// on skin (the thighs' crotch wedge): the line does not pay over it, and with the band
-    /// left out or refitted it does; the joint move is taken.
+    /// on skin: the line does not pay over it, and with the band left out or refitted it does;
+    /// the joint move is taken.
     #[test]
     fn a_shape_that_stood_in_for_a_line_goes() {
         let (w, h) = (330, 40);
@@ -444,7 +423,13 @@ mod tests {
             band.as_vec3(),
         ));
         let field = EdgeField::of_target(&ctx.target, w, h);
-        let out = into_scene(&ctx, &mut scene, &field, 1.0, crate::plan::keep_mark);
+        let out = crate::progress::finish(into_scene(
+            &ctx,
+            &mut scene,
+            &field,
+            1.0,
+            crate::plan::keep_mark,
+        ));
         assert_eq!(out.strokes, 1, "{out:?}");
         assert_eq!(out.dropped + out.refitted, 1, "{out:?}");
         let r = scene.render(crate::Window::full(w, h), 0..scene.shapes.len(), [1.0; 3]);
@@ -455,8 +440,7 @@ mod tests {
     }
 
     /// A line seen through a translucent layer over half its length goes below the layer:
-    /// drawn on top it could match only one half's colour (the thighs' contour under the
-    /// skirt).
+    /// drawn on top it could match only one half's colour.
     #[test]
     fn a_line_under_a_layer_goes_below_it() {
         let (w, h) = (330, 40);
@@ -490,7 +474,13 @@ mod tests {
         );
         scene.push(layer);
         let field = EdgeField::of_target(&ctx.target, w, h);
-        let out = into_scene(&ctx, &mut scene, &field, 1.0, crate::plan::keep_mark);
+        let out = crate::progress::finish(into_scene(
+            &ctx,
+            &mut scene,
+            &field,
+            1.0,
+            crate::plan::keep_mark,
+        ));
         assert!(out.strokes >= 1, "{out:?}");
         assert!(out.below >= 1, "{out:?}");
         assert!(

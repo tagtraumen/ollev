@@ -61,22 +61,8 @@ pub fn felzenszwalb(img: &Image, scale: f64, sigma: f64, min_size: usize) -> Vec
         .collect();
     keyed.sort_unstable();
     let order: Vec<u32> = keyed.into_iter().map(|(_, e)| e).collect();
-
     // a union-find forest whose root is always the smallest pixel of its tree
     let mut forest: Vec<u32> = (0..n as u32).collect();
-    fn find(forest: &mut [u32], n: u32) -> u32 {
-        let mut root = n;
-        while forest[root as usize] < root {
-            root = forest[root as usize];
-        }
-        let mut m = n;
-        while forest[m as usize] < m {
-            let j = forest[m as usize];
-            forest[m as usize] = root;
-            m = j;
-        }
-        root
-    }
     let mut size = vec![1usize; n];
     let mut cint = vec![0.0f64; n];
     for &e in &order {
@@ -122,6 +108,22 @@ pub fn felzenszwalb(img: &Image, scale: f64, sigma: f64, min_size: usize) -> Vec
         .collect()
 }
 
+/// The root of `n` in a union-find forest whose root is the smallest of its tree, the path
+/// compressed.
+fn find(forest: &mut [u32], n: u32) -> u32 {
+    let mut root = n;
+    while forest[root as usize] < root {
+        root = forest[root as usize];
+    }
+    let mut m = n;
+    while forest[m as usize] < m {
+        let j = forest[m as usize];
+        forest[m as usize] = root;
+        m = j;
+    }
+    root
+}
+
 /// A color plane `a + G (x, y)`: per channel the constant and its slopes in x and y.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct Plane {
@@ -130,6 +132,14 @@ struct Plane {
 }
 
 impl Plane {
+    /// The flat plane of color `a`.
+    fn flat(a: [f64; 3]) -> Self {
+        Plane {
+            a,
+            g: [[0.0; 2]; 3],
+        }
+    }
+
     /// The largest channel difference of `col` from the plane at (x, y).
     fn off(&self, x: f64, y: f64, col: [f64; 3]) -> f64 {
         let mut d: f64 = 0.0;
@@ -146,14 +156,14 @@ impl Plane {
 
 /// numpy's `det` of a 2 x 2 matrix: LAPACK's LU with partial pivoting, the determinant
 /// from the factored diagonal as `sign * exp(sum of log |u|)` (numpy's slogdet route).
-/// Also returns the factors for [`solve2`].
-fn lu2(m: [[f64; 2]; 2]) -> ([[f64; 2]; 2], bool, f64, f64) {
+/// Also returns the factors and the row swap for [`solve2`].
+fn lu2(m: [[f64; 2]; 2]) -> ([[f64; 2]; 2], bool, f64) {
     let swap = m[1][0].abs() > m[0][0].abs();
     let (r0, r1) = if swap { (m[1], m[0]) } else { (m[0], m[1]) };
-    let l = if r0[0] != 0.0 {
-        r1[0] * (1.0 / r0[0])
-    } else {
+    let l = if r0[0] == 0.0 {
         0.0
+    } else {
+        r1[0] * (1.0 / r0[0])
     };
     let u11 = r1[1] - l * r0[1];
     let lu = [[r0[0], r0[1]], [l, u11]];
@@ -170,7 +180,7 @@ fn lu2(m: [[f64; 2]; 2]) -> ([[f64; 2]; 2], bool, f64, f64) {
         }
         sign * logdet.exp()
     };
-    (lu, swap, det, l)
+    (lu, swap, det)
 }
 
 /// numpy's `solve` of a 2 x 2 system for one right-hand side, from [`lu2`]'s factors.
@@ -186,14 +196,12 @@ fn solve2(lu: &[[f64; 2]; 2], swap: bool, b: [f64; 2]) -> [f64; 2] {
 /// equations on centered coordinates (no slope across collinear pixels), and the 95th
 /// percentile of the largest channel residual.
 fn plane_fit(pts: &[(f64, f64)], cols: &[[f64; 3]], w: Option<&[f64]>) -> (Plane, f64) {
-    let ones;
-    let w = match w {
-        Some(w) => w,
-        None => {
-            ones = vec![1.0; pts.len()];
-            &ones
-        }
+    let ones = if w.is_some() {
+        Vec::new()
+    } else {
+        vec![1.0; pts.len()]
     };
+    let w = w.unwrap_or(&ones);
     let wsum = np_sum(w);
     let (mut mx, mut my) = (0.0, 0.0);
     for (p, wi) in pts.iter().zip(w) {
@@ -207,7 +215,7 @@ fn plane_fit(pts: &[(f64, f64)], cols: &[[f64; 3]], w: Option<&[f64]>) -> (Plane
             cm[ch] += wi * c[ch];
         }
     }
-    for v in cm.iter_mut() {
+    for v in &mut cm {
         *v /= wsum;
     }
     let mut s = [[0.0f64; 2]; 2];
@@ -224,13 +232,12 @@ fn plane_fit(pts: &[(f64, f64)], cols: &[[f64; 3]], w: Option<&[f64]>) -> (Plane
             }
         }
     }
-    let (lu, swap, det, _) = lu2(s);
+    let (lu, swap, det) = lu2(s);
     let tr = s[0][0] + s[1][1];
     let mut g = [[0.0f64; 2]; 3];
     if det.abs() >= 1e-9 * tr.max(1.0).powi(2) {
         for ch in 0..3 {
-            let x = solve2(&lu, swap, [rhs[0][ch], rhs[1][ch]]);
-            g[ch] = x;
+            g[ch] = solve2(&lu, swap, [rhs[0][ch], rhs[1][ch]]);
         }
     }
     let mut a = [0.0; 3];
@@ -265,7 +272,7 @@ struct Region {
 /// The tolerance the equation regions merge to: 3 levels.
 pub const EQ_TOL: f64 = 3.0 * NOISE;
 /// The tests are percentiles, so a strided sample of a large region decides them as well
-/// (so a large sky is not tested whole against each neighbor).
+/// (so a large region is not tested whole against each neighbor).
 const EQ_SAMPLE: usize = 4000;
 
 #[derive(Clone, Copy, PartialEq)]
@@ -286,6 +293,9 @@ impl Ord for Ord64 {
 /// predicts the other's sample within `tol` at the 90th percentile and the joint plane's
 /// 95th percentile residual is within it. Returns the surviving Felzenszwalb label plus one.
 pub fn equation_regions(img: &Image, scale: f64, min_size: usize, tol: f64) -> Vec<u32> {
+    // a merge test on the heap: (joint residual, the absorbing region, the
+    // other, how many times each had grown when it was tested), the least first
+    type Test = Reverse<(Ord64, u32, u32, u32, u32)>;
     let (w, h) = (img.width, img.height);
     let lab = felzenszwalb(img, scale, 0.5, min_size);
     let n = lab.iter().max().map_or(0, |&l| l as usize + 1);
@@ -357,16 +367,13 @@ pub fn equation_regions(img: &Image, scale: f64, min_size: usize, tol: f64) -> V
                     a[ch] += c[ch];
                 }
             }
-            for v in a.iter_mut() {
+            for v in &mut a {
                 *v /= cols.len() as f64;
             }
-            Plane {
-                a,
-                g: [[0.0; 2]; 3],
-            }
+            Plane::flat(a)
         }
     };
-    for r in regions.iter_mut() {
+    for r in &mut regions {
         r.plane = fit_all(&r.pixels);
     }
     // the pairs across each horizontal, then each vertical, pixel edge, as (low, high) in
@@ -404,30 +411,18 @@ pub fn equation_regions(img: &Image, scale: f64, min_size: usize, tol: f64) -> V
             mc[ch] = (s[6 + ch] as f64 / nf) / 255.0;
         }
         if n_ < 12 {
-            return (
-                Plane {
-                    a: mc,
-                    g: [[0.0; 2]; 3],
-                },
-                false,
-            );
+            return (Plane::flat(mc), false);
         }
         let cxx = (n_ * sxx - sx * sx) as f64;
         let cxy = (n_ * sxy - sx * sy) as f64;
         let cyy = (n_ * syy - sy * sy) as f64;
         let sm = [[cxx / nf, cxy / nf], [cxy / nf, cyy / nf]];
         let (mean_x, mean_y) = (sx as f64 / nf, sy as f64 / nf);
-        let (lu, swap, det, _) = lu2(sm);
+        let (lu, swap, det) = lu2(sm);
         let tr = sm[0][0] + sm[1][1];
         let ratio = det.abs() / (1e-9 * tr.max(1.0).powi(2));
         if ratio < 1.0 {
-            return (
-                Plane {
-                    a: mc,
-                    g: [[0.0; 2]; 3],
-                },
-                ratio < 0.99,
-            );
+            return (Plane::flat(mc), ratio < 0.99);
         }
         let mut g = [[0.0; 2]; 3];
         for ch in 0..3 {
@@ -442,19 +437,6 @@ pub fn equation_regions(img: &Image, scale: f64, min_size: usize, tol: f64) -> V
         (Plane { a, g }, ratio > 1.01 && tr * tr <= 1e6 * det.abs())
     };
 
-    fn sample_of(r: &mut Region) -> (Vec<u32>, usize) {
-        if let Some((g, s, step)) = &r.sample
-            && *g == r.grown
-        {
-            return (s.clone(), *step);
-        }
-        // every step-th pixel of the pieces as if joined
-        let step = (r.pixels.len() / EQ_SAMPLE).max(1);
-        let s: Vec<u32> = r.pixels.iter().step_by(step).copied().collect();
-        r.sample = Some((r.grown, s.clone(), step));
-        (s, step)
-    }
-
     // whether region i's plane predicts the sample beyond the tolerance at the 90th
     // percentile, asking the fit over its pixels when the sums' plane is within 1e-7 of it
     let outside_tol = |regions: &mut [Region], i: usize, sample: &[u32]| -> bool {
@@ -468,14 +450,8 @@ pub fn equation_regions(img: &Image, scale: f64, min_size: usize, tol: f64) -> V
             .collect();
         let mut pct = percentile(&mut d, 90.0);
         if regions[i].from_sums && (pct - tol).abs() <= 1e-7 {
-            let fit = match regions[i].fitted {
-                Some(f) => f,
-                None => {
-                    let f = fit_all(&regions[i].pixels);
-                    regions[i].fitted = Some(f);
-                    f
-                }
-            };
+            let r = &mut regions[i];
+            let fit = *r.fitted.get_or_insert_with(|| fit_all(&r.pixels));
             let mut d: Vec<f64> = sample
                 .iter()
                 .map(|&p| {
@@ -503,9 +479,6 @@ pub fn equation_regions(img: &Image, scale: f64, min_size: usize, tol: f64) -> V
         (res <= tol).then_some(res)
     };
 
-    // a merge test on the heap: (joint residual, the absorbing region, the
-    // other, how many times each had grown when it was tested), the least first
-    type Test = Reverse<(Ord64, u32, u32, u32, u32)>;
     let mut heap: BinaryHeap<Test> = BinaryHeap::new();
     for &(a, b) in &adj {
         if let Some(r) = mergeable(&mut regions, a as usize, b as usize) {
@@ -579,6 +552,19 @@ pub fn equation_regions(img: &Image, scale: f64, min_size: usize, tol: f64) -> V
     out
 }
 
+/// A region's merge sample and its stride: every step-th pixel, kept while it has not grown.
+fn sample_of(r: &mut Region) -> (Vec<u32>, usize) {
+    if let Some((g, s, step)) = &r.sample
+        && *g == r.grown
+    {
+        return (s.clone(), *step);
+    }
+    let step = (r.pixels.len() / EQ_SAMPLE).max(1);
+    let s: Vec<u32> = r.pixels.iter().step_by(step).copied().collect();
+    r.sample = Some((r.grown, s.clone(), step));
+    (s, step)
+}
+
 /// The equation regions at scale 40, 3 levels, and a least size that is an area of the
 /// drawing (16 px at 330 by the unit squared, so the region count holds across resolutions).
 /// The scale (in levels) and the smoothing stay fixed: the smoothing is against the noise.
@@ -639,7 +625,7 @@ mod tests {
 
     #[test]
     fn determinant_by_the_log_route() {
-        let (_, swap, det, _) = lu2([[1.0, 2.0], [3.0, 4.0]]);
+        let (_, swap, det) = lu2([[1.0, 2.0], [3.0, 4.0]]);
         assert!(swap);
         assert!((det + 2.0).abs() < 1e-14);
     }

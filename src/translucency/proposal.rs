@@ -1,11 +1,11 @@
-//! The dress loop's inputs: the homothety's relation points on the proposal and its largest
-//! components, grouped into colour families before any region is grown (a region per
-//! family, k pinned on it), and the `fresh` ranker of a family's region.
+//! The families' inputs: the proposal (planar regions holding one-side seeds), the homothety's
+//! relation points on it and its largest components, grouped into colour families before any
+//! region is grown (a region per family, k pinned on it), and the `fresh` ranker of a region.
 
 use super::homothety;
 use super::layer::Explained;
 use super::lines::{OneSide, one_side_seeds};
-use super::materials::{Palette, clear_of, min_material_px, outside_palette, region_palettes};
+use super::materials::{Palette, clear_of, min_material_px, outside_palette};
 use super::raster::{ChebTree, Conn, DVec3, Image, SHOW_THROUGH, area_px, cheb, dilate, label};
 use super::segment::equation_regions_default;
 
@@ -19,9 +19,8 @@ pub const COMPONENT_MIN_PX: usize = 30;
 /// A family whose region holds fewer pixels (at 330, by the unit squared) has no region.
 pub const REGION_MIN_PX: usize = 30;
 
-/// What no iteration of the loop changes: the rims, the one-side seeds, the planar regions,
-/// the proposal (the planar regions off the border holding a seed), its components largest
-/// first.
+/// What no family changes: the rims, the one-side seeds, the proposal (the planar regions
+/// off the border holding a seed), its components largest first.
 pub struct FixedInputs {
     pub rim: Vec<bool>,
     pub one_side: OneSide,
@@ -31,9 +30,10 @@ pub struct FixedInputs {
 
 impl FixedInputs {
     /// With `rim` the picture's [`super::materials::rim_of`].
-    pub fn new(img: &Image, rim: Vec<bool>) -> Self {
+    pub async fn new(img: &Image, rim: Vec<bool>) -> Self {
         let (w, h) = (img.width, img.height);
         let one_side = one_side_seeds(img);
+        crate::progress::poll().await;
         // no seed holds a planar region, so the proposal is empty without them
         if !one_side.seeds.iter().any(|s| *s) {
             return FixedInputs {
@@ -109,7 +109,7 @@ pub fn material_points(img: &Image, fixed: &FixedInputs) -> (Vec<Point>, Option<
             .map(|(j, c)| (format!("component{}", j + 1), c)),
     );
     let debug = crate::diagnostics::debug();
-    for (name, r) in regions {
+    for (j, (name, r)) in regions.enumerate() {
         // an empty region has no cluster, so no pair for the gate
         if !r.iter().any(|v| *v) {
             continue;
@@ -131,7 +131,7 @@ pub fn material_points(img: &Image, fixed: &FixedInputs) -> (Vec<Point>, Option<
                 gate.describe()
             );
         }
-        if std::ptr::eq(r, &fixed.proposal) {
+        if j == 0 {
             proposal_outside = Some(po);
         }
         if !gate.passes() {
@@ -192,16 +192,6 @@ pub fn colour_families(points: &[Point]) -> Vec<Family> {
     fams
 }
 
-/// A region's palettes by color.
-pub fn palettes(
-    img: &Image,
-    region: &[bool],
-    rim: &[bool],
-    drop_shared: bool,
-) -> (Palette, Palette) {
-    region_palettes(img, region, rim, drop_shared, None)
-}
-
 /// The share of the region's pixels whose color is no outside material's within the
 /// show-through, the outside taken without the pixels the relation explains and two pixels
 /// clear of the region, as the layer elsewhere (a missed part, a trim) is no open material.
@@ -232,10 +222,11 @@ pub fn fresh(img: &Image, region: &[bool], explained: &Explained, rim: &[bool]) 
         if *r {
             n += 1;
             let key = [p.x.to_bits(), p.y.to_bits(), p.z.to_bits()];
-            hit += *memo
-                .entry(key)
-                .or_insert_with(|| tree.nearest_dist(*p) > SHOW_THROUGH)
-                as usize;
+            hit += usize::from(
+                *memo
+                    .entry(key)
+                    .or_insert_with(|| tree.nearest_dist(*p) > SHOW_THROUGH),
+            );
         }
     }
     hit as f64 / n.max(1) as f64

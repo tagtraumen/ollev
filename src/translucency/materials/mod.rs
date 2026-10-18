@@ -3,12 +3,12 @@
 //! ([`vote_cells`]) and scored exactly ([`Matcher::score`]); a color counts only if moved.
 
 use crate::HashMap;
-use std::cell::OnceCell;
 
 use glam::DVec3;
 
+use super::find_root;
 use super::raster::{
-    ChebTree, Conn, Image, NOISE, SHOW_THROUGH, area_px, cheb, dilate, gradient_magnitude, label,
+    Conn, Image, NOISE, SHOW_THROUGH, area_px, gradient_magnitude, label,
     length_px, np_sum, reduceat_sum, rows_sum, unit_of,
 };
 
@@ -37,7 +37,7 @@ pub const MATCH_TOL: f64 = NOISE + 1.0 / 255.0;
 pub const MIN_MATERIAL_PX: f64 = 16.0;
 /// How many colors a cluster votes with: its colors grouped on a coarse grid, one per cell.
 pub const VOTE_GRID: f64 = 8.0 / 255.0;
-/// The cells of LINK_LEVELS along a channel.
+/// The cells of [`LINK_LEVELS`] along a channel.
 const LINK_CELLS: i64 = 256 / LINK_LEVELS + 1;
 
 /// [`RIM_SLOPE`] at this image's width: at s times the width a drawing's shading ramps s times
@@ -53,7 +53,7 @@ pub fn min_material_px(img: &Image) -> f64 {
 }
 
 /// [`MIN_SEEN`] at this image's width, an area: a mixed rim colour seen once at 330 is seen
-/// four times at 660, and would link two materials into one cluster.
+/// four times at twice the width, and would link two materials into one cluster.
 pub fn min_seen(img: &Image) -> f64 {
     area_px(img.width, MIN_SEEN as f64).round()
 }
@@ -91,16 +91,21 @@ fn color_of(u: i64) -> DVec3 {
 }
 
 /// The distinct values, sorted, and their counts.
-fn unique_counts(mut codes: Vec<i64>) -> (Vec<i64>, Vec<i64>) {
-    codes.sort_unstable();
+fn unique_counts(codes: Vec<i64>) -> (Vec<i64>, Vec<i64>) {
+    summed(codes.into_iter().map(|c| (c, 1)).collect())
+}
+
+/// The distinct values of `(value, count)` entries, sorted, with their counts summed.
+fn summed(mut entries: Vec<(i64, i64)>) -> (Vec<i64>, Vec<i64>) {
+    entries.sort_unstable();
     let mut u: Vec<i64> = Vec::new();
     let mut w: Vec<i64> = Vec::new();
-    for c in codes {
+    for (c, k) in entries {
         if u.last() == Some(&c) {
-            *w.last_mut().unwrap() += 1;
+            *w.last_mut().unwrap() += k;
         } else {
             u.push(c);
-            w.push(1);
+            w.push(k);
         }
     }
     (u, w)
@@ -151,7 +156,7 @@ fn codes_of(img: &Image, sel: &[bool]) -> Vec<i64> {
         .collect()
 }
 
-/// Single linkage of 8-bit colors on a grid: occupied cells of LINK_LEVELS, 26-connected.
+/// Single linkage of 8-bit colors on a grid: occupied cells of [`LINK_LEVELS`], 26-connected.
 /// The component of each color, numbered in the order of each component's first cell.
 fn link_colors(u: &[i64]) -> (Vec<usize>, usize) {
     let cell = |c: i64| {
@@ -164,13 +169,6 @@ fn link_colors(u: &[i64]) -> (Vec<usize>, usize) {
     cells.dedup();
     let index: HashMap<i64, usize> = cells.iter().enumerate().map(|(i, &c)| (c, i)).collect();
     let mut parent: Vec<usize> = (0..cells.len()).collect();
-    fn find(parent: &mut [usize], mut a: usize) -> usize {
-        while parent[a] != a {
-            parent[a] = parent[parent[a]];
-            a = parent[a];
-        }
-        a
-    }
     for (i, &c) in cells.iter().enumerate() {
         let g = [
             c / (LINK_CELLS * LINK_CELLS),
@@ -185,7 +183,7 @@ fn link_colors(u: &[i64]) -> (Vec<usize>, usize) {
                         continue;
                     }
                     if let Some(&j) = index.get(&code(n)) {
-                        let (a, b) = (find(&mut parent, i), find(&mut parent, j));
+                        let (a, b) = (find_root(&mut parent, i), find_root(&mut parent, j));
                         if a != b {
                             parent[a.max(b)] = a.min(b);
                         }
@@ -198,7 +196,7 @@ fn link_colors(u: &[i64]) -> (Vec<usize>, usize) {
     let mut comp = vec![usize::MAX; cells.len()];
     let mut n = 0;
     for i in 0..cells.len() {
-        let r = find(&mut parent, i);
+        let r = find_root(&mut parent, i);
         if comp[r] == usize::MAX {
             comp[r] = n;
             n += 1;
@@ -299,8 +297,8 @@ impl Palette {
     }
 
     /// Clusters by place and color: the mask's pixels off the rims in 4-connected pieces,
-    /// joined where most of the smaller one's colors are the other's, so a sky and pale skin
-    /// that link by color alone stay apart.
+    /// joined where most of the smaller one's colors are the other's, so two places whose
+    /// colors link by color alone stay apart.
     pub fn spatial(img: &Image, mask: &[bool], rim: &[bool], min_px: f64, overlap: f64) -> Self {
         let sel: Vec<bool> = mask.iter().zip(rim).map(|(m, r)| *m && !*r).collect();
         let (lab, n) = label(&sel, img.width, img.height, Conn::Four);
@@ -357,14 +355,10 @@ impl Palette {
             .collect();
         // each piece's entries are a run of the sorted keys
         let mut range = vec![(0usize, 0usize); n];
-        let mut i = 0;
-        while i < piece.len() {
-            let mut j = i;
-            while j < piece.len() && piece[j] == piece[i] {
-                j += 1;
-            }
-            range[piece[i]] = (i, j);
-            i = j;
+        let mut start = 0;
+        for run in piece.chunk_by(|a, b| a == b) {
+            range[run[0]] = (start, start + run.len());
+            start += run.len();
         }
         // per cell the big pieces holding colours in it, with their pixels there: a colour of
         // the smaller piece is the other's only where the other holds it as densely, as a
@@ -394,13 +388,6 @@ impl Palette {
             })
             .collect();
         let mut parent: Vec<usize> = (0..n).collect();
-        fn find(parent: &mut [usize], mut a: usize) -> usize {
-            while parent[a] != a {
-                parent[a] = parent[parent[a]];
-                a = parent[a];
-            }
-            a
-        }
         let mut by_size = big.clone();
         by_size.sort_by(|&a, &b| psize[a].total_cmp(&psize[b]));
         for &p in &by_size {
@@ -440,7 +427,7 @@ impl Palette {
                         .then(b.0.cmp(&a.0))
                 });
             if let Some((q, _)) = best {
-                let (ra, rb) = (find(&mut parent, p), find(&mut parent, q));
+                let (ra, rb) = (find_root(&mut parent, p), find_root(&mut parent, q));
                 if ra != rb {
                     parent[ra] = rb;
                 }
@@ -448,7 +435,7 @@ impl Palette {
         }
         let mut roots: Vec<(usize, Vec<usize>)> = Vec::new();
         for &p in &big {
-            let r = find(&mut parent, p);
+            let r = find_root(&mut parent, p);
             match roots.iter_mut().find(|e| e.0 == r) {
                 Some(e) => e.1.push(p),
                 None => roots.push((r, vec![p])),
@@ -461,17 +448,7 @@ impl Palette {
                 let (a, b) = range[p];
                 acc.extend((a..b).map(|e| (col[e], ck[e])));
             }
-            acc.sort_unstable();
-            let mut u: Vec<i64> = Vec::new();
-            let mut w: Vec<i64> = Vec::new();
-            for (c, k) in acc {
-                if u.last() == Some(&c) {
-                    *w.last_mut().unwrap() += k;
-                } else {
-                    u.push(c);
-                    w.push(k);
-                }
-            }
+            let (u, w) = summed(acc);
             let (u, w): (Vec<i64>, Vec<i64>) = u
                 .into_iter()
                 .zip(w)
@@ -501,23 +478,16 @@ impl Palette {
         let mut o: Vec<usize> = (0..x.len()).collect();
         o.sort_by_key(|&i| code[i]);
         let (mut means, mut ws) = (Vec::new(), Vec::new());
-        let mut i = 0;
-        while i < o.len() {
-            let mut j = i;
-            while j < o.len() && code[o[j]] == code[o[i]] {
-                j += 1;
-            }
-            let seg = &o[i..j];
+        for seg in o.chunk_by(|&a, &b| code[a] == code[b]) {
             let mut s = DVec3::ZERO;
             for c in 0..3 {
                 let v: Vec<f64> = seg.iter().map(|&e| x[e][c] * w[e]).collect();
                 s[c] = reduceat_sum(&v);
             }
             let wv: Vec<f64> = seg.iter().map(|&e| w[e]).collect();
-            let ws_ = reduceat_sum(&wv);
-            means.push(s / ws_);
-            ws.push(ws_);
-            i = j;
+            let total = reduceat_sum(&wv);
+            means.push(s / total);
+            ws.push(total);
         }
         (means, ws)
     }

@@ -2,15 +2,14 @@
 //! below are also a ground in the cells' colour with strokes in the ground's along the gaps.
 //! Both readings are priced as repeats; the cheaper in error plus price is kept.
 
-use crate::tracer::Cubic;
 use crate::tracer::fit::eval;
 use glam::{Vec2, Vec3};
 
-use super::find::{COLOUR_MERGE, eligible};
+use super::find::{COLOUR_MERGE, eligible, signed_area};
 use super::structure::lattice;
-use super::{ALIGN, Repeat, Structure, TRANSLATION_SEGMENTS};
+use super::{ALIGN, Repeat, Structure, TRANSLATION_SEGMENTS, both_cover};
 use crate::refine::MARGIN;
-use crate::stroke::{Cap, Join, MAX_WIDTH, Stroke};
+use crate::stroke::{Cap, Join, MAX_WIDTH, Stroke, line};
 use crate::{Context, Fill, Scene, Shape, Window};
 
 /// Most gaps the ground is sampled at.
@@ -48,10 +47,6 @@ impl Frame {
     }
 }
 
-fn line(a: Vec2, b: Vec2) -> Cubic {
-    [a, a.lerp(b, 1. / 3.), a.lerp(b, 2. / 3.), b]
-}
-
 /// The absolute area the shape's even-odd fill covers, by its flattened loops (holes inside).
 fn area(shape: &Shape) -> f32 {
     let mut areas: Vec<f32> = shape
@@ -62,12 +57,7 @@ fn area(shape: &Shape) -> f32 {
                 .iter()
                 .flat_map(|c| (0..8).map(move |i| eval(c, i as f32 / 8.)))
                 .collect();
-            let n = points.len();
-            ((0..n)
-                .map(|i| points[i].perp_dot(points[(i + 1) % n]))
-                .sum::<f32>()
-                / 2.)
-                .abs()
+            signed_area(&points).abs()
         })
         .collect();
     areas.sort_by(|a, b| b.total_cmp(a));
@@ -182,17 +172,6 @@ impl Cells {
             .filter(|c| c - g / 2. >= from + ALIGN && c + g / 2. <= to - ALIGN)
             .collect()
     }
-}
-
-/// Whether the two shapes both cover more than half of some pixel: one draws over the other
-/// beyond the anti-aliasing at their meeting edges.
-fn draws_over(a: &Shape, b: &Shape, width: usize) -> bool {
-    if a.min.x >= b.max.x || b.min.x >= a.max.x || a.min.y >= b.max.y || b.min.y >= a.max.y {
-        return false;
-    }
-    let (ra, rb) = (a.raster(), b.raster());
-    ra.pixels(width)
-        .any(|(i, v)| v > 0.5 && rb.at(i, width) > 0.5)
 }
 
 /// The strokes along one direction's gaps: centres at `first + k * step` for each `k` of
@@ -480,7 +459,8 @@ fn dual_of(ctx: &Context, scene: &Scene, repeat: &Repeat) -> Option<Scene> {
                 && min.cmpge(extent.0 - ALIGN).all()
                 && max.cmple(extent.1 + ALIGN).all()
                 && !straddles(min, max));
-        if candidate && !kept.iter().any(|k| draws_over(k, s, width)) {
+        // one drawing over the other beyond the anti-aliasing at their meeting edges
+        if candidate && !kept.iter().any(|k| both_cover(k, s, width, 0.5)) {
             gone.push(q);
             price += s.cost_segments();
         } else {

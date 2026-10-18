@@ -1,8 +1,14 @@
 //! Chains of edge points with their ends, split at corners.
 
-use super::*;
+use glam::{DVec2, DVec3};
 
-// ----------------------------------------------------------------------------- chains
+use super::{
+    Bezier, CORNER_REACH, EDGE_WIDTH, FIT_TOL, MIN_CHAIN, SIDE_OFFSET, arc_of, bez_d1, curvature,
+    dot, edge_pixels, fit_cubics, hyp, kink, max_of, smooth_open, trace_chains, unit,
+};
+use crate::translucency::raster::{
+    Image, NOISE, arange, length_px, map1, median, np_sum, skeletonize, unit_of,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -63,7 +69,7 @@ pub fn build_chains(img: &Image) -> Vec<Chain> {
         // subpixel positions: the parabola through the measure at -1, 0, +1 across the line
         // (the gradient for an edge, the ridge strength for a ridge)
         let f = if is_ridge { &em.strength } else { &em.mag };
-        let mut p: Vec<DVec2> = order
+        let p: Vec<DVec2> = order
             .iter()
             .map(|&(y, x)| {
                 let i = y * w + x;
@@ -91,14 +97,9 @@ pub fn build_chains(img: &Image) -> Vec<Chain> {
             .collect();
         // a light smoothing along the chain: the subpixel offsets of neighbors disagree by
         // the interpolation's own error
-        if p.len() >= 3 {
-            let q = p.clone();
-            for i in 1..p.len() - 1 {
-                p[i] = 0.25 * q[i - 1] + 0.5 * q[i] + 0.25 * q[i + 1];
-            }
-        }
+        let p = smooth_open(&p);
         // at least two points whatever the size: a single point has no direction, so no ends
-        // (on a 32 px icon the shortest chain rounds to one pixel)
+        // (on a tiny image the shortest chain rounds to one pixel)
         for piece in split_at_corners(&p, length_px(w, CORNER_REACH as f64)) {
             if piece.len() >= min_chain.max(2) {
                 out.push(make_chain(img, &l, piece, is_ridge));
@@ -129,7 +130,7 @@ pub fn split_at_corners(p: &[DVec2], r: usize) -> Vec<Vec<DVec2>> {
     let t1: Vec<f64> = (0..n).map(|i| turn_at(i, r as f64)).collect();
     let mut cuts: Vec<usize> = Vec::new();
     for i in r..n - r {
-        if t1[i] <= 2.0 * kink() || t1[i] < max_of(&t1[i.saturating_sub(r)..i + r + 1]) {
+        if t1[i] <= 2.0 * kink() || t1[i] < max_of(&t1[i.saturating_sub(r)..=i + r]) {
             continue;
         }
         if cuts.last().is_some_and(|&c| i - c <= r) {

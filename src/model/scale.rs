@@ -7,16 +7,8 @@ use super::{Clip, Fidelity, Item, Model, Object, Paint, Structure};
 
 impl Model {
     /// The model scaled by `s` about the origin onto a frame of `width` by `height`.
+    #[must_use]
     pub fn scaled(&self, s: f64, width: usize, height: usize) -> Model {
-        let object = |o: &Object| Object {
-            geometry: o.geometry.scaled(s),
-            paint: match &o.paint {
-                Paint::Gradient(g) => Paint::Gradient(g.mapped(&[s, 0., 0., s, 0., 0.])),
-                solid => solid.clone(),
-            },
-            blur: o.blur * s,
-            ..o.clone()
-        };
         fn items(list: &[Item], s: f64, object: &dyn Fn(&Object) -> Object) -> Vec<Item> {
             let instance = |i: &super::Instance| super::Instance {
                 transform: {
@@ -55,6 +47,15 @@ impl Model {
                 })
                 .collect()
         }
+        let object = |o: &Object| Object {
+            geometry: o.geometry.scaled(s),
+            paint: match &o.paint {
+                Paint::Gradient(g) => Paint::Gradient(g.mapped(&[s, 0., 0., s, 0., 0.])),
+                Paint::Solid(c) => Paint::Solid(*c),
+            },
+            blur: o.blur * s,
+            ..o.clone()
+        };
         // Each pixel takes the tolerance of the traced pixel it lies in; a segment's price
         // grows with the area its error is summed over
         let (w0, h0) = (self.width, self.height);

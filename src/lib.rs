@@ -5,7 +5,8 @@
 //!
 //! [`trace`] takes an RGBA [`Image`] and [`TraceOptions`] and returns the scene as a
 //! [`model::Model`], lowered to what the host draws ([`Capabilities`]); [`trace_with`] also
-//! reports [`Progress`] and can be cancelled.
+//! reports [`Progress`] and can be cancelled. [`Tracing`] runs a trace in time slices on the
+//! host's thread, each [`Tracing::step`] resuming where the last one ended; no threads.
 //!
 //! Features: `svg` adds the module `emit`, the SVG writer with its verify loop (rendering with
 //! resvg); `diagnostics` adds the developers' logs and dumps (`Diagnostics`, in
@@ -64,6 +65,7 @@ internal!(
     soft,
     stroke,
     timing,
+    tracing,
     tracer,
     translucency,
     uncertainty,
@@ -78,11 +80,12 @@ pub(crate) use context::{Context, Weights, Window};
 pub use diagnostics::Diagnostics;
 /// The vector types of the model, for its callers.
 pub use glam;
-pub use input::{Detail, Image, Pixels, Stages, TraceError, TraceOptions, trace, trace_with};
+pub use input::{Detail, Image, Pixels, Stages, TraceError, TraceOptions};
 pub use lower::Capabilities;
 pub use progress::{Answer, Progress};
 pub use scene::Scene;
 pub(crate) use scene::{Fill, Raster, Shape};
+pub use tracing::{Step, Tracing, trace, trace_with};
 
 /// A hash map with a fixed seed, so the traced output is the same on every run.
 pub(crate) type HashMap<K, V> =

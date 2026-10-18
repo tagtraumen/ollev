@@ -82,9 +82,9 @@ pub(super) fn reversed(stroke: &Stroke) -> (Vec<Cubic>, Vec<bool>) {
 /// length-weighted width and colour with the longer piece's caps and joins, and the bridge
 /// alone as a stroke, for what it covers.
 pub(super) fn joined(
-    a: (&Stroke, Fill),
+    a: (&Stroke, &Fill),
     ea: usize,
-    b: (&Stroke, Fill),
+    b: (&Stroke, &Fill),
     eb: usize,
     bridge: Cubic,
 ) -> ((Stroke, Fill), Shape) {
@@ -147,7 +147,6 @@ pub(super) fn bridge_cost(
     was: Option<(&Place, &Shape)>,
 ) -> (f64, f64) {
     let r = bridge.raster();
-    let shape_raster = was.map(|(_, shape)| shape.raster());
     let (mut line, mut before) = (0f64, 0f64);
     for y in r.y0..(r.y0 + r.h).min(ctx.height) {
         for x in r.x0..(r.x0 + r.w).min(ctx.width) {
@@ -171,13 +170,7 @@ pub(super) fn bridge_cost(
             {
                 continue;
             }
-            let sr = shape_raster.as_ref().expect("the shape's raster");
-            let covered = x >= sr.x0
-                && y >= sr.y0
-                && x < sr.x0 + sr.w
-                && y < sr.y0 + sr.h
-                && sr.values[(y - sr.y0) * sr.w + x - sr.x0] >= 0.5;
-            let shown = if covered {
+            let shown = if shape.raster().at(i, ctx.width) >= 0.5 {
                 shape.fill.at_pixel(x, y)
             } else {
                 place.below[k]
@@ -223,8 +216,8 @@ pub(super) fn continuations(
 }
 
 /// A network's lines joined, best pairs first and repeatedly, where one continues another
-/// across a gap outside the shape and the bridge pays ([`bridge_cost`]), as glassware's grid
-/// lines parted at the former glass. Returns the lines and the bridges.
+/// across a gap outside the shape and the bridge pays ([`bridge_cost`]), as lines parted by
+/// something lying over them. Returns the lines and the bridges.
 pub(super) fn join_lines(
     ctx: &Context,
     place: &Place,
@@ -239,9 +232,9 @@ pub(super) fn join_lines(
         let mut made = false;
         for (i, ea, j, eb, bridge) in candidates {
             let ((stroke, fill), bridge) = joined(
-                (&lines[i].0, lines[i].1),
+                (&lines[i].0, &lines[i].1),
                 ea,
-                (&lines[j].0, lines[j].1),
+                (&lines[j].0, &lines[j].1),
                 eb,
                 bridge,
             );
@@ -264,7 +257,7 @@ pub(super) fn join_lines(
 }
 
 /// Takes out of `scene` the shapes within a bridge's reach that no longer pay once the joined
-/// stroke runs through (as patches of glassware's grid lines). `keep` is the joined stroke's
+/// stroke runs through (the patches the trace made of its gaps). `keep` is the joined stroke's
 /// position, which the removals move; its position after is returned.
 pub(super) fn drop_patches(
     ctx: &Context,
@@ -308,7 +301,7 @@ pub(super) fn drop_patches(
 
 /// Joins the scene's strokes that continue one another across a gap ([`continuation`]),
 /// best pairs first and repeatedly, kept where error plus price falls, and drops what the
-/// joined stroke draws over ([`drop_patches`]), so glassware's cut grid lines become one each.
+/// joined stroke draws over ([`drop_patches`]), so a line cut in pieces becomes one.
 pub fn continue_through(ctx: &Context, scene: &mut Scene) {
     let price = |segments: f64| segments * ctx.segment_cost + ctx.path_cost;
     let mut joins = 0;
@@ -339,9 +332,9 @@ pub fn continue_through(ctx: &Context, scene: &mut Scene) {
             let (pi, pj) = (positions[i], positions[j]);
             let (a, b) = (&scene.shapes[pi], &scene.shapes[pj]);
             let ((stroke, fill), bridge) = joined(
-                (a.stroke.as_ref().expect("a stroke"), a.fill),
+                (a.stroke.as_ref().expect("a stroke"), &a.fill),
                 ea,
-                (b.stroke.as_ref().expect("a stroke"), b.fill),
+                (b.stroke.as_ref().expect("a stroke"), &b.fill),
                 eb,
                 bridge,
             );

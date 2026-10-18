@@ -182,10 +182,8 @@ fn mean_distance(primitive: &Primitive, samples: &[Vec2]) -> f32 {
 /// Coordinate descent on the primitive's parameters with shrinking steps.
 fn optimize(mut primitive: Primitive, samples: &[Vec2], scale: f32) -> Primitive {
     let mut params = primitive.params();
-    let mut steps: Vec<f32> = params
-        .iter()
-        .enumerate()
-        .map(|(i, _)| {
+    let mut steps: Vec<f32> = (0..params.len())
+        .map(|i| {
             if i + 1 == params.len() && !matches!(primitive, Primitive::Circle { .. }) {
                 0.05
             } else {
@@ -211,7 +209,9 @@ fn optimize(mut primitive: Primitive, samples: &[Vec2], scale: f32) -> Primitive
             }
         }
         if !improved {
-            steps.iter_mut().for_each(|s| *s *= 0.5);
+            for s in &mut steps {
+                *s *= 0.5;
+            }
         }
     }
     primitive
@@ -254,8 +254,9 @@ fn snap_angle(angle: f32) -> f32 {
     }
 }
 
-/// The primitive that matches the visible samples closest, if within the tolerance.
-fn fit(samples: &[Vec2], all: &[Vec2], tolerance: f32) -> Option<Primitive> {
+/// The circle, ellipse or (rounded) rectangle that matches `samples`, those of an outline that
+/// show, closest and within `tolerance` pixels on average, sized from `all` its samples.
+pub fn fit_primitive(samples: &[Vec2], all: &[Vec2], tolerance: f32) -> Option<Primitive> {
     let n = all.len() as f32;
     let center = all.iter().sum::<Vec2>() / n;
     let (min, max) = all
@@ -448,10 +449,4 @@ mod tests {
             }
         }
     }
-}
-
-/// The circle, ellipse or (rounded) rectangle that matches `visible`, the samples of an outline
-/// that show, within `tolerance` pixels on average, sized from `all` its samples.
-pub fn fit_primitive(visible: &[Vec2], all: &[Vec2], tolerance: f32) -> Option<Primitive> {
-    fit(visible, all, tolerance)
 }

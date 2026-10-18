@@ -104,7 +104,7 @@ pub fn fit(cost: &CoverageCost, shape: &mut Shape, origin: Vec2, pull: f32) -> f
                 break;
             }
         }
-        let mut flat: Vec<f32> = grad.iter().flatten().flat_map(|d| d.to_array()).collect();
+        let mut flat: Vec<f32> = grad.iter().flatten().flat_map(Vec2::to_array).collect();
         if blurred {
             flat.push(d_sigma);
         }
@@ -315,6 +315,7 @@ impl Place {
     }
 
     /// This place with the shape clipped to the shape with id `clip` instead.
+    #[must_use]
     pub fn clipped(&self, scene: &Scene, clip: Option<usize>) -> Self {
         Self {
             window: self.window,
@@ -393,6 +394,12 @@ impl Place {
         self.grown(ctx, |_| false)
     }
 
+    /// [`Place::free`] at a point: whether the window's pixel holding it is free.
+    pub fn free_at(&self, ctx: &Context) -> impl Fn(Vec2) -> bool + use<> {
+        let (free, window) = (self.free(ctx), self.window);
+        move |p| window.cell(p).is_some_and(|k| free[k])
+    }
+
     /// [`Place::free`] with the pixels the weights count at less than full too: the regions of
     /// shapes drawn later, which cover them. What an outline there shows is no evidence.
     pub fn hidden(&self, ctx: &Context) -> Vec<bool> {
@@ -424,14 +431,7 @@ impl Place {
             .collect();
         for _ in 0..FREE_REACH {
             free = (0..w * h)
-                .map(|k| {
-                    let (x, y) = (k % w, k / w);
-                    free[k]
-                        || (x > 0 && free[k - 1])
-                        || (x + 1 < w && free[k + 1])
-                        || (y > 0 && free[k - w])
-                        || (y + 1 < h && free[k + w])
-                })
+                .map(|k| free[k] || crate::context::neighbours(k, w, h).any(|j| free[j]))
                 .collect();
         }
         free
@@ -453,16 +453,7 @@ pub fn simplify_with(
     let mut error = cost.value(&shape.path(origin));
     // Hidden stretches are bridged, not pruned, so a notch around a neighbor's end is not
     // filled in where the neighbor may fail to cover it
-    let free = place.free(ctx);
-    let window = place.window;
-    let is_free = |p: Vec2| {
-        let (x, y) = (p.x.floor() - window.x as f32, p.y.floor() - window.y as f32);
-        x >= 0.
-            && y >= 0.
-            && (x as usize) < window.width
-            && (y as usize) < window.height
-            && free[y as usize * window.width + x as usize]
-    };
+    let is_free = place.free_at(ctx);
     for &tolerance in tolerances {
         let loops = shape
             .loops
@@ -474,17 +465,7 @@ pub fn simplify_with(
                 crate::tracer::beautify::beautify_chain_at(&pruned, &flags, tolerance)
             })
             .collect();
-        let mut simpler = Shape {
-            clip: shape.clip,
-            id: shape.id,
-            smooth: shape.smooth,
-            antialiased: shape.antialiased,
-            node: shape.node,
-            layer: shape.layer,
-            blur: shape.blur,
-            ..Shape::new(loops, shape.fill)
-        }
-        .with_corners(shape.corners.clone());
+        let mut simpler = shape.successor(loops).with_corners(shape.corners.clone());
         let saved = shape.cost_segments() - simpler.cost_segments();
         if saved <= 0. {
             continue;
@@ -585,11 +566,9 @@ fn chord_length(c: &crate::tracer::Cubic) -> f32 {
 
 /// Fits every shape once more over and under its final neighbors, whose colors may have changed
 /// since its fit; shapes nothing around has changed for are left as they are.
-pub fn settle(ctx: &Context, scene: &mut Scene) {
+pub async fn settle(ctx: &Context, scene: &mut Scene) {
     for k in 1..scene.shapes.len() {
-        if crate::progress::poll() {
-            break;
-        }
+        crate::progress::poll().await;
         let mut shape = scene.shapes[k].clone();
         let window = Window::around(
             shape.paint_min(),

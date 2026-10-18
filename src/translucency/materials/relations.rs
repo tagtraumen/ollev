@@ -1,6 +1,11 @@
 //! Relations proposed by votes and refitted, and the palettes of a region.
 
-use super::*;
+use glam::DVec3;
+
+use super::{
+    Matcher, Palette, argsort_desc, clear_of, min_material_px, sorted_unique, unique_counts,
+};
+use crate::translucency::raster::{ChebTree, Conn, Image, SHOW_THROUGH, dilate};
 
 /// The best cells of m at one k, as (votes, m): votes `m = o - k b` of inside samples against
 /// outside samples, per cell the best inside share per outside material summed; and the
@@ -57,8 +62,8 @@ pub fn vote_cells(mt: &Matcher, k: f64, per_k: usize) -> Vec<(f64, DVec3)> {
         i = j;
     }
     let mut best: Vec<usize> = argsort_desc(&tot).into_iter().take(per_k).collect();
-    // and the cells most of the inside's pixels reach, through any material: the image of
-    // the skin is two thousand pixels under the dress, the trims' flat colors a few dozen
+    // and the cells most of the inside's pixels reach, through any material: a large
+    // material's image holds many pixels where small flat colors hold a few
     let pc = sorted_unique(full.iter().map(|f| f / (nmat * no) * no + f % no).collect());
     let mut u5: Vec<i64> = Vec::new();
     let mut pv: Vec<f64> = Vec::new();
@@ -116,7 +121,7 @@ pub fn shared_colors(img: &Image, mask: &[bool], outside: &Palette) -> Vec<bool>
 
 /// The palette of a region, with `drop_shared` without the colors within the show-through of
 /// an outside material: those are the material seen bare, and would join the inside clusters
-/// into one (as the dress's white highlights do).
+/// into one.
 pub fn inside_palette(
     img: &Image,
     region: &[bool],

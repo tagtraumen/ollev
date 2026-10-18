@@ -1,6 +1,6 @@
 //! What lies over the beneath by geometry alone: the thin objects the linework reads as lines
-//! with other things on their two sides (hair strands over the skin and the sky, a glass's
-//! outlines over the wall's grid). The caller takes the layer's own rims out.
+//! with other things on their two sides (strands or outlines over two different grounds).
+//! The caller takes the layer's own rims out.
 
 use super::raster::{Conn, Image, NOISE, dilate, length_px};
 use super::vocabulary::{DIRS, colour_lines, thin_lines};

@@ -31,7 +31,7 @@ pub fn fit_chain_corners(
 }
 
 /// [`fit_chain_corners`] for a chain of points off the pixel grid.
-pub fn fit_points_corners(
+fn fit_points_corners(
     points: &[Vec2],
     closed: bool,
     params: &FitParams,
@@ -138,11 +138,7 @@ pub fn fit_at_corners(
     }
 
     let mut cubics = Vec::new();
-    let pieces = if closed {
-        corners.len()
-    } else {
-        corners.len() - 1
-    };
+    let pieces = corners.len() - usize::from(!closed);
     for c in 0..pieces {
         let (start, end) = (corners[c], corners[(c + 1) % corners.len()]);
         let len = if end > start {

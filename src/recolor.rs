@@ -5,59 +5,32 @@
 use glam::{Vec2, Vec3};
 
 use crate::hierarchy::Stats;
-use crate::{Context, Scene, Shape};
+use crate::{Context, Raster, Scene, Shape};
 
-/// How much of a pixel a shape covers, over the shape's bounding box.
-struct Coverage {
-    x0: usize,
-    y0: usize,
-    w: usize,
-    h: usize,
-    values: Vec<f32>,
-}
-
-impl Coverage {
-    /// The shape's raster, cropped to the image.
-    fn of(shape: &Shape, width: usize, height: usize) -> Self {
-        let r = shape.raster();
-        let w = (r.x0 + r.w).min(width).saturating_sub(r.x0);
-        let h = (r.y0 + r.h).min(height).saturating_sub(r.y0);
-        Self {
-            x0: r.x0,
-            y0: r.y0,
-            w,
-            h,
-            values: (0..h)
-                .flat_map(|y| r.values[y * r.w..y * r.w + w].iter().copied())
-                .collect(),
-        }
-    }
-
-    /// Image indices and coverage of the pixels in the box.
-    fn pixels(&self, width: usize) -> impl Iterator<Item = (usize, f32)> + '_ {
-        (0..self.h).flat_map(move |y| {
-            (0..self.w).map(move |x| {
-                let i = (self.y0 + y) * width + self.x0 + x;
-                (i, self.values[y * self.w + x])
-            })
-        })
-    }
-
-    fn at(&self, i: usize, width: usize) -> f32 {
-        let (x, y) = (i % width, i / width);
-        if x < self.x0 || y < self.y0 || x >= self.x0 + self.w || y >= self.y0 + self.h {
-            return 0.;
-        }
-        self.values[(y - self.y0) * self.w + x - self.x0]
+/// How much of each pixel a shape covers: its raster cropped to the image.
+fn coverage_of(shape: &Shape, width: usize, height: usize) -> Raster {
+    let r = shape.raster();
+    let w = (r.x0 + r.w).min(width).saturating_sub(r.x0);
+    let h = (r.y0 + r.h).min(height).saturating_sub(r.y0);
+    Raster {
+        x0: r.x0,
+        y0: r.y0,
+        w,
+        h,
+        values: (0..h)
+            .flat_map(|y| r.values[y * r.w..y * r.w + w].iter().copied())
+            .collect(),
     }
 }
 
-pub fn recolor(ctx: &Context, scene: &mut Scene) {
+/// Fills every shape, from the top down, with what the pixels it shows ask for, or removes it
+/// where the shapes below show them about as well for less than it costs.
+pub async fn recolor(ctx: &Context, scene: &mut Scene) {
     let (width, height) = (ctx.width, ctx.height);
     // What each shape covers once clipped, its clip coming before it
-    let mut coverage: Vec<Coverage> = Vec::with_capacity(scene.shapes.len());
+    let mut coverage: Vec<Raster> = Vec::with_capacity(scene.shapes.len());
     for shape in &scene.shapes {
-        let mut own = Coverage::of(shape, width, height);
+        let mut own = coverage_of(shape, width, height);
         if let Some(clip) = shape.clip {
             let clip = &coverage[scene.position(clip)];
             let indices: Vec<usize> = own.pixels(width).map(|(i, _)| i).collect();
@@ -72,9 +45,7 @@ pub fn recolor(ctx: &Context, scene: &mut Scene) {
     let mut above = vec![0f32; width * height];
     let mut keep = vec![true; scene.shapes.len()];
     for k in (0..scene.shapes.len()).rev() {
-        if crate::progress::poll() {
-            break;
-        }
+        crate::progress::poll().await;
         // Pixels the shape shows, and those it shows without anti-aliasing, which give the color
         let mut shown = Vec::new();
         let (mut all, mut interior) = (Stats::default(), Stats::default());
@@ -181,16 +152,16 @@ pub fn recolor(ctx: &Context, scene: &mut Scene) {
                 + ctx.accept_path_cost()
                 + crate::fill::cost_segments(&fill) * ctx.accept_cost();
             let pays = saving >= own;
-            if !clips && (shown.is_empty() || !pays) && crate::diagnostics::debug() {
-                eprintln!(
-                    "pruned: shape {id} at {k}, {} pixels shown, saving {saving:.1} for {} segments, color {:?} below {:?}",
-                    shown.len(),
-                    scene.shapes[k].cost_segments(),
-                    color * 255.,
-                    shown.first().map(|&i| below(i) * 255.)
-                );
-            }
             if !clips && (shown.is_empty() || !pays) {
+                if crate::diagnostics::debug() {
+                    eprintln!(
+                        "pruned: shape {id} at {k}, {} pixels shown, saving {saving:.1} for {} segments, color {:?} below {:?}",
+                        shown.len(),
+                        scene.shapes[k].cost_segments(),
+                        color * 255.,
+                        shown.first().map(|&i| below(i) * 255.)
+                    );
+                }
                 keep[k] = false;
                 continue;
             }
@@ -264,8 +235,8 @@ mod tests {
         let mut seed = 5u64;
         let mut next = || {
             seed = seed
-                .wrapping_mul(6364136223846793005)
-                .wrapping_add(1442695040888963407);
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
             (seed >> 33) as usize
         };
         for _ in 0..40 {

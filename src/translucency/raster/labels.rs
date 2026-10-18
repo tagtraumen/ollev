@@ -25,6 +25,27 @@ impl Conn {
     }
 }
 
+/// The 4-neighbours of pixel `i` within the frame: left, right, up, down.
+pub fn neighbours4(i: usize, width: usize, height: usize) -> impl Iterator<Item = usize> {
+    let (x, y) = (i % width, i / width);
+    [
+        (x > 0).then(|| i - 1),
+        (x + 1 < width).then(|| i + 1),
+        (y > 0).then(|| i - width),
+        (y + 1 < height).then(|| i + width),
+    ]
+    .into_iter()
+    .flatten()
+}
+
+/// The right and lower neighbours of pixel `i` within the frame: each 4-adjacent pair once.
+pub fn forward(i: usize, width: usize, height: usize) -> impl Iterator<Item = usize> {
+    let (x, y) = (i % width, i / width);
+    [(x + 1 < width).then(|| i + 1), (y + 1 < height).then(|| i + width)]
+        .into_iter()
+        .flatten()
+}
+
 /// scipy's `ndimage.label`: 0 off the mask, components 1..=n numbered in raster order of
 /// their first pixel.
 pub fn label(mask: &[bool], width: usize, height: usize, conn: Conn) -> (Vec<u32>, usize) {
@@ -113,7 +134,7 @@ pub fn dilate(
 
 /// scikit-image's lookup table for Zhang and Suen: per neighborhood code, 1 removable in
 /// the first pass, 2 in the second, 3 in both.
-pub(super) const SKELETON_LUT: [u8; 256] = [
+const SKELETON_LUT: [u8; 256] = [
     0, 0, 0, 1, 0, 0, 1, 3, 0, 0, 3, 1, 1, 0, 1, 3, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 2, 0, 3, 0, 3,
     3, //
     0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0, 0, 3, 0, 2,
@@ -185,8 +206,6 @@ pub fn skeletonize(mask: &[bool], width: usize, height: usize) -> Vec<bool> {
     }
     out
 }
-
-// ----------------------------------------------------------------------------- lines
 
 #[cfg(test)]
 mod tests {

@@ -1,8 +1,6 @@
 //! Sums, means, medians and ranges in numpy's order of operations.
 
-use super::*;
-
-// ----------------------------------------------------------------------------- numpy sums
+use super::DVec3;
 
 /// numpy's pairwise sum of a contiguous run (`pairwise_sum_DOUBLE`).
 pub fn pairwise(a: &[f64]) -> f64 {
@@ -17,8 +15,8 @@ pub fn pairwise(a: &[f64]) -> f64 {
         let mut r = [a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7]];
         let mut i = 8;
         while i < n - n % 8 {
-            for j in 0..8 {
-                r[j] += a[i + j];
+            for (r, &x) in r.iter_mut().zip(&a[i..i + 8]) {
+                *r += x;
             }
             i += 8;
         }

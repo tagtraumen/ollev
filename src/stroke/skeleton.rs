@@ -107,10 +107,9 @@ fn deletable(mask: &[bool], w: usize, h: usize, x: isize, y: isize, pass: usize)
     c == 1 && (2..=3).contains(&n) && !m
 }
 
-/// Guo-Hall thinning of `mask` to one-pixel-wide lines: two sub-iterations, each deleting
-/// its pixels together once found, which keeps a two-pixel diagonal connected. A verdict reads
-/// only the eight neighbours, so after the first look a sub-iteration looks again only beside
-/// pixels deleted since: the same deletions in time linear in the mask, not times its width.
+/// Guo-Hall thinning of `mask` to one-pixel-wide lines, each sub-iteration deleting its pixels
+/// together once found. A verdict reads only the eight neighbours, so after the first look a
+/// sub-iteration looks again only beside pixels deleted since: time linear in the mask.
 pub fn thin(mask: &mut [bool], w: usize, h: usize) {
     // per sub-iteration the set pixels to look at, and whether a pixel is listed
     let set: Vec<usize> = (0..w * h).filter(|&i| mask[i]).collect();
@@ -216,7 +215,7 @@ pub(super) fn skeletons_of_shape(
         if let Some(found) = known.get(&key) {
             return found.clone();
         }
-        let found = skeletons_of(key.3.clone(), w, h, top_left);
+        let found = skeletons_of(&key.3, w, h, top_left);
         // the masks kept are bounded, forgotten all at once past the bound
         if *px + key.3.len() > MEMO_PX {
             known.clear();
@@ -236,7 +235,7 @@ type Memo = crate::HashMap<(IVec2, usize, usize, Vec<bool>), Option<Skeletons>>;
 thread_local! {
     /// The skeletons of the masks seen, by mask: the branching test, the fit and the traces
     /// beneath a layer ask for the same shapes' skeletons again.
-    static SKELETONS: std::cell::RefCell<(Memo, usize)> = Default::default();
+    static SKELETONS: std::cell::RefCell<(Memo, usize)> = std::cell::RefCell::default();
 }
 
 /// A shape's skeleton: one chain, or the lines of a network where it branches.
@@ -246,9 +245,73 @@ pub(super) enum Skeletons {
     Network(Vec<Skeleton>),
 }
 
+/// The pixels set in `m` (`w` by `h`) among the eight around pixel `i`, edge neighbours first.
+pub(super) fn neighbors(m: &[bool], w: usize, h: usize, i: usize) -> Vec<usize> {
+    let (x, y) = ((i % w) as isize, (i / w) as isize);
+    let mut out = Vec::new();
+    for (dx, dy) in [
+        (0, -1),
+        (1, 0),
+        (0, 1),
+        (-1, 0),
+        (1, -1),
+        (1, 1),
+        (-1, 1),
+        (-1, -1),
+    ] {
+        let (u, v) = (x + dx, y + dy);
+        if u >= 0
+            && v >= 0
+            && (u as usize) < w
+            && (v as usize) < h
+            && m[v as usize * w + u as usize]
+        {
+            out.push(v as usize * w + u as usize);
+        }
+    }
+    out
+}
+
+/// The set pixel of `m` a breadth-first walk from `from` (not through `without`) reaches
+/// last, with each reached pixel's parent (`from` its own).
+pub(super) fn farthest(
+    m: &[bool],
+    w: usize,
+    h: usize,
+    from: usize,
+    without: Option<usize>,
+) -> (usize, Vec<usize>) {
+    let mut parent = vec![usize::MAX; w * h];
+    let mut queue = std::collections::VecDeque::new();
+    parent[from] = from;
+    queue.push_back(from);
+    let mut last = from;
+    while let Some(i) = queue.pop_front() {
+        last = i;
+        for j in neighbors(m, w, h, i) {
+            if parent[j] == usize::MAX && Some(j) != without {
+                parent[j] = i;
+                queue.push_back(j);
+            }
+        }
+    }
+    (last, parent)
+}
+
+/// The walk from `to` back along `parent` to the walk's start.
+pub(super) fn walk_back(parent: &[usize], to: usize) -> Vec<usize> {
+    let mut path = vec![to];
+    let mut at = to;
+    while parent[at] != at {
+        at = parent[at];
+        path.push(at);
+    }
+    path
+}
+
 /// The skeleton of a mask with a pixel of margin.
 pub(super) fn skeletons_of(
-    mask: Vec<bool>,
+    mask: &[bool],
     w: usize,
     h: usize,
     top_left: IVec2,
@@ -256,34 +319,10 @@ pub(super) fn skeletons_of(
     if w < 3 || h < 3 {
         return None;
     }
-    let distance = distance_squared(&mask, w, h);
-    let mut skeleton = mask.clone();
+    let distance = distance_squared(mask, w, h);
+    let mut skeleton = mask.to_vec();
     thin(&mut skeleton, w, h);
-    let neighbors = |m: &[bool], i: usize| -> Vec<usize> {
-        let (x, y) = ((i % w) as isize, (i / w) as isize);
-        let mut out = Vec::new();
-        for (dx, dy) in [
-            (0, -1),
-            (1, 0),
-            (0, 1),
-            (-1, 0),
-            (1, -1),
-            (1, 1),
-            (-1, 1),
-            (-1, -1),
-        ] {
-            let (u, v) = (x + dx, y + dy);
-            if u >= 0
-                && v >= 0
-                && (u as usize) < w
-                && (v as usize) < h
-                && m[v as usize * w + u as usize]
-            {
-                out.push(v as usize * w + u as usize);
-            }
-        }
-        out
-    };
+    let neighbors = |m: &[bool], i: usize| neighbors(m, w, h, i);
     // Prune spurs: branches from an end shorter than the width there end at a cap or corner
     for _ in 0..3 {
         let ends: Vec<usize> = (0..w * h)
@@ -334,7 +373,7 @@ pub(super) fn skeletons_of(
     spread.sort_by(f32::total_cmp);
     let typical = spread.get(spread.len() / 2).copied().unwrap_or(0.);
     if pixels.len() < MIN_SKELETON || (pixels.len() as f32) < 2. * typical {
-        return axis_chain(&mask, &distance, w, h, top_left).map(Skeletons::One);
+        return axis_chain(mask, &distance, w, h, top_left).map(Skeletons::One);
     }
     let ends: Vec<usize> = pixels
         .iter()
@@ -345,29 +384,9 @@ pub(super) fn skeletons_of(
     // The chain is the longest path through the skeleton: from an end to the pixel farthest
     // from it, and from there to the farthest again, which passes through the clusters the
     // thinning leaves at joints; around a loop, from a pixel's one neighbor to its other
-    let farthest = |from: usize, without: Option<usize>| -> (usize, Vec<usize>) {
-        let mut parent = vec![usize::MAX; w * h];
-        let mut queue = std::collections::VecDeque::new();
-        parent[from] = from;
-        queue.push_back(from);
-        let mut last = from;
-        while let Some(i) = queue.pop_front() {
-            last = i;
-            for j in neighbors(&skeleton, i) {
-                if parent[j] == usize::MAX && Some(j) != without {
-                    parent[j] = i;
-                    queue.push_back(j);
-                }
-            }
-        }
-        (last, parent)
-    };
-    let path = |parent: &[usize], to: usize| -> Vec<usize> {
-        let mut path = vec![to];
-        while parent[*path.last().unwrap()] != *path.last().unwrap() {
-            let p = parent[*path.last().unwrap()];
-            path.push(p);
-        }
+    let farthest = |from: usize, without: Option<usize>| farthest(&skeleton, w, h, from, without);
+    let path = |parent: &[usize], to: usize| {
+        let mut path = walk_back(parent, to);
         path.reverse();
         path
     };
@@ -443,14 +462,14 @@ mod tests {
         let mut seed = 7u64;
         let mut next = |n: u64| {
             seed = seed
-                .wrapping_mul(6364136223846793005)
-                .wrapping_add(1442695040888963407);
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
             (seed >> 33) % n
         };
         for case in 0..300 {
             let (w, h) = (8 + next(40) as usize, 8 + next(40) as usize);
             let mut mask = vec![false; w * h];
-            for _ in 0..1 + next(4) {
+            for _ in 0..=next(4) {
                 let (cx, cy, r) = (
                     next(w as u64) as f32,
                     next(h as u64) as f32,

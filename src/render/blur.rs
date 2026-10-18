@@ -270,7 +270,7 @@ mod tests {
     use crate::render::scene::{Path, Subpath, flatten};
 
     fn square(sigma: f32) -> Path {
-        let corners = [(6., 5.), (19., 7.), (17., 18.), (4., 16.)].map(|(x, y)| Vec2::new(x, y));
+        let corners = [(6., 5.), (19., 7.), (17., 18.), (4., 16.)].map(Vec2::from);
         Path {
             subpaths: vec![Subpath::polygon(&corners)],
             color: [1.; 4],

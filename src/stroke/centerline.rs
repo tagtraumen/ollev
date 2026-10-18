@@ -37,7 +37,6 @@ impl Centerline {
             tolerance,
             ..crate::outline::FIT
         };
-        let line = |a: Vec2, b: Vec2| -> Cubic { [a, a.lerp(b, 1. / 3.), a.lerp(b, 2. / 3.), b] };
         // A cubic within the tolerance of its chord is a line: a fitted cubic bends toward
         // its end at a corner, and an offset at half the width folds into a loop around a
         // bend tighter than that
@@ -63,7 +62,7 @@ impl Centerline {
             }
             let ring = [&s[..], &s[..1]].concat();
             let cubics: Vec<Cubic> = refit(
-                crate::tracer::fit::fit_at_corners(&ring, &self.corners, true, &params),
+                &crate::tracer::fit::fit_at_corners(&ring, &self.corners, true, &params),
                 &ring,
             )
             .into_iter()
@@ -83,17 +82,14 @@ impl Centerline {
         for (j, p) in self.pieces.iter().enumerate() {
             let corner = j > 0;
             let (first, last) = (p.samples[0], p.samples[p.samples.len() - 1]);
-            let knot = |e: &End, fallback: Vec2| match e {
-                End::Knot(q) => *q,
-                _ => fallback,
-            };
+            let knot = |e: &End, fallback: Vec2| if let End::Knot(q) = e { *q } else { fallback };
             if p.line || p.samples.len() < 2 {
                 out.push(line(knot(&p.start, first), knot(&p.end, last)));
                 flags.push(corner);
                 continue;
             }
             let mut cubics: Vec<Cubic> = refit(
-                crate::tracer::fit::fit_at_corners(&p.samples, &[], false, &params),
+                &crate::tracer::fit::fit_at_corners(&p.samples, &[], false, &params),
                 &p.samples,
             )
             .into_iter()
@@ -133,30 +129,24 @@ impl Centerline {
 /// The part of `c` over the parameter range `t0..t1`, by de Casteljau, which holds past the
 /// ends as well: the curve's own continuation.
 pub(super) fn sub_cubic(c: &Cubic, t0: f32, t1: f32) -> Cubic {
-    let at = |p: &Cubic, t: f32| -> [Vec2; 4] {
-        // The right part from t: the last point of each de Casteljau level
-        let p01 = p[0].lerp(p[1], t);
-        let p12 = p[1].lerp(p[2], t);
-        let p23 = p[2].lerp(p[3], t);
-        let p012 = p01.lerp(p12, t);
-        let p123 = p12.lerp(p23, t);
-        let q = p012.lerp(p123, t);
-        [q, p123, p23, p[3]]
-    };
-    let right = at(c, t0);
     let u = if (1. - t0).abs() < 1e-6 {
         1.
     } else {
         (t1 - t0) / (1. - t0)
     };
-    // The left part up to u of the right part
-    let p01 = right[0].lerp(right[1], u);
-    let p12 = right[1].lerp(right[2], u);
-    let p23 = right[2].lerp(right[3], u);
-    let p012 = p01.lerp(p12, u);
-    let p123 = p12.lerp(p23, u);
-    let q = p012.lerp(p123, u);
-    [right[0], p01, p012, q]
+    // The left part up to u of the right part from t0
+    split(&split(c, t0).1, u).0
+}
+
+/// The parts of `p` before and after `t`, by de Casteljau.
+fn split(p: &Cubic, t: f32) -> (Cubic, Cubic) {
+    let p01 = p[0].lerp(p[1], t);
+    let p12 = p[1].lerp(p[2], t);
+    let p23 = p[2].lerp(p[3], t);
+    let p012 = p01.lerp(p12, t);
+    let p123 = p12.lerp(p23, t);
+    let q = p012.lerp(p123, t);
+    ([p[0], p01, p012, q], [q, p123, p23, p[3]])
 }
 
 /// `c` extended by `start` pixels before its start and `end` pixels past its end (shortened
@@ -179,12 +169,12 @@ pub(crate) fn extend_cubic(c: &Cubic, start: f32, end: f32) -> Cubic {
     sub_cubic(c, t0, t1)
 }
 
-/// Moves an open centerline's ends outward by `start` and `end` (inward when negative),
-/// along the end cubics' continuation.
-pub(super) fn extended(stroke: &Stroke, start: f32, end: f32) -> Stroke {
-    let mut s = stroke.clone();
-    let n = s.centerline.len();
-    s.centerline[0] = extend_cubic(&s.centerline[0], start, 0.);
-    s.centerline[n - 1] = extend_cubic(&s.centerline[n - 1], 0., end);
-    s
+impl Stroke {
+    /// Moves an open centerline's ends outward by `start` and `end` (inward when negative),
+    /// along the end cubics' continuation.
+    pub(crate) fn extend_ends(&mut self, start: f32, end: f32) {
+        let n = self.centerline.len();
+        self.centerline[0] = extend_cubic(&self.centerline[0], start, 0.);
+        self.centerline[n - 1] = extend_cubic(&self.centerline[n - 1], 0., end);
+    }
 }

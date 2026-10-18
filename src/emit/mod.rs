@@ -17,13 +17,18 @@ pub use verify::{Output, Report, compile};
 /// A target: the model's bytes with object `k` of [`Model::objects`] encoded at level
 /// `levels[k]` (finer as it grows), and the bytes rendered where this target can be.
 pub trait Emitter {
+    /// The model's bytes, object `k` of [`Model::objects`] at level `levels[k]` (0 where none
+    /// is given).
     fn encode(&self, model: &Model, levels: &[u8]) -> Vec<u8>;
     /// The finest level an object may step to.
     fn finest(&self, object: &Object) -> u8;
+    /// The bytes rendered over white at `width` by `height`, row by row; `None` where this
+    /// target has no renderer.
     fn render(&self, bytes: &[u8], width: usize, height: usize) -> Option<Vec<Vec3>>;
 }
 
 /// The scene as SVG at the first encoding, unverified (for snapshots and dumps).
+#[must_use]
 pub fn svg_of(scene: &Scene) -> String {
     svg::encode(&scene.model(), &[])
 }

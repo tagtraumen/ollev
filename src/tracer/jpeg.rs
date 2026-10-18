@@ -115,7 +115,15 @@ impl Plane {
     }
 }
 
-fn planes(colors: &[Vec3], width: usize, height: usize, matrix: Mat3) -> [Plane; 3] {
+/// The planes of the RGB pixels `rgb` (8 bits per channel) in the colour space `matrix` maps
+/// RGB in `0..1` to.
+fn planes(rgb: &[u8], width: usize, height: usize, matrix: Mat3) -> [Plane; 3] {
+    let colors: Vec<Vec3> = rgb
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .map(|c| Vec3::new(c[0] as f32, c[1] as f32, c[2] as f32) / 255.)
+        .collect();
     std::array::from_fn(|c| Plane {
         values: colors.iter().map(|&p| (matrix * p)[c]).collect(),
         width,
@@ -166,13 +174,7 @@ pub fn detect(rgb: &[u8], width: usize, height: usize) -> Option<Jpeg> {
     if width < 16 || height < 16 {
         return None;
     }
-    let colors: Vec<Vec3> = rgb
-        .as_chunks::<3>()
-        .0
-        .iter()
-        .map(|c| Vec3::new(c[0] as f32, c[1] as f32, c[2] as f32) / 255.)
-        .collect();
-    let [y, ..] = planes(&colors, width, height, to_ycc());
+    let [y, ..] = planes(rgb, width, height, to_ycc());
     let b = basis();
     // Each block's frequencies past the mean, in block order: a coefficient within half the
     // least step [`score`] reads is rounded to zero at every quality, so it is left out here
@@ -203,12 +205,10 @@ pub fn detect(rgb: &[u8], width: usize, height: usize) -> Option<Jpeg> {
         &LUMA,
         1..=MAX_QUALITY,
     )?;
-    let chroma = table(&CHROMA, quality);
-
     Some(Jpeg {
         offset,
         luma: table(&LUMA, quality),
-        chroma,
+        chroma: table(&CHROMA, quality),
     })
 }
 
@@ -221,16 +221,10 @@ impl Jpeg {
     /// each kept frequency adds `q / sqrt(12)` spread over its block's 64 pixels (frequencies
     /// rounded to zero are left out), carried to RGB by the inverse color transform.
     pub fn spread(&self, rgb: &[u8], width: usize, height: usize) -> Vec<f32> {
-        let colors: Vec<Vec3> = rgb
-            .as_chunks::<3>()
-            .0
-            .iter()
-            .map(|c| Vec3::new(c[0] as f32, c[1] as f32, c[2] as f32) / 255.)
-            .collect();
         let from = to_ycc().inverse();
         let b = basis();
         let mut variance = vec![0f32; width * height];
-        for (p, plane) in planes(&colors, width, height, to_ycc()).iter().enumerate() {
+        for (p, plane) in planes(rgb, width, height, to_ycc()).iter().enumerate() {
             let steps = if p == 0 { &self.luma } else { &self.chroma };
             let weight = from.col(p).length_squared();
             for at in plane.blocks(self.offset) {

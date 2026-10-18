@@ -22,7 +22,7 @@ pub const NOISE: f64 = 2.0 / 255.0;
 /// What the backgrounds have to show through a shape, k times their spread.
 pub const SHOW_THROUGH: f64 = 4.0 * NOISE;
 
-/// The width the constants in pixels were set at (niabot's scenes at 330 px).
+/// The width the constants in pixels were set at.
 pub const REFERENCE_WIDTH: f64 = 330.0;
 
 /// The drawing's length unit in pixels, the width over 330. Constants that measure the

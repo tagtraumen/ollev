@@ -1,8 +1,11 @@
 //! A line's paint and width fitted over the composite, and its gain.
 
-use super::*;
+use glam::{DVec2, DVec3};
 
-// ----------------------------------------------------------------------------- fitting
+use super::{
+    Bezier, FIT_TOL, Image, NOISE, Options, Win, coverage, fit_cubics, flatten, length_px,
+    normals, unit_of,
+};
 
 /// The squared error of the composite against the image over a window's pixels, before
 /// and after drawing `paint` (per pixel: alpha, colour); with a tolerance per pixel, the
@@ -183,7 +186,7 @@ pub(super) fn fit_line(
 /// A line's polyline as strokes: pieces of 8 px fitted on their own (those removing no error
 /// dropped), then neighbours merged while one stroke saves more than the two apart, each
 /// paying `cost` per cubic, so a line splits where its colour changes.
-pub(super) fn stroke_runs(
+pub(super) async fn stroke_runs(
     img: &Image,
     comp: &[DVec3],
     pts: &[DVec2],
@@ -204,13 +207,15 @@ pub(super) fn stroke_runs(
         pieces.last_mut().unwrap().1 = last.1;
     }
     let net = |f: &Fit| f.gain - cost * f.cubics.len() as f64;
-    let mut runs: Vec<(usize, usize, Fit)> = pieces
-        .into_iter()
-        .take_while(|_| !crate::progress::poll())
-        .filter_map(|(a, b)| fit_line(img, comp, &pts[a..b], tol).map(|f| (a, b, f)))
-        .filter(|r| r.2.gain > 0.0)
-        .collect();
+    let mut runs: Vec<(usize, usize, Fit)> = Vec::new();
+    for (a, b) in pieces {
+        crate::progress::poll().await;
+        if let Some(f) = fit_line(img, comp, &pts[a..b], tol).filter(|f| f.gain > 0.0) {
+            runs.push((a, b, f));
+        }
+    }
     loop {
+        crate::progress::poll().await;
         let mut best: Option<(f64, usize, Fit)> = None;
         for i in 0..runs.len().saturating_sub(1) {
             if runs[i].1 - 1 != runs[i + 1].0 {

@@ -30,7 +30,7 @@ pub fn parts(ctx: &Context, scene: &Scene) -> Parts {
         .sum();
     Parts {
         error: error as f64,
-        segments: scene.shapes.iter().map(|s| s.cost_segments()).sum(),
+        segments: scene.shapes.iter().map(Shape::cost_segments).sum(),
         paths: scene.shapes.len(),
         cost,
     }
@@ -49,12 +49,12 @@ pub(super) fn shading_discount(ctx: &Context, candidate: &crate::translucency::C
 
 /// Pixels of context around a candidate's box in its decision window: the overlay fit's reach
 /// (10 px) plus the leaves' sampling past the contact (5 px).
-pub(super) const WINDOW_CONTEXT: f32 = 16.;
+const WINDOW_CONTEXT: f32 = 16.;
 
 /// Whether the shape pays in its window, traced as it is and peeled with the shape on top.
 /// Where the window exceeds a quarter of the image (its two traces would cost more than half
 /// the whole one) None at the top level, and at a nested level the densest quarter's verdict.
-pub(super) fn decide_in_window(
+pub(super) async fn decide_in_window(
     ctx: &Context,
     candidate: &crate::translucency::Candidate,
     peeled: &[u8],
@@ -72,8 +72,8 @@ pub(super) fn decide_in_window(
     );
     if 4 * window.width * window.height > width * height {
         // A nested level decides even a large candidate in a window, since its whole traces
-        // only recurse (kemonomimi 660: nine levels of frame-wide near-white layers)
-        if super::layers::LEVEL.load(std::sync::atomic::Ordering::Relaxed) == 0 {
+        // only recurse
+        if crate::progress::depth() == 0 {
             return None;
         }
         window = densest_quarter(&candidate.mask, width, height);
@@ -90,9 +90,11 @@ pub(super) fn decide_in_window(
         .flat_map(|c| (*c * 255.).round().to_array().map(|v| v as u8))
         .collect();
     // The same picture as the whole image, so the same costs and tolerances
-    let trace = |rgb: Vec<u8>, edge: Option<&[bool]>, peel: bool| -> (Context, Scene) {
+    let trace = async |rgb: Vec<u8>, edge: Option<&[bool]>, peel: bool| -> (Context, Scene) {
         let mut timings = Timings::default();
-        let (mut c, h) = crate::hierarchy::analyze(&rgb, window.width, window.height, detail, &mut timings);
+        let (mut c, h) =
+            crate::hierarchy::analyze(&rgb, window.width, window.height, detail, &mut timings)
+                .await;
         c.segment_cost = ctx.segment_cost;
         c.path_cost = ctx.path_cost;
         c.frame = ctx.frame;
@@ -106,15 +108,16 @@ pub(super) fn decide_in_window(
             edge,
             false,
             &mut timings,
-            &mut |_| {},
-        );
+            false,
+        )
+        .await;
         (c, scene)
     };
     let cropped = candidate.crop(window, width);
     let above: Option<Vec<bool>> = above.map(|e| window.pixels(width).map(|i| e[i]).collect());
     let edge = peeled_edge(&cropped.mask, window.width, window.height, above.as_deref());
-    let (local, plain) = trace(crop(&original), None, false);
-    let (_, mut with) = trace(crop(peeled), Some(&edge), true);
+    let (local, plain) = trace(crop(&original), None, false).await;
+    let (_, mut with) = trace(crop(peeled), Some(&edge), true).await;
     let overlay = cropped.overlay(window.width, window.height)?;
     append_overlay(
         &local,
@@ -124,14 +127,13 @@ pub(super) fn decide_in_window(
         None,
         options.stages.primitives,
     );
-    let verdict = WindowVerdict {
+    Some(WindowVerdict {
         with: parts(&local, &with),
         plain: parts(&local, &plain),
         discount: shading_discount(&local, candidate),
-        terms: layer_terms(&local, &with, &plain, &cropped),
+        terms: LayerTerms::measure(&local, &with, &plain, &cropped),
         segment_cost: local.segment_cost,
-    };
-    Some(verdict)
+    })
 }
 
 /// The window of half the image's width and height holding most of `mask`'s pixels, the
@@ -195,8 +197,6 @@ impl WindowVerdict {
     }
 }
 
-use crate::translucency::cost::LayerTerms;
-
 /// The objective of a scene with a layer minus the one without, with the segment cost of the
 /// context the layer's `terms` were measured in: the error under the layer weighed by `1 / k^2`
 /// where it is seen through, and its outline credited where it runs along the beneath's.
@@ -217,16 +217,6 @@ pub(super) fn margin(
     let credit = terms.shared * segment_cost;
     let (under_with, under_without) = (terms.seen_with, terms.seen_without);
     (with.total() - discount + w * under_with - credit) - (without.total() + w * under_without)
-}
-
-/// The layer's terms of a comparison.
-pub(super) fn layer_terms(
-    ctx: &Context,
-    with: &Scene,
-    without: &Scene,
-    candidate: &crate::translucency::Candidate,
-) -> LayerTerms {
-    LayerTerms::measure(ctx, with, without, candidate)
 }
 
 /// Puts a translucent shape peeled off `ctx`'s image on top of `scene` (the trace beneath it):
@@ -295,7 +285,7 @@ pub(super) fn append_overlay(
         dump(&shape, "1-completed");
         // The outline is simplified against the region (black on white), not the composite,
         // where a layer over a beneath near its colour is weak and a lobe never pays its
-        // segments (the blouse's lobe over niabot's skin)
+        // segments
         {
             let mask_ctx = Context {
                 target: std::sync::Arc::new(
@@ -344,9 +334,8 @@ pub(super) fn append_overlay(
                 }
             }
         }
-        let fill =
+        shape.fill =
             crate::translucency::refit_fill(&target, &place.below, &coverage, shape.fill, shade);
-        shape.fill = fill;
     }
     let change = scene.change();
     shape.changed = change;

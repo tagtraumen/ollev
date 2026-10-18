@@ -2,9 +2,27 @@
 
 use super::*;
 
-/// The lines of a branching skeleton (as glassware's grid): cut at its junction knots, with
-/// arms that run on through a knot (turning under a kink, aligned within its width) joined,
-/// straightest first. Arms no longer than the width there are the knot's bulk and left out.
+/// An arm of a network: a chain between junctions, walked from one end to the other.
+struct Arm {
+    chain: Vec<usize>,
+    /// the knot each end touches, if any
+    knots: [Option<usize>; 2],
+}
+
+impl Arm {
+    /// The pixel at end `e` (0 the chain's first).
+    fn end(&self, e: usize) -> usize {
+        if e == 0 {
+            self.chain[0]
+        } else {
+            self.chain[self.chain.len() - 1]
+        }
+    }
+}
+
+/// The lines of a branching skeleton: cut at its junction knots, with arms that run on
+/// through a knot (turning under a kink, aligned within its width) joined, straightest first.
+/// Arms no longer than the width there are the knot's bulk and left out.
 pub(super) fn network(
     skeleton: &[bool],
     distance: &[f32],
@@ -12,31 +30,7 @@ pub(super) fn network(
     h: usize,
     top_left: IVec2,
 ) -> Vec<Skeleton> {
-    let neighbors = |m: &[bool], i: usize| -> Vec<usize> {
-        let (x, y) = ((i % w) as isize, (i / w) as isize);
-        let mut out = Vec::new();
-        for (dx, dy) in [
-            (0, -1),
-            (1, 0),
-            (0, 1),
-            (-1, 0),
-            (1, -1),
-            (1, 1),
-            (-1, 1),
-            (-1, -1),
-        ] {
-            let (u, v) = (x + dx, y + dy);
-            if u >= 0
-                && v >= 0
-                && (u as usize) < w
-                && (v as usize) < h
-                && m[v as usize * w + u as usize]
-            {
-                out.push(v as usize * w + u as usize);
-            }
-        }
-        out
-    };
+    let neighbors = |m: &[bool], i: usize| neighbors(m, w, h, i);
     let width_at = |i: usize| 2. * distance[i].sqrt();
     // The junctions: knots of the pixels with three or more neighbours
     let junction: Vec<bool> = (0..w * h)
@@ -66,11 +60,6 @@ pub(super) fn network(
     // The arms: the chains between the junctions, each walked from one end to the other
     let arm_mask: Vec<bool> = (0..w * h).map(|i| skeleton[i] && !junction[i]).collect();
     let mut seen = vec![false; w * h];
-    struct Arm {
-        chain: Vec<usize>,
-        /// the knot each end touches, if any
-        knots: [Option<usize>; 2],
-    }
     let mut arms: Vec<Arm> = Vec::new();
     let mut lines: Vec<Skeleton> = Vec::new();
     let as_skeleton = |chain: &[usize], closed: bool| Skeleton {
@@ -98,23 +87,7 @@ pub(super) fn network(
             }
             at += 1;
         }
-        let farthest = |from: usize| -> (usize, Vec<usize>) {
-            let mut parent = vec![usize::MAX; w * h];
-            let mut queue = std::collections::VecDeque::new();
-            parent[from] = from;
-            queue.push_back(from);
-            let mut last = from;
-            while let Some(i) = queue.pop_front() {
-                last = i;
-                for j in neighbors(&arm_mask, i) {
-                    if parent[j] == usize::MAX {
-                        parent[j] = i;
-                        queue.push_back(j);
-                    }
-                }
-            }
-            (last, parent)
-        };
+        let farthest = |from: usize| farthest(&arm_mask, w, h, from, None);
         let ends: Vec<usize> = members
             .iter()
             .copied()
@@ -124,10 +97,7 @@ pub(super) fn network(
             // A ring with no junction on it: a closed stroke of its own among the lines
             let (e1, _) = farthest(members[0]);
             let (e2, parent) = farthest(e1);
-            let mut chain = vec![e2];
-            while parent[*chain.last().unwrap()] != *chain.last().unwrap() {
-                chain.push(parent[*chain.last().unwrap()]);
-            }
+            let chain = walk_back(&parent, e2);
             if chain.len() >= MIN_SKELETON {
                 lines.push(as_skeleton(&chain, true));
             }
@@ -135,30 +105,19 @@ pub(super) fn network(
         }
         let (e1, _) = farthest(ends[0]);
         let (e2, parent) = farthest(e1);
-        let mut chain = vec![e2];
-        while parent[*chain.last().unwrap()] != *chain.last().unwrap() {
-            chain.push(parent[*chain.last().unwrap()]);
-        }
+        let mut chain = walk_back(&parent, e2);
         chain.reverse();
-        let touching = |end: usize| -> Option<usize> {
-            neighbors(&junction, end)
-                .into_iter()
-                .map(|j| knot[j])
-                .next()
-        };
+        let touching = |end: usize| neighbors(&junction, end).first().map(|&j| knot[j]);
         let knots = [touching(chain[0]), touching(chain[chain.len() - 1])];
         arms.push(Arm { chain, knots });
     }
     // Each arm's heading into the knot at each end, read over twice the width (past where the
     // thinning hooks toward the knot's corners) and at least twice the corner window, so the
     // pixel staircase of a thin line does not tilt it by nearly a kink
+    let at = |i: usize| Vec2::new((i % w) as f32, (i / w) as f32);
     let heading = |arm: &Arm, end: usize| -> Vec2 {
         let n = arm.chain.len();
-        let last = if end == 0 {
-            arm.chain[0]
-        } else {
-            arm.chain[n - 1]
-        };
+        let last = arm.end(end);
         let span = ((2. * width_at(last)).ceil() as usize)
             .max(2 * crate::outline::FIT.corner_window)
             .min(n - 1);
@@ -167,7 +126,6 @@ pub(super) fn network(
         } else {
             arm.chain[n - 1 - span]
         };
-        let at = |i: usize| Vec2::new((i % w) as f32, (i / w) as f32);
         (at(last) - at(back)).normalize_or_zero()
     };
     // The arms paired across each knot: those that run on through it, the straightest first
@@ -183,7 +141,6 @@ pub(super) fn network(
                     .map(move |e| (a, e))
             })
             .collect();
-        let at = |i: usize| Vec2::new((i % w) as f32, (i / w) as f32);
         let mut options: Vec<(f32, usize, usize)> = Vec::new();
         for s in 0..slots.len() {
             for t in s + 1..slots.len() {
@@ -199,14 +156,7 @@ pub(super) fn network(
                 if turn > KINK {
                     continue;
                 }
-                let end = |arm: &Arm, e: usize| {
-                    if e == 0 {
-                        arm.chain[0]
-                    } else {
-                        arm.chain[arm.chain.len() - 1]
-                    }
-                };
-                let ab = at(end(&arms[b], eb)) - at(end(&arms[a], ea));
+                let ab = at(arms[b].end(eb)) - at(arms[a].end(ea));
                 let offset = da.perp_dot(ab).abs();
                 if offset > reach {
                     continue;
@@ -294,8 +244,7 @@ pub(super) fn network(
         }
     }
     // One pen: the network's lines are drawn at their median width, and a line outside its
-    // slack is left to the thick remainder (as the deep band in one region with glassware's
-    // 2 px grid lines)
+    // slack is left to the thick remainder
     let median = |mut v: Vec<f32>| -> f32 {
         v.sort_by(f32::total_cmp);
         v.get(v.len() / 2).copied().unwrap_or(0.)
@@ -311,6 +260,43 @@ pub(super) fn network(
     lines
 }
 
+/// The second moments of points about their mean, and the larger one's sum and axis.
+pub(super) struct Spread {
+    pub(super) mean: Vec2,
+    pub(super) xx: f32,
+    pub(super) xy: f32,
+    pub(super) yy: f32,
+    pub(super) top: f32,
+    pub(super) axis: Vec2,
+}
+
+pub(super) fn spread(points: &[Vec2]) -> Spread {
+    let mean = points.iter().sum::<Vec2>() / points.len() as f32;
+    let (mut xx, mut xy, mut yy) = (0f32, 0f32, 0f32);
+    for p in points {
+        let d = *p - mean;
+        xx += d.x * d.x;
+        xy += d.x * d.y;
+        yy += d.y * d.y;
+    }
+    let top = 0.5 * (xx + yy) + (0.25 * (xx - yy).powi(2) + xy * xy).sqrt();
+    let axis = if xy.abs() > 1e-6 {
+        Vec2::new(xy, top - xx).normalize()
+    } else if xx >= yy {
+        Vec2::X
+    } else {
+        Vec2::Y
+    };
+    Spread {
+        mean,
+        xx,
+        xy,
+        yy,
+        top,
+        axis,
+    }
+}
+
 /// The chain of a short band along its principal axis through its centroid, as far as the
 /// mask reaches either way, with the distance transform's widths; `None` where the band is
 /// round (no axis) or shorter than a few pixels.
@@ -321,32 +307,26 @@ pub(super) fn axis_chain(
     h: usize,
     top_left: IVec2,
 ) -> Option<Skeleton> {
-    let inside: Vec<usize> = (0..w * h).filter(|&i| mask[i]).collect();
+    let inside: Vec<Vec2> = (0..w * h)
+        .filter(|&i| mask[i])
+        .map(|i| Vec2::new((i % w) as f32, (i / w) as f32))
+        .collect();
     if inside.len() < 4 {
         return None;
     }
-    let at = |i: usize| Vec2::new((i % w) as f32, (i / w) as f32);
-    let mean = inside.iter().map(|&i| at(i)).sum::<Vec2>() / inside.len() as f32;
-    let (mut xx, mut xy, mut yy) = (0f32, 0f32, 0f32);
-    for &i in &inside {
-        let d = at(i) - mean;
-        xx += d.x * d.x;
-        xy += d.x * d.y;
-        yy += d.y * d.y;
-    }
-    let top = 0.5 * (xx + yy) + (0.25 * (xx - yy).powi(2) + xy * xy).sqrt();
+    let Spread {
+        mean,
+        xx,
+        xy,
+        yy,
+        top,
+        axis,
+    } = spread(&inside);
     let bottom = 0.5 * (xx + yy) - (0.25 * (xx - yy).powi(2) + xy * xy).sqrt();
     // No axis where the spread is the same every way (a dot)
     if top < 1.5 * bottom.max(1e-3) {
         return None;
     }
-    let axis = if xy.abs() > 1e-6 {
-        Vec2::new(xy, top - xx).normalize()
-    } else if xx >= yy {
-        Vec2::X
-    } else {
-        Vec2::Y
-    };
     let covered = |p: Vec2| {
         let (x, y) = (p.x.round() as isize, p.y.round() as isize);
         x >= 0

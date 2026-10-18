@@ -1,8 +1,9 @@
 //! The edge map: suppressed edges, their skeleton graph and its chains.
 
-use super::*;
-
-// ----------------------------------------------------------------------------- edges
+use super::{EDGE_SIGMA, TOL, ridge_radii};
+use crate::translucency::raster::{
+    Conn, Image, NOISE, di_zenzo, dilate, label, length_px, line_pixels_at, map1, unit_of,
+};
 
 /// Edge pixels as gradient ridges: non-maximum suppression along the gradient by linear
 /// interpolation, hysteresis at 6 and 3 NOISE of step (a step h smoothed at sigma peaks at
@@ -42,7 +43,7 @@ pub fn suppressed_edges(
 
 /// The edge map, its two kinds apart: step edges as gradient ridges, and thin dark ridges.
 /// Step edges within a pixel of a ridge are its gradient flanks and left out (else the
-/// skeleton is a ladder of junctions, as niabot's outlines at 660).
+/// skeleton of a drawn outline is a ladder of junctions).
 pub struct EdgeMap {
     pub edges: Vec<bool>,
     pub ridge: Vec<bool>,
@@ -75,8 +76,8 @@ pub fn edge_pixels(img: &Image) -> EdgeMap {
 
 /// The skeleton's pixels as a graph: 4-neighbors always, a diagonal neighbor only where no
 /// 4-neighbor of both joins them (so a staircase corner is not a branch point). The nodes in
-/// raster order and their neighbor lists.
-pub fn skeleton_graph(sk: &[bool], width: usize, height: usize) -> (Vec<usize>, Vec<Vec<usize>>) {
+/// raster order, each pixel's node and the nodes' neighbor lists.
+fn skeleton_graph(sk: &[bool], width: usize, height: usize) -> (Vec<usize>, Vec<usize>, Vec<Vec<usize>>) {
     let at = |y: isize, x: isize| {
         y >= 0
             && x >= 0
@@ -109,7 +110,7 @@ pub fn skeleton_graph(sk: &[bool], width: usize, height: usize) -> (Vec<usize>, 
             nb[id[q]].push(p);
         }
     }
-    (nodes, nb)
+    (nodes, id, nb)
 }
 
 /// The skeleton cut into simple paths as (y, x), end to end (a loop cut at its first pixel):
@@ -121,11 +122,7 @@ pub fn trace_chains(
     height: usize,
     min_len: usize,
 ) -> Vec<Vec<(usize, usize)>> {
-    let (nodes, nb) = skeleton_graph(sk, width, height);
-    let mut id = vec![usize::MAX; sk.len()];
-    for (k, &p) in nodes.iter().enumerate() {
-        id[p] = k;
-    }
+    let (nodes, id, nb) = skeleton_graph(sk, width, height);
     let junction: Vec<bool> = nb.iter().map(|v| v.len() >= 3).collect();
     let mut seen = junction.clone();
     let mut chains = Vec::new();

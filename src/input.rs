@@ -5,8 +5,6 @@
 #[cfg(feature = "diagnostics")]
 use crate::diagnostics::Diagnostics;
 use crate::lower::Capabilities;
-use crate::model::Model;
-use crate::progress::{Answer, Progress};
 
 /// A raw image's pixels, row by row from the top, four channels per pixel.
 #[derive(Clone, Copy, Debug)]
@@ -15,8 +13,11 @@ pub enum Pixels<'a> {
     Rgba8(&'a [u8]),
     /// Floats in 0..1, linear light or sRGB-encoded, with straight or premultiplied alpha.
     RgbaF32 {
+        /// The channels, four per pixel.
         data: &'a [f32],
+        /// Whether the colour channels are linear light, else sRGB-encoded.
         linear: bool,
+        /// Whether the colour channels are multiplied by the alpha.
         premultiplied: bool,
     },
 }
@@ -24,8 +25,11 @@ pub enum Pixels<'a> {
 /// An image to trace: its pixels and size.
 #[derive(Clone, Copy, Debug)]
 pub struct Image<'a> {
+    /// The pixels, `width * height` of them.
     pub pixels: Pixels<'a>,
+    /// Pixels per row.
     pub width: usize,
+    /// Rows.
     pub height: usize,
 }
 
@@ -88,12 +92,13 @@ pub struct TraceOptions {
     /// The detail slider: a shape, stroke or mark is drawn where it removes residual beyond this
     /// multiple of the picture's uncertainty, so lower is more detail.
     pub tolerance: f64,
+    /// The price of a segment against the error it removes (see [`Detail`]).
     pub detail: Detail,
     /// What a pixel is composited over by the part it leaves transparent, sRGB-encoded in 0..1.
     pub matte: [f32; 3],
     /// Whether what the picture leaves transparent stays so: the model is then clipped to the
-    /// picture's opaque part ([`Model::clip`], its alpha at a half), its colours still read
-    /// over the matte.
+    /// picture's opaque part ([`crate::model::Model::clip`], its alpha at a half), its colours
+    /// still read over the matte.
     pub keep_transparency: bool,
     /// The most pixels traced: a larger picture is traced at the size that holds this many
     /// and its model scaled back up (the trace's time and memory grow with its pixels).
@@ -130,8 +135,13 @@ pub enum TraceError {
     /// A side of zero pixels.
     Empty,
     /// The pixels do not hold four channels for each pixel of the size.
-    Size { expected: usize, actual: usize },
-    /// The progress callback asked to stop.
+    Size {
+        /// The channel values the size asks for.
+        expected: usize,
+        /// The channel values given.
+        actual: usize,
+    },
+    /// The progress callback asked to stop ([`crate::trace_with`]).
     Cancelled,
 }
 
@@ -149,78 +159,10 @@ impl std::fmt::Display for TraceError {
 
 impl std::error::Error for TraceError {}
 
-/// Traces `image` into a scene model in what the host draws.
-pub fn trace(image: &Image, options: &TraceOptions) -> Result<Model, TraceError> {
-    trace_with(image, options, |_| ())
-}
-
-/// [`trace`], telling `progress` the stage, how far it is and the scene as it grows; where
-/// `progress` breaks, the trace stops within a fraction of a second and returns
-/// [`TraceError::Cancelled`] (see [`Progress`]).
-pub fn trace_with<A: Answer>(
-    image: &Image,
-    options: &TraceOptions,
-    mut progress: impl FnMut(&Progress) -> A,
-) -> Result<Model, TraceError> {
-    let (rgb, alpha) = pixels8(image, options.matte)?;
-    let (w, h) = (image.width, image.height);
-    // Over the budget, the picture is traced at the size that holds it, one scale both ways
-    let (rgb, tw, th, s) = match options.max_pixels {
-        Some(most) if w * h > most.max(1) => {
-            let tw = ((w as f64 * (most.max(1) as f64 / (w * h) as f64).sqrt()) as usize).max(1);
-            let s = w as f64 / tw as f64;
-            let th = ((h as f64 / s).round() as usize).max(1);
-            (downsampled(&rgb, w, h, tw, th, s), tw, th, s)
-        }
-        _ => (rgb, w, h, 1.),
-    };
-    let detail = match options.detail {
-        Detail::Auto => crate::tracer::auto_detail(&rgb, tw, th),
-        Detail::Absolute(d) => d,
-        Detail::Scaled(f) => crate::tracer::auto_detail(&rgb, tw, th) * f,
-    };
-    let plan = crate::plan::Options {
-        stages: options.stages,
-        ..crate::plan::Options::new(options.tolerance)
-    };
-    let mut stopped = false;
-    let run = || {
-        crate::plan::trace(&rgb, tw, th, detail, plan, |p| {
-            let flow = progress(p).flow();
-            stopped |= flow.is_break();
-            flow
-        })
-    };
-    #[cfg(feature = "diagnostics")]
-    let scene = crate::diagnostics::scope(&options.diagnostics, run);
-    #[cfg(not(feature = "diagnostics"))]
-    let scene = {
-        let mut run = run;
-        run()
-    };
-    if stopped {
-        return Err(TraceError::Cancelled);
-    }
-    let mut model = scene.model();
-    if s != 1. {
-        model = model.scaled(s, w, h);
-    }
-    if options.keep_transparency && alpha.iter().any(|&a| a < 1.) {
-        let loops = crate::lower::layers::loops_at(&alpha, w, h, 0.5);
-        model.clips.push(crate::model::Clip {
-            loops,
-            rule: crate::model::FillRule::EvenOdd,
-            parent: None,
-        });
-        model.clip = Some(model.clips.len() - 1);
-    }
-    Ok(crate::lower::lower(&model, &options.host).0)
-}
-
 /// The picture downsampled from `w` by `h` to `tw` by `th`, each new pixel the mean of the `s`
 /// by `s` square of old pixels it covers (fractions at its sides), in the sRGB encoding SVG
 /// composites in.
-fn downsampled(rgb: &[u8], w: usize, h: usize, tw: usize, th: usize, s: f64) -> Vec<u8> {
+pub(crate) fn downsampled(rgb: &[u8], w: usize, h: usize, tw: usize, th: usize, s: f64) -> Vec<u8> {
     let mut out = Vec::with_capacity(3 * tw * th);
     // The old pixels a new one spans along an axis, with their shares
     let spans = |n: usize, old: usize| -> Vec<Vec<(usize, f64)>> {
@@ -252,15 +194,9 @@ fn downsampled(rgb: &[u8], w: usize, h: usize, tw: usize, th: usize, s: f64) -> 
     out
 }
 
-/// The image as the tracer reads it: sRGB-encoded bytes, three per pixel, composited over
-/// `matte` in that encoding (as SVG composites).
-#[cfg(test)]
-fn rgb8(image: &Image, matte: [f32; 3]) -> Result<Vec<u8>, TraceError> {
-    pixels8(image, matte).map(|(rgb, _)| rgb)
-}
-
-/// [`rgb8`] and each pixel's alpha.
-fn pixels8(image: &Image, matte: [f32; 3]) -> Result<(Vec<u8>, Vec<f32>), TraceError> {
+/// The image as the tracer reads it, sRGB-encoded bytes, three per pixel, composited over
+/// `matte` in that encoding (as SVG composites); and each pixel's alpha.
+pub(crate) fn pixels8(image: &Image, matte: [f32; 3]) -> Result<(Vec<u8>, Vec<f32>), TraceError> {
     let n = image.width * image.height;
     if n == 0 {
         return Err(TraceError::Empty);
@@ -327,6 +263,12 @@ fn encode(v: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{trace, trace_with};
+
+    /// The image's colours as the tracer reads them.
+    fn rgb8(image: &Image, matte: [f32; 3]) -> Result<Vec<u8>, TraceError> {
+        pixels8(image, matte).map(|(rgb, _)| rgb)
+    }
 
     fn image(pixels: Pixels, width: usize, height: usize) -> Image {
         Image {
@@ -454,8 +396,8 @@ mod tests {
             for host in [Capabilities::ALL, graphite, Capabilities::NONE] {
                 for keep_transparency in [false, true] {
                     let options = TraceOptions {
-                        host,
                         keep_transparency,
+                        host,
                         ..TraceOptions::default()
                     };
                     trace(&image(Pixels::Rgba8(px), *w, *h), &options).unwrap();

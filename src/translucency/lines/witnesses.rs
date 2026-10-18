@@ -1,8 +1,25 @@
 //! The colours either side of a link and the relations they solve: the witnesses.
 
-use super::*;
+use glam::{DVec2, DVec3};
 
-// ----------------------------------------------------------------------------- colors
+use super::{Chain, JUNCTION_GAP, Link, TOL, bez, bez_d1, hyp, max_of};
+use crate::translucency::raster::{
+    Image, NOISE, arange, cheb, linspace, median_rows, rows_mean, sum_all3, unit_of,
+};
+
+/// The colors of `v` where `sel` holds.
+fn pick(v: &[DVec3], sel: &[bool]) -> Vec<DVec3> {
+    v.iter()
+        .zip(sel)
+        .filter(|(_, s)| **s)
+        .map(|(c, _)| *c)
+        .collect()
+}
+
+/// The median deviation of colors `v` from `r`, the widest channel.
+fn deviation(v: &[DVec3], r: DVec3) -> f64 {
+    median_rows(&v.iter().map(|c| (*c - r).abs()).collect::<Vec<_>>()).max_element()
+}
 
 /// The colors of a chain's part near end `e`, oriented along the path leaving the chain by
 /// `e`: medians over the points `skip` to `skip + window` px from the end, as rows (left,
@@ -18,27 +35,17 @@ pub fn part_colours(ch: &Chain, e: usize, window: f64, skip: f64) -> (Vec<DVec3>
     if sel.iter().filter(|s| **s).count() < 3 {
         sel = d.iter().map(|&v| v <= skip + window).collect();
     }
-    let pick = |v: &[DVec3]| {
-        v.iter()
-            .zip(&sel)
-            .filter(|(_, s)| **s)
-            .map(|(c, _)| *c)
-            .collect::<Vec<_>>()
-    };
-    let (mut left, mut right) = (pick(&ch.left), pick(&ch.right));
+    let (mut left, mut right) = (pick(&ch.left, &sel), pick(&ch.right, &sel));
     // leaving by end 1 the path runs along the chain, by end 0 against it: left is right
     if e == 0 {
         std::mem::swap(&mut left, &mut right);
     }
-    let dev_of = |v: &[DVec3], r: DVec3| {
-        median_rows(&v.iter().map(|c| (*c - r).abs()).collect::<Vec<_>>()).max_element()
-    };
     let mut rows = vec![median_rows(&left), median_rows(&right)];
-    let mut dev = vec![dev_of(&left, rows[0]), dev_of(&right, rows[1])];
+    let mut dev = vec![deviation(&left, rows[0]), deviation(&right, rows[1])];
     if let Some(c) = &ch.centre {
-        let cc = pick(c);
+        let cc = pick(c, &sel);
         rows.push(median_rows(&cc));
-        dev.push(dev_of(&cc, rows[2]));
+        dev.push(deviation(&cc, rows[2]));
     }
     (rows, max_of(&dev), sel)
 }
@@ -185,6 +192,17 @@ pub struct Witness {
     pub outside: Vec<DVec2>,
 }
 
+impl Witness {
+    fn new(sv: Solved, inside: Vec<DVec2>, outside: Vec<DVec2>) -> Self {
+        Witness {
+            why: sv.why,
+            solved: sv.k.is_some() && sv.m.is_some(),
+            inside,
+            outside,
+        }
+    }
+}
+
 pub(super) fn side_points(ch: &Chain, sel: &[bool]) -> Vec<DVec2> {
     let idx: Vec<usize> = (0..sel.len()).filter(|&i| sel[i]).collect();
     let d = ch.side_d;
@@ -198,9 +216,8 @@ pub(super) fn side_points(ch: &Chain, sel: &[bool]) -> Vec<DVec2> {
 /// differ; and steps along single chains. Failed candidates are kept with `why`.
 pub fn line_witnesses(img: &Image, chains: &[Chain], links: &[Link]) -> Vec<Witness> {
     let u = unit_of(img.width);
-    let s = img.width as f64 / 330.0;
     // the arms of a crossing read at 330 run 3 to 12 px; in proportion above
-    let window = 10.0 * s;
+    let window = 10.0 * u;
     let mut out = Vec::new();
     for l in links {
         let ((i, ea), (j, eb)) = (l.a, l.b);
@@ -225,17 +242,17 @@ pub fn line_witnesses(img: &Image, chains: &[Chain], links: &[Link]) -> Vec<Witn
             }
             let (p, nrm) = bridge(x.p, x.heading, y.p, y.heading, 24);
             let d = a.side_d.max(b.side_d);
-            let lb_: Vec<DVec3> = p
+            let left: Vec<DVec3> = p
                 .iter()
                 .zip(&nrm)
                 .map(|(q, n)| img.sample(q.x + d * n.x, q.y + d * n.y))
                 .collect();
-            let rb_: Vec<DVec3> = p
+            let right: Vec<DVec3> = p
                 .iter()
                 .zip(&nrm)
                 .map(|(q, n)| img.sample(q.x - d * n.x, q.y - d * n.y))
                 .collect();
-            let mut bm = vec![median_rows(&lb_), median_rows(&rb_)];
+            let mut bm = vec![median_rows(&left), median_rows(&right)];
             let mut am = vec![0.5 * (ra[0] + rb[0]), 0.5 * (ra[1] + rb[1])];
             if a.centre.is_some() && b.centre.is_some() {
                 let cb: Vec<DVec3> = p.iter().map(|q| img.sample(q.x, q.y)).collect();
@@ -250,12 +267,7 @@ pub fn line_witnesses(img: &Image, chains: &[Chain], links: &[Link]) -> Vec<Witn
             inside.extend(p.iter().zip(&nrm).map(|(q, n)| *q - d * *n));
             let mut outside = side_points(a, &sa);
             outside.extend(side_points(b, &sb));
-            out.push(Witness {
-                why: sv.why,
-                solved: sv.k.is_some() && sv.m.is_some(),
-                inside,
-                outside,
-            });
+            out.push(Witness::new(sv, inside, outside));
             continue;
         }
         let sv = solve_relation(&ra, &rb, da.max(db));
@@ -264,12 +276,7 @@ pub fn line_witnesses(img: &Image, chains: &[Chain], links: &[Link]) -> Vec<Witn
         } else {
             (side_points(a, &sa), side_points(b, &sb))
         };
-        out.push(Witness {
-            why: sv.why,
-            solved: sv.k.is_some() && sv.m.is_some(),
-            inside: pin,
-            outside: pout,
-        });
+        out.push(Witness::new(sv, pin, pout));
     }
     for ch in chains {
         out.extend(step_witnesses(ch, window, 2.0 * u));
@@ -296,13 +303,6 @@ pub fn step_witnesses(ch: &Chain, window: f64, skip: f64) -> Vec<Witness> {
             .map(|&v| v >= t + skip && v <= t + skip + window)
             .collect();
         (before, after)
-    };
-    let pick = |v: &[DVec3], sel: &[bool]| {
-        v.iter()
-            .zip(sel)
-            .filter(|(_, s)| **s)
-            .map(|(c, _)| *c)
-            .collect::<Vec<_>>()
     };
     let count = |sel: &[bool]| sel.iter().filter(|s| **s).count();
     let cand: Vec<f64> = ts
@@ -339,14 +339,11 @@ pub fn step_witnesses(ch: &Chain, window: f64, skip: f64) -> Vec<Witness> {
         for sel in [&before, &after] {
             let (l, r) = (pick(&ch.left, sel), pick(&ch.right, sel));
             let mut rr = vec![median_rows(&l), median_rows(&r)];
-            let dev_of = |v: &[DVec3], m: DVec3| {
-                median_rows(&v.iter().map(|c| (*c - m).abs()).collect::<Vec<_>>()).max_element()
-            };
-            let mut dv = vec![dev_of(&l, rr[0]), dev_of(&r, rr[1])];
+            let mut dv = vec![deviation(&l, rr[0]), deviation(&r, rr[1])];
             if let Some(c) = &ch.centre {
                 let cc = pick(c, sel);
                 rr.push(median_rows(&cc));
-                dv.push(dev_of(&cc, rr[2]));
+                dv.push(deviation(&cc, rr[2]));
             }
             rows.push(rr);
             devs.push(max_of(&dv));
@@ -361,12 +358,7 @@ pub fn step_witnesses(ch: &Chain, window: f64, skip: f64) -> Vec<Witness> {
         } else {
             (side_points(ch, &before), side_points(ch, &after))
         };
-        out.push(Witness {
-            why: sv.why,
-            solved: sv.k.is_some() && sv.m.is_some(),
-            inside: pin,
-            outside: pout,
-        });
+        out.push(Witness::new(sv, pin, pout));
     }
     out
 }

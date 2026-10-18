@@ -184,18 +184,17 @@ impl Hierarchy {
 
         // The boundaries between regions, for the perimeters and transition widths of the
         // merged nodes below
+        let widths = &widths;
         let mut boundaries: Vec<(u32, u32, u32, f64)> = neighbors
             .iter()
             .enumerate()
             .flat_map(|(a, map)| {
+                let a = a as u32;
                 map.iter()
-                    .filter(move |(b, _)| (a as u32) < **b)
-                    .map(move |(&b, &length)| (a as u32, b, length, 0.))
+                    .filter(move |(b, _)| a < **b)
+                    .map(move |(&b, &length)| (a, b, length, widths[&(a, b)]))
             })
             .collect();
-        for boundary in &mut boundaries {
-            boundary.3 = widths[&(boundary.0, boundary.1)];
-        }
         boundaries.sort_unstable_by_key(|b| (b.0, b.1));
 
         // Regions on the image border are neighbors through the outside too, since what lies
@@ -496,7 +495,7 @@ impl Hierarchy {
                     }
                     // Inside a straight run of the edge along the pixel grid, which is crisp
                     // whether drawn as pixel art or as vector art on the grid, and so says
-                    // nothing: a stroke with a bar on the grid measured as not anti-aliased
+                    // nothing
                     let along = |k: i32| -> bool {
                         let (u, v) = (x + k * dy, y + k * dx);
                         at(u, v).is_some_and(|p| self.contains(node, p))
@@ -521,8 +520,7 @@ impl Hierarchy {
                     }
                     counted += 1;
                     // A mixture lies between the two sides and on the line between them in
-                    // color space; a third color in a row (sea between a coast and a dark rim)
-                    // does not
+                    // color space; a third color in a row does not
                     let between = |k: usize| {
                         let d = color(k) - own;
                         let t = d.dot(span) / length;

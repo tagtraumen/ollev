@@ -5,7 +5,7 @@
 use glam::{DVec2, Vec2};
 
 use super::snap::{Site, stand_in};
-use super::{ALIGN, Repeat, Structure, Transform, overlaps};
+use super::{ALIGN, Repeat, Structure, Transform, overlaps, reach};
 use crate::{Context, Scene};
 
 /// Translations on a lattice: `origin + i * a + j * b` for each point's `(i, j)`, with `b`
@@ -80,7 +80,7 @@ pub(super) fn lattice(points: &[Vec2]) -> Option<Lattice> {
         })
         .collect();
     let mut seen = index.clone();
-    seen.sort();
+    seen.sort_unstable();
     seen.dedup();
     if seen.len() != n {
         return None;
@@ -370,14 +370,7 @@ fn structured(ctx: &Context, scene: &mut Scene, repeat: &Repeat) -> Option<Repea
     if repeat.members.len() < 3 {
         return None;
     }
-    let reach = repeat
-        .prototype
-        .loops
-        .iter()
-        .flatten()
-        .flatten()
-        .map(|p| p.length())
-        .fold(1., f32::max);
+    let reach = reach(&repeat.prototype);
     let (structure, placed) = on_lattice(repeat, reach).or_else(|| on_circle(repeat, reach))?;
     let candidate = Repeat {
         structure,

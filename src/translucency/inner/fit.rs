@@ -1,6 +1,9 @@
 //! A relation's inner fit: the layer alone and its score.
 
-use super::*;
+use super::{
+    Class, DVec3, InnerInputs, MATCH_TOL, NO_FIT, Open, PixelFit, SHOW_THROUGH, Tint, classify_colors, in_gamut_c, open_at,
+    with_interior,
+};
 
 /// The fit of a relation with its inner layers: per pixel what explains it (inner layers
 /// only within their kept regions), the tints, the materials and the score.
@@ -108,7 +111,7 @@ pub fn assemble(
         }
     }
     shares[4] = op.total - shares[..4].iter().sum::<f64>();
-    for s in shares.iter_mut() {
+    for s in &mut shares {
         *s /= total;
     }
     // A material counts by the pixels its image explains alone, since through a white or
@@ -128,13 +131,12 @@ pub fn assemble(
             materials.push((i, alone[i], through[i]));
         }
     }
-    let fitshare = close / total;
     InnerFit {
         k,
         m,
         px,
         tints,
-        score: fitshare,
+        score: close / total,
         materials,
         white: Vec::new(),
         open: op.open.clone(),
@@ -160,20 +162,26 @@ pub fn refit_alone(inp: &InnerInputs, op: &Open, k: f64, m: DVec3, pc: &[PixelFi
     if n > 0.0 { s / n } else { m }
 }
 
-/// The layer alone at (k, m), m refitted on the layer alone's pixels twice (for the lab).
-#[cfg(any(test, feature = "diagnostics"))]
-pub fn fit_at(inp: &InnerInputs, k: f64, m0: DVec3) -> InnerFit {
+/// m refitted twice on the layer alone's pixels, in gamut, with the materials in the open at
+/// the start (a refit moves m by a few levels).
+fn refit_twice(inp: &InnerInputs, op: &Open, k: f64, m0: DVec3) -> DVec3 {
     let mut m = m0;
-    // the materials in the open at the start (a refit moves m by a few levels)
-    let op = open_at(inp, k, m);
     for _ in 0..2 {
-        let pc = classify_colors(inp, &op, k, m, false);
-        let m2 = refit_alone(inp, &op, k, m, &pc);
+        let pc = classify_colors(inp, op, k, m, false);
+        let m2 = refit_alone(inp, op, k, m, &pc);
         if !in_gamut_c(k, m2) {
             break;
         }
         m = m2;
     }
+    m
+}
+
+/// The layer alone at (k, m), m refitted on the layer alone's pixels twice (for the lab).
+#[cfg(any(test, feature = "diagnostics"))]
+pub fn fit_at(inp: &InnerInputs, k: f64, m0: DVec3) -> InnerFit {
+    let op = open_at(inp, k, m0);
+    let m = refit_twice(inp, &op, k, m0);
     // where the refits left m where it started, the open materials are those already found
     // (`open_at` is a function of k and m alone)
     if m.to_array().map(f64::to_bits) == m0.to_array().map(f64::to_bits) {
@@ -218,16 +226,8 @@ pub(super) fn score_alone(inp: &InnerInputs, op: &Open, per_color: &[PixelFit]) 
 
 /// [`fit_at`]'s relation and score, without the fit's record.
 pub(super) fn fit_at_score(inp: &InnerInputs, k: f64, m0: DVec3) -> (DVec3, f64) {
-    let mut m = m0;
-    let op = open_at(inp, k, m);
-    for _ in 0..2 {
-        let pc = classify_colors(inp, &op, k, m, false);
-        let m2 = refit_alone(inp, &op, k, m, &pc);
-        if !in_gamut_c(k, m2) {
-            break;
-        }
-        m = m2;
-    }
+    let op = open_at(inp, k, m0);
+    let m = refit_twice(inp, &op, k, m0);
     let op = if m.to_array().map(f64::to_bits) == m0.to_array().map(f64::to_bits) {
         op
     } else {

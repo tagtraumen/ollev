@@ -8,8 +8,7 @@ use glam::{Vec2, Vec3};
 use crate::edges::{EdgeField, EdgeTerm};
 use crate::{Context, Scene, Window};
 
-/// Steps of the polish: the knee of truth gained against time (on 42 items, +0.15 dB at 3
-/// steps, +0.29 at 10, +0.39 at 20 for twice the time of 10).
+// Steps of the polish: the knee of the error removed against time.
 pub const STEPS: usize = 10;
 /// The most a step moves a point, in pixels: the anti-aliasing reach, as a polish refines an
 /// edge where it is and does not move it to another.
@@ -44,8 +43,8 @@ struct Slot {
 }
 
 /// The whole scene's error per pixel and its derivative by the pixel's colour: the plain
-/// squared error with the edge term, as the economy judges (under the tolerance an edge moved
-/// within the noise costs nothing; the 42-item sample lost 0.35 dB truth that way).
+// squared error with the edge term, as the economy judges (with a tolerance instead, an edge
+/// moved within the noise would cost nothing).
 struct Loss {
     weights: Option<EdgeField>,
     lambda: f64,
@@ -62,12 +61,10 @@ impl Loss {
     }
 }
 
-/// Moves the objects of `scene` still in error by [`STEPS`] joint steps down the scene's
-/// error, keeping the best scene seen. Each parameter steps by its gradient over its own
-/// curvature, read off its last move (a diagonal secant step): an edge at its optimum sits in
-/// a minimum sharper than any common step (apiary's long edges overshot by 0.1 px).
-pub fn polish(ctx: &Context, scene: &mut Scene, edge: Option<EdgeTerm>) -> Report {
-    let steps = STEPS;
+/// Moves the objects of `scene` still in error by [`STEPS`] joint steps down its error, keeping
+/// the best scene seen. Each parameter steps by its gradient over its curvature, read off its
+/// last move (a diagonal secant step), as an edge's minimum is sharper than any common step.
+pub async fn polish(ctx: &Context, scene: &mut Scene, edge: Option<EdgeTerm>) -> Report {
     let mut report = Report::default();
     if scene.shapes.len() < 2 {
         return report;
@@ -80,11 +77,7 @@ pub fn polish(ctx: &Context, scene: &mut Scene, edge: Option<EdgeTerm>) -> Repor
     // As the economy leaves them: the background, the translucent layers and what lies
     // beneath and above them, the clips; and a repeat's members, drawn as one prototype
     let fixed = crate::economy::fixed(scene);
-    let members: crate::HashSet<usize> = scene
-        .repeats
-        .iter()
-        .flat_map(|r| r.members.iter().map(|m| m.0))
-        .collect();
+    let members = crate::economy::repeated(scene);
     let movable: Vec<bool> = scene
         .shapes
         .iter()
@@ -109,7 +102,7 @@ pub fn polish(ctx: &Context, scene: &mut Scene, edge: Option<EdgeTerm>) -> Repor
     let mut best: Option<(f64, Vec<f32>)> = None;
     // The parameters and gradient of the last step, for the curvature
     let mut last: Option<(Vec<f32>, Vec<f32>)> = None;
-    for step in 0..=steps {
+    for step in 0..=STEPS {
         set_params(scene, &slots, &params);
         let (pixels, below) = forward(scene, window, &slots);
         let (value, d_image) = image_loss(ctx, window, &pixels, &loss);
@@ -119,9 +112,10 @@ pub fn polish(ctx: &Context, scene: &mut Scene, edge: Option<EdgeTerm>) -> Repor
         if best.as_ref().is_none_or(|b| value < b.0) {
             best = Some((value, params.clone()));
         }
-        if step == steps || crate::progress::poll() {
+        if step == STEPS {
             break;
         }
+        crate::progress::poll().await;
         let grad = backward(scene, window, &slots, &below, d_image, params.len());
         let next: Vec<f32> = (0..params.len())
             .map(|j| {

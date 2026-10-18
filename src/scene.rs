@@ -1,5 +1,8 @@
 //! The stack of shapes being built.
 
+use std::cell::{OnceCell, RefCell};
+use std::sync::Arc;
+
 use crate::render::{FillRule, Gradient, Path, Subpath};
 use crate::tracer::Cubic;
 use glam::{Vec2, Vec3};
@@ -18,6 +21,7 @@ pub struct Fill {
 }
 
 impl Fill {
+    /// One opaque colour.
     pub fn solid(color: Vec3) -> Self {
         Self {
             color,
@@ -103,12 +107,12 @@ pub struct Shape {
     pub primitive: Option<(usize, crate::tracer::primitives::Primitive)>,
     /// The shape's coverage of its bounding box, once something asked for it; cleared whenever
     /// the outline changes through [`Shape::update_bounds`].
-    pub raster: std::cell::OnceCell<Raster>,
+    pub raster: OnceCell<Raster>,
     /// What a blurred shape paints over its box, its raster blurred; cleared with the raster.
-    pub painted: std::cell::OnceCell<Raster>,
+    pub painted: OnceCell<Raster>,
     /// A gradient fill's paint over the painted box, the first time a render asks for it; kept
     /// with the fill and box it was read for, so a shape given another fill reads it again.
-    pub paint: std::cell::RefCell<Option<std::sync::Arc<Paint>>>,
+    pub paint: RefCell<Option<Arc<Paint>>>,
     /// Where the trace found sharp corners, kept through every rebuild of the outline so a
     /// corner the fit rounded a little is not simplified away. Empty means the angle alone
     /// decides, see [`Shape::corner_flags`].
@@ -120,8 +124,7 @@ pub struct Shape {
     /// primitive or a stroke does) is what the image asks for; crisp pixel art is not.
     pub smooth: bool,
     /// Whether the shape's edges are anti-aliased at all, whatever the colours inside, since a
-    /// network of strokes may run through a region of more than one colour (as glassware's
-    /// grid under the glass).
+    /// network of strokes may run through a region of more than one colour.
     pub antialiased: bool,
     /// The region of the hierarchy the shape was drawn for, whose pixels are the honest
     /// mask of what it covers.
@@ -211,9 +214,9 @@ impl Shape {
             primitive: None,
             changed: 0,
             fitted: 0,
-            raster: std::cell::OnceCell::new(),
-            painted: std::cell::OnceCell::new(),
-            paint: std::cell::RefCell::new(None),
+            raster: OnceCell::new(),
+            painted: OnceCell::new(),
+            paint: RefCell::new(None),
             corners: Vec::new(),
             stroke: None,
             smooth: false,
@@ -231,13 +234,30 @@ impl Shape {
     pub fn primitive_center(&self) -> Option<Vec2> {
         use crate::tracer::primitives::Primitive;
         match self.primitive {
-            Some((_, Primitive::Circle { center, .. }))
-            | Some((_, Primitive::Ellipse { center, .. })) => Some(center),
+            Some((_, Primitive::Circle { center, .. } | Primitive::Ellipse { center, .. })) => {
+                Some(center)
+            }
             _ => None,
         }
     }
 
+    /// A shape of `loops` taking this one's fill, clip, id, edge flags, node, layer and blur.
+    #[must_use]
+    pub fn successor(&self, loops: Vec<Vec<Cubic>>) -> Self {
+        Shape {
+            clip: self.clip,
+            id: self.id,
+            smooth: self.smooth,
+            antialiased: self.antialiased,
+            node: self.node,
+            layer: self.layer,
+            blur: self.blur,
+            ..Shape::new(loops, self.fill)
+        }
+    }
+
     /// The shape with these remembered corners.
+    #[must_use]
     pub fn with_corners(mut self, corners: Vec<Vec2>) -> Self {
         self.corners = corners;
         self.snap_corners();
@@ -329,8 +349,8 @@ impl Shape {
         let points = self.loops.iter().flatten().flatten();
         self.min = points.clone().fold(Vec2::INFINITY, |a, &p| a.min(p));
         self.max = points.fold(Vec2::NEG_INFINITY, |a, &p| a.max(p));
-        self.raster = std::cell::OnceCell::new();
-        self.painted = std::cell::OnceCell::new();
+        self.raster = OnceCell::new();
+        self.painted = OnceCell::new();
     }
 
     /// Moves the shape by `offset` (a window's trace into its frame), what it paints forgotten.
@@ -361,9 +381,10 @@ impl Shape {
     }
 
     /// The shape with its blur set to `sigma` pixels, what it paints forgotten.
+    #[must_use]
     pub fn with_blur(mut self, sigma: f32) -> Self {
         self.blur = sigma;
-        self.painted = std::cell::OnceCell::new();
+        self.painted = OnceCell::new();
         self
     }
 
@@ -397,7 +418,7 @@ impl Shape {
 
     /// [`Fill::paint_pixel`] over the painted box (see [`Shape::painted`]) for a gradient fill,
     /// evaluated once while the fill and the box stay; `None` for a flat fill, cheap to read.
-    pub fn paint(&self) -> Option<std::sync::Arc<Paint>> {
+    pub fn paint(&self) -> Option<Arc<Paint>> {
         self.fill.gradient?;
         let r = self.painted();
         let at = [r.x0, r.y0, r.w, r.h];
@@ -412,7 +433,7 @@ impl Shape {
             .flat_map(|y| (r.x0..r.x0 + r.w).map(move |x| (x, y)))
             .map(|(x, y)| self.fill.paint_pixel(x, y))
             .collect();
-        let p = std::sync::Arc::new(Paint {
+        let p = Arc::new(Paint {
             fill: self.fill,
             at,
             values,
@@ -436,16 +457,11 @@ impl Shape {
             return out;
         }
         let raster = self.raster();
-        // The rows and columns the box and the window share
-        let x0 = raster.x0.max(window.x);
-        let x1 = (raster.x0 + raster.w).min(window.x + window.width);
-        let y0 = raster.y0.max(window.y);
-        let y1 = (raster.y0 + raster.h).min(window.y + window.height);
-        for y in y0..y1 {
-            let from = (y - raster.y0) * raster.w + x0 - raster.x0;
-            let to = (y - window.y) * window.width + x0 - window.x;
-            if x1 > x0 {
-                out[to..to + x1 - x0].copy_from_slice(&raster.values[from..from + x1 - x0]);
+        if let Some(s) = raster.overlap(window) {
+            for y in s.y..s.y + s.height {
+                let from = (y - raster.y0) * raster.w + s.x - raster.x0;
+                let to = (y - window.y) * window.width + s.x - window.x;
+                out[to..to + s.width].copy_from_slice(&raster.values[from..from + s.width]);
             }
         }
         out
@@ -495,7 +511,7 @@ pub struct Scene {
     /// The whole scene rendered, with the count of changes it is current for: kept up to date
     /// while shapes are pushed on top, which is what fitting one shape after another does, and
     /// rendered again when something else changed it.
-    canvas: std::cell::RefCell<Option<(u64, Vec<Vec3>)>>,
+    canvas: RefCell<Option<(u64, Vec<Vec3>)>>,
     /// Objects drawn with the shapes but outside the scene's own render: a translucent layer's
     /// marks (see `translucency::vocabulary`), added once the scene is decided. A mark with a
     /// clip shows through the layer's shape, the first of the layer's group.
@@ -522,6 +538,7 @@ impl Scene {
     /// render as the flat shapes do.
     #[cfg(feature = "diagnostics")]
     #[doc(hidden)]
+    #[must_use]
     pub fn flat(&self) -> Scene {
         let mut flat = self.clone();
         flat.shapes.iter_mut().for_each(|s| s.layer = None);
@@ -554,7 +571,7 @@ impl Scene {
             shapes: vec![background],
             next_id: 1,
             changes: 0,
-            canvas: std::cell::RefCell::new(None),
+            canvas: RefCell::new(None),
             marks: Vec::new(),
             marks_layer: None,
             fidelity: None,
@@ -589,21 +606,7 @@ impl Scene {
             && *current == before
             && position + 1 == self.shapes.len()
         {
-            let shape = &self.shapes[position];
-            let raster = shape.painted();
-            let clip = self.clip_mask(Window::full(self.width, self.height), position);
-            for y in raster.y0..(raster.y0 + raster.h).min(self.height) {
-                for x in raster.x0..(raster.x0 + raster.w).min(self.width) {
-                    let i = y * self.width + x;
-                    let alpha = raster.values[(y - raster.y0) * raster.w + x - raster.x0]
-                        * clip.as_ref().map_or(1., |c| c[i]);
-                    let p = pixels[i];
-                    // Composited as `render_shapes` does, the fill's opacity included, so a
-                    // translucent shape on top is not opaque in the cached canvas
-                    let (c, a) = shape.fill.paint_pixel(x, y);
-                    pixels[i] = p + alpha * a * (c - p);
-                }
-            }
+            self.composite_onto(Window::full(self.width, self.height), position, pixels);
             *current = change;
         }
         id
@@ -707,18 +710,8 @@ impl Scene {
         // Straight from the raster over the rows and columns it shares with the window, its
         // clip read over those alone
         let raster = shape.painted();
-        let x0 = raster.x0.max(window.x);
-        let x1 = (raster.x0 + raster.w).min(window.x + window.width);
-        let y0 = raster.y0.max(window.y);
-        let y1 = (raster.y0 + raster.h).min(window.y + window.height);
-        if x1 <= x0 || y1 <= y0 {
+        let Some(shared) = raster.overlap(window) else {
             return;
-        }
-        let shared = Window {
-            x: x0,
-            y: y0,
-            width: x1 - x0,
-            height: y1 - y0,
         };
         let clip = self.clip_mask(shared, k);
         let paint = shape.paint();
@@ -726,13 +719,13 @@ impl Scene {
             Some(p) => p.at(x, y),
             None => shape.fill.paint_pixel(x, y),
         };
-        for y in y0..y1 {
-            for x in x0..x1 {
+        for y in shared.y..shared.y + shared.height {
+            for x in shared.x..shared.x + shared.width {
                 let j = (y - window.y) * window.width + x - window.x;
                 let alpha = raster.values[(y - raster.y0) * raster.w + x - raster.x0]
-                    * clip
-                        .as_ref()
-                        .map_or(1., |c| c[(y - y0) * shared.width + x - x0]);
+                    * clip.as_ref().map_or(1., |c| {
+                        c[(y - shared.y) * shared.width + x - shared.x]
+                    });
                 // an uncovered pixel keeps what it shows; its paint is not evaluated
                 if alpha == 0. {
                     continue;
@@ -780,15 +773,14 @@ impl Scene {
             if !window.intersects(shape.paint_min(), shape.paint_max()) {
                 continue;
             }
-            let clip = self.clip_mask(window, k);
             let raster = shape.painted();
-            let x0 = raster.x0.max(window.x);
-            let x1 = (raster.x0 + raster.w).min(window.x + window.width);
-            let y0 = raster.y0.max(window.y);
-            let y1 = (raster.y0 + raster.h).min(window.y + window.height);
+            let Some(shared) = raster.overlap(window) else {
+                continue;
+            };
+            let clip = self.clip_mask(window, k);
             let kept = shape.paint();
-            for y in y0..y1 {
-                for x in x0..x1 {
+            for y in shared.y..shared.y + shared.height {
+                for x in shared.x..shared.x + shared.width {
                     let j = (y - window.y) * window.width + x - window.x;
                     // At the fill's opacity, as `render_shapes` composites it, so a translucent
                     // shape above a fitted one lets the fit see what lies under it
@@ -890,6 +882,19 @@ pub struct Raster {
 }
 
 impl Raster {
+    /// The pixels the box shares with `window`, if any.
+    pub fn overlap(&self, window: Window) -> Option<Window> {
+        let (x0, y0) = (self.x0.max(window.x), self.y0.max(window.y));
+        let x1 = (self.x0 + self.w).min(window.x + window.width);
+        let y1 = (self.y0 + self.h).min(window.y + window.height);
+        (x1 > x0 && y1 > y0).then(|| Window {
+            x: x0,
+            y: y0,
+            width: x1 - x0,
+            height: y1 - y0,
+        })
+    }
+
     /// The coverage of image pixel `i`, zero outside the box.
     pub fn at(&self, i: usize, width: usize) -> f32 {
         let (x, y) = (i % width, i / width);
@@ -911,87 +916,4 @@ impl Raster {
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
-    use super::*;
-
-    /// A shape moved by an offset covers the same pixels moved by it, its gradient with it.
-    #[test]
-    fn a_moved_shape_paints_the_same_moved() {
-        let fill = Fill {
-            color: Vec3::ZERO,
-            gradient: Some(Gradient::Linear {
-                start: Vec2::new(1., 1.),
-                end: Vec2::new(5., 1.),
-                to: [1., 1., 1., 1.],
-                stops: crate::render::Stops::NONE,
-            }),
-            opacity: 1.,
-        };
-        let shape = Shape::new(square(Vec2::new(1., 1.), Vec2::new(5., 4.)), fill);
-        let mut moved = shape.clone();
-        moved.translate(Vec2::new(3., 2.));
-        assert_eq!(
-            (moved.min, moved.max),
-            (shape.min + Vec2::new(3., 2.), shape.max + Vec2::new(3., 2.))
-        );
-        let (a, b) = (shape.raster(), moved.raster());
-        assert_eq!((b.x0, b.y0, b.w, b.h), (a.x0 + 3, a.y0 + 2, a.w, a.h));
-        assert_eq!(a.values, b.values);
-        // the gradient runs from the moved start: dark at x 4, light at x 8
-        let (dark, light) = (moved.fill.at_pixel(4, 3), moved.fill.at_pixel(7, 3));
-        assert!(dark.x < 0.2 && light.x > 0.6, "{dark} {light}");
-    }
-
-    /// The layer of a translucent shape lets through what its opacity leaves, as the render
-    /// composites it: a half-opaque square over white and over black.
-    #[test]
-    fn a_translucent_layer_lets_its_share_through() {
-        let mut scene = Scene::with_background(8, 8, Vec3::ONE);
-        let (a, b) = (Vec2::new(0., 0.), Vec2::new(8., 8.));
-        let corners = [a, Vec2::new(b.x, a.y), b, Vec2::new(a.x, b.y)];
-        let square = (0..4)
-            .map(|k| {
-                let (p, q) = (corners[k], corners[(k + 1) % 4]);
-                [p, p.lerp(q, 1. / 3.), p.lerp(q, 2. / 3.), q]
-            })
-            .collect();
-        scene.push(Shape::new(
-            vec![square],
-            Fill {
-                color: Vec3::new(1., 0., 0.),
-                gradient: None,
-                opacity: 0.5,
-            },
-        ));
-        let window = Window::full(8, 8);
-        let layer = scene
-            .layer(window, 1)
-            .expect("the square reaches the window");
-        let j = 4 * 8 + 4;
-        assert!(
-            (layer.transmittance[j] - Vec3::splat(0.5))
-                .abs()
-                .max_element()
-                < 1e-4
-        );
-        let over_white = layer.color[j] + layer.transmittance[j] * Vec3::ONE;
-        let rendered = scene.render(window, 0..2, [1.; 3])[j];
-        assert!(
-            (over_white - rendered).abs().max_element() < 1e-4,
-            "{over_white} {rendered}"
-        );
-    }
-
-    /// The loops of an axis-aligned square from `a` to `b`, straight cubics.
-    pub fn square(a: Vec2, b: Vec2) -> Vec<Vec<Cubic>> {
-        let corners = [a, Vec2::new(b.x, a.y), b, Vec2::new(a.x, b.y)];
-        vec![
-            (0..4)
-                .map(|k| {
-                    let (p, q) = (corners[k], corners[(k + 1) % 4]);
-                    [p, p.lerp(q, 1. / 3.), p.lerp(q, 2. / 3.), q]
-                })
-                .collect(),
-        ]
-    }
-}
+pub(crate) mod tests;

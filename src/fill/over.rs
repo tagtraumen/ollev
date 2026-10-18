@@ -93,13 +93,12 @@ fn solve(
                 m[(k * per + j) * (n + 1)] += ridge;
             }
             let p = prior[k].as_dvec3();
-            match alphas {
-                Some(_) => b[k] += ridge * p[channel],
-                None => {
-                    b[4 * k] += ridge;
-                    for c in 0..3 {
-                        b[4 * k + 1 + c] += ridge * p[c];
-                    }
+            if alphas.is_some() {
+                b[k] += ridge * p[channel];
+            } else {
+                b[4 * k] += ridge;
+                for c in 0..3 {
+                    b[4 * k + 1 + c] += ridge * p[c];
                 }
             }
         }
@@ -153,11 +152,9 @@ fn solve(
     Some(out)
 }
 
-/// `fill` with its gradient's ramp fitted with alpha over `samples`: the stops placed where an
-/// opaque ramp through the samples' colours puts them (those paying `stop_cost`), each knot's
-/// alpha and colour by least squares, alphas held to `0..=1` and colours to what can be
-/// painted, the end transparent when `clear_end`. The start is opaque in the ramp, so a start
-/// below the others' alpha becomes the fill's opacity. None for a solid fill or no fit.
+/// `fill` with its gradient's ramp fitted with alpha over `samples`: stops where an opaque ramp
+/// paying `stop_cost` puts them, each knot's alpha and colour by least squares, the end clear
+/// when `clear_end`, the start's alpha as the fill's opacity. None for a solid fill or no fit.
 pub fn with_alpha(samples: &[Over], fill: &Fill, stop_cost: f32, clear_end: bool) -> Option<Fill> {
     let gradient = fill.gradient?;
     let plain: Vec<(Vec2, Vec3)> = samples.iter().map(|s| (s.p, s.target)).collect();
@@ -193,12 +190,11 @@ pub fn with_alpha(samples: &[Over], fill: &Fill, stop_cost: f32, clear_end: bool
     let mut colours: Vec<Vec3> = (0..knots)
         .map(|k| {
             let a = alphas[k];
-            match (k * 4 + 3 < held.len(), a > 0.) {
-                (true, true) => {
-                    let p = glam::DVec3::new(held[4 * k + 1], held[4 * k + 2], held[4 * k + 3]);
-                    (p.clamp(glam::DVec3::ZERO, glam::DVec3::splat(a)) / a).as_vec3()
-                }
-                _ => prior[k],
+            if k * 4 + 3 < held.len() && a > 0. {
+                let p = glam::DVec3::new(held[4 * k + 1], held[4 * k + 2], held[4 * k + 3]);
+                (p.clamp(glam::DVec3::ZERO, glam::DVec3::splat(a)) / a).as_vec3()
+            } else {
+                prior[k]
             }
         })
         .collect();
@@ -235,21 +231,20 @@ pub fn with_alpha(samples: &[Over], fill: &Fill, stop_cost: f32, clear_end: bool
     })
 }
 
-/// The squared error of `fill` drawn over `samples`.
-#[cfg(test)]
-fn error_over(samples: &[Over], fill: &Fill) -> f32 {
-    samples
-        .iter()
-        .map(|s| {
-            let (c, a) = fill.paint(s.p);
-            (s.below + a * (c - s.below) - s.target).length_squared()
-        })
-        .sum()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The squared error of `fill` drawn over `samples`.
+    fn error_over(samples: &[Over], fill: &Fill) -> f32 {
+        samples
+            .iter()
+            .map(|s| {
+                let (c, a) = fill.paint(s.p);
+                (s.below + a * (c - s.below) - s.target).length_squared()
+            })
+            .sum()
+    }
 
     fn glow(below: impl Fn(Vec2) -> Vec3) -> (Vec<Over>, Fill) {
         let (center, colour) = (Vec2::splat(32.), Vec3::new(0.95, 0.8, 0.3));

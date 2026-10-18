@@ -33,13 +33,11 @@ const SLACK: f64 = 0.02;
 
 /// Cleans every shape of `scene` at its place, each step kept where its cost rises by at most
 /// [`SLACK`] of the error, see [`clean_shape`].
-pub fn cleanup(ctx: &Context, scene: &mut Scene) {
+pub async fn cleanup(ctx: &Context, scene: &mut Scene) {
     let mut cleaned = 0;
     let mut removed = 0;
     for k in 1..scene.shapes.len() {
-        if crate::progress::poll() {
-            break;
-        }
+        crate::progress::poll().await;
         if scene.shapes[k].primitive.is_some() {
             continue;
         }
@@ -47,31 +45,29 @@ pub fn cleanup(ctx: &Context, scene: &mut Scene) {
         // moves with it, since the whole-scene render is cached by it
         let shape = scene.shapes.remove(k);
         scene.change();
-        let Some(place) = Place::new(ctx, scene, &shape, k, MARGIN) else {
-            scene.shapes.insert(k, shape);
-            scene.change();
-            continue;
-        };
-        let cost = place.cost(ctx, shape.fill);
-        let origin = place.window.origin();
-        let error = cost.value(&shape.path(origin));
-        let (candidate, _) = clean_shape(ctx, &cost, origin, &shape, error);
-        if candidate.loops != shape.loops {
-            cleaned += 1;
-            removed += shape.segments() - candidate.segments();
-            let change = scene.change();
-            scene.shapes.insert(
-                k,
-                Shape {
+        let candidate = Place::new(ctx, scene, &shape, k, MARGIN).map(|place| {
+            let cost = place.cost(ctx, shape.fill);
+            let origin = place.window.origin();
+            let error = cost.value(&shape.path(origin));
+            clean_shape(ctx, &cost, origin, &shape, error).0
+        });
+        match candidate {
+            Some(candidate) if candidate.loops != shape.loops => {
+                cleaned += 1;
+                removed += shape.segments() - candidate.segments();
+                let change = scene.change();
+                let cleaned = Shape {
                     id: shape.id,
                     changed: change,
                     fitted: change,
                     ..candidate
-                },
-            );
-        } else {
-            scene.shapes.insert(k, shape);
-            scene.change();
+                };
+                scene.shapes.insert(k, cleaned);
+            }
+            _ => {
+                scene.shapes.insert(k, shape);
+                scene.change();
+            }
         }
     }
     if crate::timing::enabled() {
@@ -111,17 +107,9 @@ fn clean_shape(
         if loops == current.loops {
             return;
         }
-        let candidate = Shape {
-            clip: current.clip,
-            id: current.id,
-            smooth: current.smooth,
-            antialiased: current.antialiased,
-            node: current.node,
-            layer: current.layer,
-            blur: current.blur,
-            ..Shape::new(loops, current.fill)
-        }
-        .with_corners(current.corners.clone());
+        let candidate = current
+            .successor(loops)
+            .with_corners(current.corners.clone());
         let cleaned = cost.value(&candidate.path(origin));
         let keep = total(cleaned, &candidate) <= total(*error, current) + SLACK * *error as f64;
         if keep {
@@ -173,14 +161,19 @@ pub fn clean_lines(cubics: &[Cubic]) -> Vec<Cubic> {
     c
 }
 
-/// Puts a line's handles at thirds of its chord.
+/// Puts each line's handles at thirds of its chord.
 fn thirds(c: &mut [Cubic], straight: &[bool]) {
     for (cubic, &line) in c.iter_mut().zip(straight) {
         if line {
-            cubic[1] = cubic[0].lerp(cubic[3], 1. / 3.);
-            cubic[2] = cubic[0].lerp(cubic[3], 2. / 3.);
+            third(cubic);
         }
     }
+}
+
+/// Puts the handles at thirds of the chord.
+fn third(c: &mut Cubic) {
+    c[1] = c[0].lerp(c[3], 1. / 3.);
+    c[2] = c[0].lerp(c[3], 2. / 3.);
 }
 
 /// Whether the cubic's handles lie within the tolerance of its chord.
@@ -326,12 +319,10 @@ fn meet_corner(c: &mut [Cubic], j: usize, remembered: bool) -> bool {
     c[j][0] = meet;
     c[j][1] = meet + tb * arm_b;
     if straight[0] {
-        c[i][1] = c[i][0].lerp(c[i][3], 1. / 3.);
-        c[i][2] = c[i][0].lerp(c[i][3], 2. / 3.);
+        third(&mut c[i]);
     }
     if straight[1] {
-        c[j][1] = c[j][0].lerp(c[j][3], 1. / 3.);
-        c[j][2] = c[j][0].lerp(c[j][3], 2. / 3.);
+        third(&mut c[j]);
     }
     true
 }

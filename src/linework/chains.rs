@@ -61,29 +61,26 @@ pub(super) fn follow_ridges(img: &Image, lines: &[bool]) -> Vec<bool> {
                         at(r).filter(|&i| ridge(i, n)).map(|i| (i, r.round()))
                     })
                     .max_by(|a, b| strength[a.0].total_cmp(&strength[b.0]));
-                match best {
-                    Some((i, r)) => {
-                        gap = 0;
-                        q = r;
-                        trail.push(r);
-                        // a bridged gap joins the line only once the ridge is found again
-                        for j in pending.drain(..) {
-                            out[j] = true;
-                        }
-                        let joined = lines[i] && !own.contains(&i);
-                        out[i] = true;
-                        if joined {
-                            break;
-                        }
+                if let Some((i, r)) = best {
+                    gap = 0;
+                    q = r;
+                    trail.push(r);
+                    // a bridged gap joins the line only once the ridge is found again
+                    for j in pending.drain(..) {
+                        out[j] = true;
                     }
-                    None => {
-                        gap += 1;
-                        if gap > reach {
-                            break;
-                        }
-                        q = ahead;
-                        pending.extend(at(ahead));
+                    let joined = lines[i] && !own.contains(&i);
+                    out[i] = true;
+                    if joined {
+                        break;
                     }
+                } else {
+                    gap += 1;
+                    if gap > reach {
+                        break;
+                    }
+                    q = ahead;
+                    pending.extend(at(ahead));
                 }
             }
         }
@@ -166,8 +163,7 @@ pub(super) fn linked(chains: &[Chain]) -> Vec<Linked> {
     };
     for c in 0..n {
         if !used[c] && (partner[2 * c].is_none() || partner[2 * c + 1].is_none()) {
-            let e = if partner[2 * c].is_none() { 0 } else { 1 };
-            out.push(walk(c, e, &mut used));
+            out.push(walk(c, usize::from(partner[2 * c].is_some()), &mut used));
         }
     }
     for c in 0..n {
@@ -211,7 +207,7 @@ pub(super) fn arc_length(p: &[DVec2]) -> f64 {
 
 /// A line's simplicity: its length per cubic fitted to the lines module's tolerance, over
 /// the shortest chain that module takes, at most 1 (a jagged texture chain scores low).
-pub fn smoothness(p: &[DVec2], width: usize) -> f64 {
+pub(super) fn smoothness(p: &[DVec2], width: usize) -> f64 {
     let u = unit_of(width);
     let shortest = length_px(width, MIN_CHAIN as f64) as f64;
     if p.len() < 2 {
@@ -224,7 +220,7 @@ pub fn smoothness(p: &[DVec2], width: usize) -> f64 {
 /// The target's weak edges: suppressed gradient ridges at least 3 NOISE of step, held by a
 /// strong edge or not; a texture's lines are mostly below the strong level, so its density
 /// shows only here.
-pub fn weak_edges(img: &Image) -> Vec<bool> {
+pub(super) fn weak_edges(img: &Image) -> Vec<bool> {
     let (w, h) = (img.width, img.height);
     let (mag, theta) = di_zenzo(img, SIGMA);
     let unit = 1.0 / (SIGMA * (2.0 * std::f64::consts::PI).sqrt());
@@ -241,8 +237,8 @@ pub fn weak_edges(img: &Image) -> Vec<bool> {
 
 /// How alone a line runs: per point, the weak edges a ray across meets on each side within
 /// four side offsets; one per side is the line's own shape, each beyond it a texture's next
-/// line (lena's straw weave), and the point counts by 1 / (1 + extra / 2), averaged.
-pub fn isolation(p: &[DVec2], field: &EdgeField, weak: &[bool]) -> f64 {
+/// line, and the point counts by 1 / (1 + extra / 2), averaged.
+pub(super) fn isolation(p: &[DVec2], field: &EdgeField, weak: &[bool]) -> f64 {
     let (w, h) = (field.width, field.height);
     let side = SIDE_OFFSET * field.unit;
     let nrm = normals(p);

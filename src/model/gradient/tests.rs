@@ -183,7 +183,7 @@ fn the_host_form_paints_as_the_model() {
 fn a_mapped_gradient_reads_the_same() {
     for g in gradients() {
         // Turned by 30 degrees, scaled by 2.5 and moved
-        let (k, (sin, cos)) = (2.5, 0.5236f64.sin_cos());
+        let (k, (sin, cos)) = (2.5, std::f64::consts::FRAC_PI_6.sin_cos());
         let m = [k * cos, k * sin, -k * sin, k * cos, 7., -3.];
         let big = g.mapped(&m);
         for p in [

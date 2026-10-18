@@ -4,7 +4,7 @@
 
 use glam::{DVec2, DVec3};
 
-use super::lines::{Bezier, FIT_TOL, bez, fit_cubics, trace_chains};
+use super::lines::{Bezier, FIT_TOL, bez, fit_cubics, ridge_radii, smooth_open, trace_chains};
 
 use super::raster::{
     Conn, Image, NOISE, SHOW_THROUGH, dilate, gaussian_filter, label, length_px, map1, skeletonize,
@@ -18,7 +18,7 @@ mod sheen;
 
 pub use geometry::*;
 pub use hems::*;
-use paint::*;
+use paint::{draw_stroke, stroke_gain, stroke_runs};
 pub use sheen::*;
 
 /// What to emit, and the planner's price of a cubic segment in squared RGB error
@@ -29,7 +29,7 @@ pub struct Options {
     /// The rule that keeps a mark (see [`Keep`]).
     pub keep: Keep,
     /// The edge term (see [`crate::edges`]): a mark's error weighted at the target's edges,
-    /// so a hem that saves little error but makes the skirt read as a garment still pays.
+    /// so a mark that saves little error but draws an edge still pays.
     pub edge: Option<std::sync::Arc<(crate::edges::EdgeTerm, crate::edges::EdgeField)>>,
     /// How far each pixel may deviate before it counts as error (the plan's
     /// [`crate::Context::tolerance`]): a mark's gain is the residual beyond it that it
@@ -149,8 +149,8 @@ pub struct Vocabulary {
 }
 
 /// A tint of the pin's full fit as a shape: the outline of the pixels it explains at colour
-/// `c` and opacity `1 - k` above the layer (niabot's dark folds over the dress). The peel
-/// took the tint off the beneath ([`super::Above::peel`]), so the shape draws it back.
+/// `c` and opacity `1 - k` above the layer (dark folds). The peel took the tint off the
+/// beneath ([`super::Above::peel`]), so the shape draws it back.
 #[derive(Clone, Debug)]
 pub struct TintShape {
     pub loops: Vec<Vec<Bezier>>,
@@ -173,7 +173,7 @@ pub fn outline(region: &[bool], width: usize, height: usize) -> Vec<Vec<Bezier>>
 /// The layer's vocabulary over `base` (the traced beneath with the region at k, c drawn):
 /// the tints, the lenses, the hems, then the lines inside, each fitted on what is drawn
 /// before it.
-pub fn emit(
+pub async fn emit(
     img: &Image,
     base: &[DVec3],
     region: &[bool],
@@ -211,7 +211,7 @@ pub fn emit(
         Some(c) => f64::from(c[p]),
         None => f64::from(u8::from(region[p])),
     };
-    let sts = lenses(img, &mut comp, region, &clip, above, &|c| opt.keeps(c), opt);
+    let sts = lenses(img, &mut comp, region, &clip, above, opt).await;
     let (strength, dir) = colour_lines(img);
     let band = dilate(region, w, h, Conn::Eight, length_px(w, 3.0));
     let thin: Vec<bool> = thin_lines(&strength, &dir, w, h, 3.0 * NOISE, 6.0 * NOISE)
@@ -221,14 +221,12 @@ pub fn emit(
         .collect();
     let mut taken = vec![false; img.len()];
     let mut strokes = Vec::new();
-    let mut take = |pts: &[DVec2],
-                    kind: StrokeKind,
-                    comp: &mut Vec<DVec3>,
-                    taken: &mut Vec<bool>| {
-        for f in stroke_runs(img, comp, pts, opt.segment_cost, opt.tol()) {
-            if crate::progress::poll() {
-                break;
-            }
+    let mut take = async |pts: &[DVec2],
+                          kind: StrokeKind,
+                          comp: &mut Vec<DVec3>,
+                          taken: &mut Vec<bool>| {
+        for f in stroke_runs(img, comp, pts, opt.segment_cost, opt.tol()).await {
+            crate::progress::poll().await;
             // the pieces were fitted side by side: where an earlier stroke drew over this
             // one's place, it may no longer pay
             let mark = Mark {
@@ -238,7 +236,8 @@ pub fn emit(
             let of_hue = of_layer_hue(f.colour, c);
             if crate::diagnostics::debug() {
                 eprintln!(
-                    "marks: {kind:?} candidate at {:?} (layer c {:?}) width {:.1} opacity {:.2} gain {:.1}: {}{}",
+                    "marks: {kind:?} candidate at {:?} (layer c {:?}) width {:.1} opacity {:.2} \
+                     gain {:.1}: {}{}",
                     (f.colour * 255.0).round().to_array(),
                     (c * 255.0).round().to_array(),
                     f.width,
@@ -255,8 +254,7 @@ pub fn emit(
             if !opt.keeps(&mark) || !of_hue {
                 continue;
             }
-            let covered = draw_stroke(img, comp, &f);
-            for p in covered {
+            for p in draw_stroke(img, comp, &f) {
                 taken[p] = true;
             }
             strokes.push(Stroke {
@@ -271,14 +269,14 @@ pub fn emit(
     let mut hems = hem_lines(region, &strength, w, h);
     hems.sort_by_key(|p| std::cmp::Reverse(p.len()));
     for p in &hems {
-        take(p, StrokeKind::Hem, &mut comp, &mut taken);
+        take(p, StrokeKind::Hem, &mut comp, &mut taken).await;
     }
     let near = dilate(&taken, w, h, Conn::Eight, length_px(w, 1.0));
     let rest: Vec<bool> = thin.iter().zip(&near).map(|(a, b)| *a && !*b).collect();
     let mut chains = line_chains(&rest, w, h, 5.0);
     chains.sort_by_key(|p| std::cmp::Reverse(p.len()));
     for p in &chains {
-        take(p, StrokeKind::Line, &mut comp, &mut taken);
+        take(p, StrokeKind::Line, &mut comp, &mut taken).await;
     }
     Vocabulary {
         lenses: sts,
@@ -288,8 +286,8 @@ pub fn emit(
 }
 
 /// Whether a stroke's colour is the layer's own (its body colour mixed with white or black):
-/// its chroma along the layer's within the show-through, or none. So the dress's deeper
-/// green folds are its own, and hair strands crossing it are not.
+/// its chroma along the layer's within the show-through, or none. So the layer's deeper
+/// folds are its own, and strands of another hue crossing it are not.
 pub fn of_layer_hue(colour: DVec3, c: DVec3) -> bool {
     let chroma = |v: DVec3| v - DVec3::splat((v.x + v.y + v.z) / 3.0);
     let (a, b) = (chroma(colour), chroma(c));
@@ -346,6 +344,7 @@ pub fn objects(v: &Vocabulary) -> Vec<crate::model::Object> {
 
 #[cfg(test)]
 mod tests {
+    use super::paint::fit_paint;
     use super::*;
 
     /// The coverage measured over the segments' neighbourhoods is the coverage of every
@@ -376,8 +375,8 @@ mod tests {
         let mut seed = 12345u64;
         let mut next = || {
             seed = seed
-                .wrapping_mul(6364136223846793005)
-                .wrapping_add(1442695040888963407);
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
             (seed >> 11) as f64 / (1u64 << 53) as f64
         };
         for n in [0, 1, 2, 3, 9, 40] {

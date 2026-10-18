@@ -4,22 +4,13 @@ use super::*;
 
 /// The families proposed on a level past the gates at their pin ([`GATE`] materials meeting,
 /// see `rank::contact`, and the pin on the head's relation's line), most likely first.
-pub(super) fn accepted_families(
+pub(super) async fn accepted_families(
     ctx: &Context,
     scene: &Scene,
     leaves: &[u32],
 ) -> Vec<crate::translucency::Candidate> {
-    use crate::translucency::families;
-    let describe = |c: &crate::translucency::Candidate| {
-        format!(
-            "k {:.3} c {:?} {} px{}",
-            c.k,
-            (c.fill().color * 255.).round().to_array(),
-            c.mask.iter().filter(|&&m| m).count(),
-            truth_iou(&c.mask).map_or(String::new(), |v| format!(" IoU {v:.2}"))
-        )
-    };
-    families::ranked_candidates(ctx, scene, leaves, GATE)
+    crate::translucency::families::ranked_candidates(ctx, scene, leaves, GATE)
+        .await
         .into_iter()
         .map(|r| {
             level_log(format_args!(
@@ -35,11 +26,22 @@ pub(super) fn accepted_families(
         .collect()
 }
 
+/// A candidate for the levels log: its k, colour, pixels and overlap with the truth.
+pub(super) fn describe(c: &crate::translucency::Candidate) -> String {
+    format!(
+        "k {:.3} c {:?} {} px{}",
+        c.k,
+        (c.fill().color * 255.).round().to_array(),
+        c.mask.iter().filter(|&&m| m).count(),
+        truth_iou(&c.mask).map_or(String::new(), |v| format!(" IoU {v:.2}"))
+    )
+}
+
 /// Each family decided by the whole level, not its window: the image beneath traced whole, the
 /// family put back on top; per family the scene with it and its objective (the opaque
 /// `scene`'s plus the margin). The caller accepts a family on its gate's evidence.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn decide_whole(
+pub(super) async fn decide_whole(
     ctx: &Context,
     scene: &Scene,
     families: Vec<crate::translucency::Candidate>,
@@ -51,11 +53,9 @@ pub(super) fn decide_whole(
     let without = parts(ctx, scene);
     let mut done = Vec::new();
     // the traces beneath are a level deeper, for the log
-    LEVEL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    crate::progress::nest(true);
     for (n, candidate) in families.into_iter().enumerate() {
-        if crate::progress::stage("beneath") {
-            break;
-        }
+        crate::progress::stage("beneath").await;
         let (width, height) = (ctx.width, ctx.height);
         let Some(overlay) = candidate.overlay(width, height) else {
             continue;
@@ -75,10 +75,11 @@ pub(super) fn decide_whole(
             options,
             false,
             timings,
-            &mut |_| {},
-        );
+            false,
+        )
+        .await;
         let with_parts = parts(ctx, &with);
-        let terms = layer_terms(ctx, &with, scene, &candidate);
+        let terms = LayerTerms::measure(ctx, &with, scene, &candidate);
         let better = without.total()
             + margin(
                 &with_parts,
@@ -88,11 +89,8 @@ pub(super) fn decide_whole(
                 ctx.segment_cost,
             );
         level_log(format_args!(
-            "whole family {n} k {:.3} c {:?} {} px{}: {} with {better:.0} (error {:.0}, {:.0} segments, {} paths; shared {:.1}, meeting {}, under {:.0} / {:.0}, seen {:.0} / {:.0}) without {:.0} (error {:.0}, {:.0} segments, {} paths) in {:.1?}",
-            candidate.k,
-            (candidate.fill().color * 255.).round().to_array(),
-            candidate.mask.iter().filter(|&&m| m).count(),
-            truth_iou(&candidate.mask).map_or(String::new(), |v| format!(" IoU {v:.2}")),
+            "whole family {n} {}: {} with {better:.0} (error {:.0}, {:.0} segments, {} paths; shared {:.1}, meeting {}, under {:.0} / {:.0}, seen {:.0} / {:.0}) without {:.0} (error {:.0}, {:.0} segments, {} paths) in {:.1?}",
+            describe(&candidate),
             "ACCEPTED on the relation",
             with_parts.error,
             with_parts.segments,
@@ -111,7 +109,7 @@ pub(super) fn decide_whole(
         ));
         done.push((with, better, candidate));
     }
-    LEVEL.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    crate::progress::nest(false);
     done
 }
 
@@ -140,13 +138,10 @@ pub(super) fn truth_iou(_: &[bool]) -> Option<f64> {
     None
 }
 
-/// How deep the whole traces beneath peeled shapes are nested, for [`level_log`].
-pub(super) static LEVEL: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-
 /// A line of the levels log of the translucency decisions, indented by the level.
 pub(super) fn level_log(line: std::fmt::Arguments) {
     if crate::diagnostics::levels() {
-        let level = LEVEL.load(std::sync::atomic::Ordering::Relaxed);
+        let level = crate::progress::depth();
         eprintln!("level {level}:{} {line}", "  ".repeat(level));
     }
 }
@@ -154,7 +149,7 @@ pub(super) fn level_log(line: std::fmt::Arguments) {
 /// The image beneath a candidate traced whole, by every step of a level (with `levels`, its
 /// own candidates included), with the shape put back on top and fitted against `ctx`'s image.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn beneath_with(
+pub(super) async fn beneath_with(
     ctx: &Context,
     opaque: &Scene,
     candidate: &crate::translucency::Candidate,
@@ -165,40 +160,43 @@ pub(super) fn beneath_with(
     options: Options,
     levels: bool,
     timings: &mut Timings,
-    progress: &mut dyn FnMut(&Scene),
+    show: bool,
 ) -> Scene {
     let (mut with, on_top, covered) = beneath_layers(
-        ctx, opaque, candidate, above, peeled, detail, options, levels, timings, progress,
-    );
-    timings.time("overlay", || {
-        append_overlay(
-            ctx,
-            &mut with,
-            overlay,
-            candidate,
-            covered.as_deref().map(Vec::as_slice),
-            options.stages.primitives,
-        )
-    });
+        ctx, opaque, candidate, above, peeled, detail, options, levels, timings, show,
+    )
+    .await;
+    timings
+        .time("overlay", async || {
+            append_overlay(
+                ctx,
+                &mut with,
+                overlay,
+                candidate,
+                covered.as_deref().map(Vec::as_slice),
+                options.stages.primitives,
+            );
+        })
+        .await;
     if let Some(on_top) = on_top {
         let start = with.shapes.len();
         push_all(&mut with, on_top);
-        timings.time("above", || refit_above(ctx, &mut with, start));
+        timings
+            .time("above", async || refit_above(ctx, &mut with, start).await)
+            .await;
     }
     with
 }
 
 /// Refits the parts above (shapes from `start` up) over the completed beneath and the layer's
 /// shape: lifted from the opaque trace, their rims were fitted against what that trace drew.
-pub(super) fn refit_above(ctx: &Context, scene: &mut Scene, start: usize) {
+async fn refit_above(ctx: &Context, scene: &mut Scene, start: usize) {
     let fit = Context {
         weights: None,
         ..ctx.clone()
     };
     for position in start..scene.shapes.len() {
-        if crate::progress::poll() {
-            break;
-        }
+        crate::progress::poll().await;
         if scene.shapes[position].stroke.is_some() || scene.shapes[position].primitive.is_some() {
             continue;
         }
@@ -216,7 +214,7 @@ pub(super) fn refit_above(ctx: &Context, scene: &mut Scene, start: usize) {
 /// pixels they cover. With holes, what they hold is lifted out of `opaque` ([`parts_above`])
 /// and the beneath completed and traced free there; without, the peeled image is traced whole.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn beneath_layers(
+async fn beneath_layers(
     ctx: &Context,
     opaque: &Scene,
     candidate: &crate::translucency::Candidate,
@@ -226,7 +224,7 @@ pub(super) fn beneath_layers(
     options: Options,
     levels: bool,
     timings: &mut Timings,
-    progress: &mut dyn FnMut(&Scene),
+    show: bool,
 ) -> (Scene, Option<Scene>, Option<std::sync::Arc<Vec<bool>>>) {
     let (width, height) = (ctx.width, ctx.height);
     let holes = candidate.holes.clone();
@@ -242,12 +240,17 @@ pub(super) fn beneath_layers(
     }
     // The parts above first: the beneath is completed only where they cover, since a hole
     // pixel no lifted shape covers belongs to a shape of the beneath
-    let on_top = holes
-        .as_deref()
-        .map(|h| timings.time("above", || parts_above(opaque, h, &candidate.mask)));
+    let on_top = match holes.as_deref() {
+        Some(h) => Some(
+            timings
+                .time("above", async || parts_above(opaque, h, &candidate.mask))
+                .await,
+        ),
+        None => None,
+    };
     // And the holes' blends, the anti-aliased rims that mix a part above with the beneath (see
     // [`crate::translucency::completion::complete_holes_with_blend`]): colours between the
-    // hole's and the clear beneath near it, so a gap between two hair strands is not a blend
+    // hole's and the clear beneath near it, so a gap between two parts above is not a blend
     let holes = holes.zip(on_top.as_ref()).map(|(h, top)| {
         let (mut covered, mut touched) = (vec![false; width * height], vec![false; width * height]);
         for s in &top.shapes {
@@ -273,7 +276,7 @@ pub(super) fn beneath_layers(
                 peeled[3 * i + 2] as f32,
             ) / 255.
         };
-        let show = crate::translucency::SHOW_THROUGH;
+        let through = crate::translucency::SHOW_THROUGH;
         let reach = crate::translucency::raster::length_px(width, 2.0) as isize;
         let blend: Vec<bool> = (0..width * height)
             .map(|i| {
@@ -305,8 +308,8 @@ pub(super) fn beneath_layers(
                             let b = colour(j);
                             let ab = b - a;
                             let t = ((p - a).dot(ab) / ab.length_squared().max(1e-6)).clamp(0., 1.);
-                            (p - b).abs().max_element() > show
-                                && (p - (a + t * ab)).abs().max_element() <= show
+                            (p - b).abs().max_element() > through
+                                && (p - (a + t * ab)).abs().max_element() <= through
                         })
                     })
                 })
@@ -314,11 +317,16 @@ pub(super) fn beneath_layers(
             .collect();
         (std::sync::Arc::new(core), blend)
     });
-    let completed = holes.as_ref().map(|(h, blend)| {
-        timings.time("completion", || {
-            completed_beneath(peeled, h, blend, width, height, detail)
-        })
-    });
+    let completed = match &holes {
+        Some((h, blend)) => Some(
+            timings
+                .time("completion", async || {
+                    completed_beneath(peeled, h, blend, width, height, detail).await
+                })
+                .await,
+        ),
+        None => None,
+    };
     let holes = holes.map(|(h, blend)| {
         std::sync::Arc::new(
             h.iter()
@@ -328,7 +336,8 @@ pub(super) fn beneath_layers(
         )
     });
     let image = completed.as_deref().unwrap_or(peeled);
-    let (mut inner_ctx, inner_hierarchy) = crate::hierarchy::analyze(image, width, height, detail, timings);
+    let (mut inner_ctx, inner_hierarchy) =
+        crate::hierarchy::analyze(image, width, height, detail, timings).await;
     let frame = Window::full(width, height);
     let edge = peeled_edge(&candidate.mask, width, height, above);
     let peel = Some((candidate.mask.as_slice(), candidate.k));
@@ -342,8 +351,9 @@ pub(super) fn beneath_layers(
         Some(&edge),
         levels,
         timings,
-        progress,
-    );
+        show,
+    )
+    .await;
     // the beneath's and the parts above's scenes in the peel directory, as SVGs
     #[cfg(feature = "diagnostics")]
     if let (Some(dir), Some(top)) = (crate::diagnostics::peel_dir(), &on_top) {
@@ -359,7 +369,7 @@ pub(super) fn beneath_layers(
 
 /// The peeled image with its holes filled by completion over the pieces beneath (the leaves
 /// of its own hierarchy), see [`crate::translucency::completion::complete_holes`].
-pub(super) fn completed_beneath(
+async fn completed_beneath(
     peeled: &[u8],
     holes: &[bool],
     blend: &[bool],
@@ -369,7 +379,8 @@ pub(super) fn completed_beneath(
 ) -> Vec<u8> {
     use crate::translucency::raster::DVec3;
     let mut timings = Timings::default();
-    let (_, hierarchy) = crate::hierarchy::analyze(peeled, width, height, detail, &mut timings);
+    let (_, hierarchy) =
+        crate::hierarchy::analyze(peeled, width, height, detail, &mut timings).await;
     let img: Vec<DVec3> = peeled
         .as_chunks::<3>()
         .0
@@ -411,91 +422,55 @@ pub(super) fn completed_beneath(
 
 /// What the holes hold, as a layer of its own: the shapes of the level's opaque trace whose
 /// covered and shown pixels lie mostly in the holes, lifted with their order and fills, so they
-/// cost no second trace (niabot's hair strands over the dress and the skin).
-pub(super) fn parts_above(opaque: &Scene, holes: &[bool], region: &[bool]) -> Scene {
+/// cost no second trace.
+fn parts_above(opaque: &Scene, holes: &[bool], region: &[bool]) -> Scene {
     let (width, height) = (opaque.width, opaque.height);
+    let pixels = |s| covered_pixels(s, width, height);
+    // Whether most of the pixels a shape covers lie in `mask`
+    let mostly = |s, mask: &[bool]| {
+        let (inside, all) = pixels(s).fold((0usize, 0usize), |(inside, all), i| {
+            (inside + usize::from(mask[i]), all + 1)
+        });
+        2 * inside > all
+    };
     // By what it covers as well as what it shows, so a ground under everything, visible
     // mostly in the holes, is not lifted
-    let keep: Vec<bool> = opaque
+    let mut keep: Vec<bool> = opaque
         .shapes
         .iter()
-        .map(|s| {
-            let (mut inside, mut all) = (0usize, 0usize);
-            let r = s.raster();
-            for y in 0..r.h.min(height.saturating_sub(r.y0)) {
-                for x in 0..r.w.min(width.saturating_sub(r.x0)) {
-                    if r.values[y * r.w + x] > 0.5 {
-                        all += 1;
-                        inside += usize::from(holes[(y + r.y0) * width + x + r.x0]);
-                    }
-                }
-            }
-            all > 0 && 2 * inside > all
-        })
         .zip(mostly_in(opaque, holes))
-        .map(|(a, b)| a && b)
+        .map(|(s, shown)| mostly(s, holes) && shown)
         .collect();
     // The picture's order is kept: a shape drawn over a lifted one where they overlap is lifted
-    // with it, else the lifted shape would now cover it (the face's outline over the hair)
-    let mut keep = keep;
+    // with it, else the lifted shape would now cover it
     let mut lifted = vec![false; width * height];
     for (s, k) in opaque.shapes.iter().zip(keep.iter_mut()) {
-        let r = s.raster();
-        let mut over = false;
-        for y in 0..r.h.min(height.saturating_sub(r.y0)) {
-            for x in 0..r.w.min(width.saturating_sub(r.x0)) {
-                if r.values[y * r.w + x] > 0.5 && lifted[(y + r.y0) * width + x + r.x0] {
-                    over = true;
-                }
-            }
-        }
+        let over = pixels(s).any(|i| lifted[i]);
         // except a shape lying mostly in the layer's region, which is what the layer and the
         // beneath draw there and lifted would hide the layer
-        let in_region = {
-            let (mut inside, mut all) = (0usize, 0usize);
-            for y in 0..r.h.min(height.saturating_sub(r.y0)) {
-                for x in 0..r.w.min(width.saturating_sub(r.x0)) {
-                    if r.values[y * r.w + x] > 0.5 {
-                        all += 1;
-                        inside += usize::from(region[(y + r.y0) * width + x + r.x0]);
-                    }
-                }
-            }
-            2 * inside > all
-        };
-        *k = *k || (over && !in_region);
+        *k = *k || (over && !mostly(s, region));
         if *k {
-            for y in 0..r.h.min(height.saturating_sub(r.y0)) {
-                for x in 0..r.w.min(width.saturating_sub(r.x0)) {
-                    if r.values[y * r.w + x] > 0.5 {
-                        lifted[(y + r.y0) * width + x + r.x0] = true;
-                    }
-                }
+            for i in pixels(s) {
+                lifted[i] = true;
             }
         }
     }
     // A shape clipped to one that stays beneath is not lifted: unclipped it would spill past
     // its clip over the beneath. Nor is a shape under one that stays beneath where they
-    // overlap: lifted, it would cover what the picture draws over it (plain 1052's blouse)
+    // overlap: lifted, it would cover what the picture draws over it
     loop {
         let mut changed = false;
         let mut stays = vec![false; width * height];
         for (s, k) in opaque.shapes.iter().zip(keep.iter_mut()).rev() {
-            let r = s.raster();
-            let covered = (0..r.h.min(height.saturating_sub(r.y0))).flat_map(|y| {
-                (0..r.w.min(width.saturating_sub(r.x0)))
-                    .filter(move |&x| r.values[y * r.w + x] > 0.5)
-                    .map(move |x| (y + r.y0) * width + x + r.x0)
-            });
             if *k {
-                if covered.clone().any(|i| stays[i]) {
+                if pixels(s).any(|i| stays[i]) {
                     *k = false;
                     changed = true;
                 } else {
                     continue;
                 }
             }
-            for i in covered {
+            for i in pixels(s) {
                 stays[i] = true;
             }
         }
@@ -519,9 +494,19 @@ pub(super) fn parts_above(opaque: &Scene, holes: &[bool], region: &[bool]) -> Sc
     keep_only(opaque, &keep)
 }
 
+/// The pixels of a `width` x `height` image that `shape` covers by more than half.
+fn covered_pixels(shape: &Shape, width: usize, height: usize) -> impl Iterator<Item = usize> + '_ {
+    let r = shape.raster();
+    (0..r.h.min(height.saturating_sub(r.y0))).flat_map(move |y| {
+        (0..r.w.min(width.saturating_sub(r.x0)))
+            .filter(move |&x| r.values[y * r.w + x] > 0.5)
+            .map(move |x| (y + r.y0) * width + x + r.x0)
+    })
+}
+
 /// Per shape of `scene`, whether most of the pixels it shows (its coverage over a half, where
 /// no shape above covers it so) lie in `mask`.
-pub(super) fn mostly_in(scene: &Scene, mask: &[bool]) -> Vec<bool> {
+fn mostly_in(scene: &Scene, mask: &[bool]) -> Vec<bool> {
     let (w, h) = (scene.width, scene.height);
     let mut owner = vec![usize::MAX; w * h];
     for (k, s) in scene.shapes.iter().enumerate() {
@@ -557,7 +542,7 @@ pub(super) fn mostly_in(scene: &Scene, mask: &[bool]) -> Vec<bool> {
 
 /// The scene with only the shapes `keep` marks, those clipped to a shape left out drawn
 /// unclipped.
-pub(super) fn keep_only(scene: &Scene, keep: &[bool]) -> Scene {
+fn keep_only(scene: &Scene, keep: &[bool]) -> Scene {
     let mut out = scene.clone();
     let mut k = 0;
     out.shapes.retain(|_| {
@@ -575,15 +560,13 @@ pub(super) fn keep_only(scene: &Scene, keep: &[bool]) -> Scene {
 }
 
 /// Pushes the shapes of `from` on top of `scene` in their order, their clips kept among
-/// themselves; returns how many.
-pub(super) fn push_all(scene: &mut Scene, from: Scene) -> usize {
+/// themselves.
+fn push_all(scene: &mut Scene, from: Scene) {
     let mut ids: HashMap<usize, usize> = HashMap::default();
-    let n = from.shapes.len();
     for mut s in from.shapes {
         let old = s.id;
         s.clip = s.clip.and_then(|c| ids.get(&c).copied());
         let new = scene.push(s);
         ids.insert(old, new);
     }
-    n
 }

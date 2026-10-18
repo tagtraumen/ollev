@@ -1,6 +1,11 @@
 //! The equation graph: relations from the contacts of planar regions, and the best cut.
 
-use super::*;
+use glam::{IVec3, Vec3};
+
+use super::{Hypothesis, bin, by_score, merge_near};
+use crate::translucency::leaves::{Leaves, Plane, slope_fits};
+use crate::translucency::{NOISE, SLOPE_MIN};
+use crate::{HashMap, HashSet};
 
 /// A directed pair of leaves supporting a relation, as the cuts see it: the inside `a`, the
 /// outside `b`, the contact, the two colors compared and how far the inside's plane carries
@@ -75,7 +80,7 @@ pub(super) fn cut_score(
         let bs: HashSet<IVec3> = members.iter().map(|p| bin(p.bg, 16.)).collect();
         let os: HashSet<IVec3> = members.iter().map(|p| bin(p.img, 16.)).collect();
         // Or one pair whose inside follows a gradient beneath it, a range of backgrounds
-        // under one leaf (as saturn's ring, in pieces of one pair each)
+        // under one leaf
         let graded = members.iter().any(|p| p.span > 2. * NOISE);
         if (bs.len() < 2 || os.len() < 2) && !graded {
             continue;
@@ -83,7 +88,7 @@ pub(super) fn cut_score(
         let total: f32 = members.iter().map(|p| p.len).sum();
         // Count only what an opaque shape could not explain as well: the largest class of one
         // flat inside color counts only as far as the second matches it, graded insides always
-        // (so glassware's grout network does not lead on its contact alone)
+        // (so a network of flat lines does not lead on its contact alone)
         let mut classes: Vec<(Vec3, f32)> = Vec::new();
         for p in members {
             if p.span > 2. * NOISE {
@@ -120,7 +125,7 @@ pub(super) fn cut_score(
         evidence *= (total / boundary.max(1.)).min(1.);
         if evidence > best {
             best = evidence;
-            best_members = members.clone();
+            best_members.clone_from(members);
         }
     }
     (best, best_members)
@@ -215,18 +220,8 @@ pub fn equation_graph(lv: &Leaves) -> Vec<Hypothesis> {
             }
         })
         .collect();
-    struct Raw {
-        a: u32,
-        b: u32,
-        len: f32,
-        bg: Vec3,
-        img: Vec3,
-        ga: Plane,
-        gb: Plane,
-        span: f32,
-    }
     let mut raw: Vec<(Hypothesis, bool)> = Vec::new();
-    let mut pairs: Vec<Raw> = Vec::new();
+    let mut pairs: Vec<RawPair> = Vec::new();
     for (a, &span_a) in span.iter().enumerate() {
         if lv.size[a] < MIN_INSIDE || lv.thin[a] {
             continue;
@@ -241,7 +236,7 @@ pub fn equation_graph(lv: &Leaves) -> Vec<Hypothesis> {
             }
             let pb = lv.plane[b];
             // A shape's boundary is a jump in color: planes that agree where they meet are
-            // one surface cut at a kink (as the jellyfish's water)
+            // one surface cut at a kink
             if (pa.at(p.mid) - pb.at(p.mid)).abs().max_element() <= 2. * NOISE {
                 continue;
             }
@@ -253,13 +248,13 @@ pub fn equation_graph(lv: &Leaves) -> Vec<Hypothesis> {
             }
             // The inside's variation counts as show-through only as far as the background's
             // plane, a real gradient, varies under it too (anti-aliased dashes vary over a
-            // flat sky)
+            // flat ground)
             let span_b = if pb.slope() > SLOPE_MIN {
                 span_over(&pb, a)
             } else {
                 0.
             };
-            pairs.push(Raw {
+            pairs.push(RawPair {
                 a: a as u32,
                 b: b as u32,
                 len: p.len as f32,
@@ -413,22 +408,11 @@ pub fn equation_graph(lv: &Leaves) -> Vec<Hypothesis> {
             / den;
         (k2, om - k2 * bm)
     };
-    struct Scored {
-        k: f32,
-        c: Vec3,
-        score: f32,
-        supporting: Vec<Support>,
-        members: Vec<Support>,
-    }
     let mut out: Vec<Scored> = Vec::new();
     for h in &merged {
         let (mut k, mut m) = (h.k, (1. - h.k) * h.c);
         let mut supporting = support(k, m);
-        let (mut best, mut members) = if supporting.is_empty() {
-            (0., Vec::new())
-        } else {
-            best_cut(&supporting, &graph)
-        };
+        let (mut best, mut members) = best_cut(&supporting, &graph);
         // The refit uses the pairs of the relation's best connected group, not every pair in
         // the image that fits, which would drift it; kept while the score holds
         for _ in 0..3 {
@@ -440,11 +424,7 @@ pub fn equation_graph(lv: &Leaves) -> Vec<Hypothesis> {
                 break;
             }
             let again = support(k2, m2);
-            let (b2, m2s) = if again.is_empty() {
-                (0., Vec::new())
-            } else {
-                best_cut(&again, &graph)
-            };
+            let (b2, m2s) = best_cut(&again, &graph);
             if b2 < best {
                 break;
             }
@@ -472,7 +452,7 @@ pub fn equation_graph(lv: &Leaves) -> Vec<Hypothesis> {
     // Each edge carries one relation: taken in order of score, each relation claims its
     // shape's pairs and the rest are scored again without them
     let mut claimed: HashSet<(u32, u32)> = HashSet::default();
-    let mut final_: Vec<Hypothesis> = Vec::new();
+    let mut chosen: Vec<Hypothesis> = Vec::new();
     let mut pending = out;
     while !pending.is_empty() {
         pending.sort_by(|a, b| b.score.total_cmp(&a.score));
@@ -480,7 +460,7 @@ pub fn equation_graph(lv: &Leaves) -> Vec<Hypothesis> {
         if h.score <= 0. {
             break;
         }
-        final_.push(Hypothesis {
+        chosen.push(Hypothesis {
             k: h.k,
             c: h.c,
             score: h.score,
@@ -495,11 +475,7 @@ pub fn equation_graph(lv: &Leaves) -> Vec<Hypothesis> {
                     .filter(|p| !claimed.contains(&(p.a, p.b)))
                     .copied()
                     .collect();
-                let (b2, m2) = if left.is_empty() {
-                    (0., Vec::new())
-                } else {
-                    best_cut(&left, &graph)
-                };
+                let (b2, m2) = best_cut(&left, &graph);
                 o.score = b2 * o.k;
                 o.supporting = left;
                 o.members = m2;
@@ -507,8 +483,30 @@ pub fn equation_graph(lv: &Leaves) -> Vec<Hypothesis> {
         }
     }
     // Refitting brings raw relations that differed onto one: the best of each
-    let kept = merge_near(&final_, 0.02, 6. / 255.);
+    let kept = merge_near(&chosen, 0.02, 6. / 255.);
     fold_seen_through(kept, 4. * NOISE)
+}
+
+/// A pair of leaves the equation graph reads: inside `a` over `b`, their contact, the two
+/// colors at the inside's centroid, their planes and the span the background carries.
+struct RawPair {
+    a: u32,
+    b: u32,
+    len: f32,
+    bg: Vec3,
+    img: Vec3,
+    ga: Plane,
+    gb: Plane,
+    span: f32,
+}
+
+/// A refitted relation with its supporting pairs and its best cut's members.
+struct Scored {
+    k: f32,
+    c: Vec3,
+    score: f32,
+    supporting: Vec<Support>,
+    members: Vec<Support>,
 }
 
 /// Where a lower shape L runs under an upper one U, the overlap is L's relation seen through
@@ -566,7 +564,7 @@ pub fn merge_lists(lists: &[Vec<Hypothesis>]) -> Vec<Hypothesis> {
         let Some(first) = hyps.first() else {
             continue;
         };
-        let best = if first.score != 0. { first.score } else { 1. };
+        let best = if first.score == 0. { 1. } else { first.score };
         for h in hyps.iter().take(PER_LIST) {
             let s = h.score / best;
             match merged.iter_mut().find(|e| {

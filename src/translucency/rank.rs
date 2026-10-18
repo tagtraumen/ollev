@@ -1,9 +1,9 @@
-//! Ranking the dress loop's families by how many materials' images meet inside the region
-//! (under a real layer several do, as skin and ground under niabot's flare), read per pixel;
-//! ties go to the inner score times the pixels times `fresh` ([`Evidence::key`]).
+//! Ranking the proposal's families by how many materials' images meet inside the region
+//! (under a real layer several do), read per pixel; ties go to the inner score times the
+//! pixels times `fresh` ([`Evidence::key`]).
 
 use super::inner::{Class, InnerFit, InnerInputs};
-use super::raster::SHOW_THROUGH;
+use super::raster::{Conn, DVec3, SHOW_THROUGH, dilate};
 
 /// The reach within which two images count as meeting: 3 px at 330 (outlines and
 /// anti-aliased rims lie between the images).
@@ -40,47 +40,9 @@ pub fn material_labels(inp: &InnerInputs, fit: &InnerFit) -> Vec<Option<usize>> 
         .collect()
 }
 
-/// The mask dilated by a square of side `2 r + 1` (a Chebyshev reach), rows then columns.
+/// The mask dilated by a square of side `2 r + 1` (a Chebyshev reach).
 fn dilate_square(mask: &[bool], width: usize, height: usize, r: usize) -> Vec<bool> {
-    // along one line: set where a set pixel lies within r before or after
-    fn line(get: impl Fn(usize) -> bool, n: usize, r: usize, mut put: impl FnMut(usize, bool)) {
-        let mut next = vec![usize::MAX; n];
-        let mut at = usize::MAX;
-        for i in (0..n).rev() {
-            if get(i) {
-                at = i;
-            }
-            next[i] = at;
-        }
-        let mut last: Option<usize> = None;
-        for (i, &nx) in next.iter().enumerate() {
-            if get(i) {
-                last = Some(i);
-            }
-            let before = last.is_some_and(|l| i - l <= r);
-            let after = nx != usize::MAX && nx - i <= r;
-            put(i, before || after);
-        }
-    }
-    let mut rows = vec![false; mask.len()];
-    for y in 0..height {
-        line(
-            |x| mask[y * width + x],
-            width,
-            r,
-            |x, v| rows[y * width + x] = v,
-        );
-    }
-    let mut out = vec![false; mask.len()];
-    for x in 0..width {
-        line(
-            |y| rows[y * width + x],
-            height,
-            r,
-            |y, v| out[y * width + x] = v,
-        );
-    }
-    out
+    dilate(mask, width, height, Conn::Eight, r)
 }
 
 /// Where the images of the inner fit's materials meet.
@@ -120,8 +82,8 @@ pub fn contact_continued(inp: &InnerInputs, fit: &InnerFit, reach: usize) -> Con
 fn continued_labels(
     mut labels: Vec<Option<usize>>,
     region: &[bool],
-    px: &[super::raster::DVec3],
-    bmean: &[super::raster::DVec3],
+    px: &[DVec3],
+    bmean: &[DVec3],
     (w, h): (usize, usize),
     reach: usize,
 ) -> Vec<Option<usize>> {
@@ -220,13 +182,12 @@ mod tests {
         assert_eq!(d.iter().filter(|v| **v).count(), 25);
     }
 
-    /// A white ground (material 0) above a skin (material 1) and a layer over the right half
+    /// A white ground (material 0) above a tan (material 1) and a layer over the right half
     /// from row `top`, the images labelled by what lies beneath; with `blob`, a white piece
-    /// beneath the layer wholly inside its region over the skin.
+    /// beneath the layer wholly inside its region over the tan.
     fn labelled(top: usize, blob: bool) -> (usize, usize) {
-        use super::super::raster::DVec3;
         let (w, h) = (40, 30);
-        let (white, skin) = (DVec3::ONE, DVec3::new(0.95, 0.84, 0.72));
+        let (white, tan) = (DVec3::ONE, DVec3::new(0.95, 0.84, 0.72));
         let (mut labels, mut region, mut px) = (Vec::new(), Vec::new(), Vec::new());
         for y in 0..h {
             for x in 0..w {
@@ -234,7 +195,7 @@ mod tests {
                 let m = usize::from(
                     !(y < 10 || (blob && (26..32).contains(&x) && (18..24).contains(&y))),
                 );
-                let b = [white, skin][m];
+                let b = [white, tan][m];
                 region.push(inside);
                 labels.push(inside.then_some(m));
                 px.push(if inside {
@@ -245,18 +206,18 @@ mod tests {
             }
         }
         let all = contact_of(&labels, w, h, 3).meeting;
-        let kept = continued_labels(labels, &region, &px, &[white, skin], (w, h), 3);
+        let kept = continued_labels(labels, &region, &px, &[white, tan], (w, h), 3);
         (all, contact_of(&kept, w, h, 3).meeting)
     }
 
-    /// Both materials run on out of a layer over the ground and the skin: both count.
+    /// Both materials run on out of a layer over the ground and the tan: both count.
     #[test]
     fn materials_beneath_continue_out_of_the_region() {
         assert_eq!(labelled(0, false), (2, 2));
     }
 
-    /// A white piece enclosed by the skin's image, the white ground beyond the reach of the
-    /// region, meets the skin but does not continue out of the region: the skin alone is left.
+    /// A white piece enclosed by the tan's image, the white ground beyond the reach of the
+    /// region, meets the tan but does not continue out of the region: the tan alone is left.
     #[test]
     fn an_enclosed_second_material_does_not_count() {
         assert_eq!(labelled(15, true), (2, 0));

@@ -1,7 +1,6 @@
 //! The least evidence a translucent layer leaves: a contour of two materials running on under
-//! the layer as their images under one tint `o = k b + m`, read on the picture's leaves before
-//! anything is proposed and on a candidate's rim before it is traced. One contour is what fixes
-//! k; a layer over one flat colour leaves it open (the corpus' sphere and jar, found by no stage).
+//! it as their images under one tint `o = k b + m` (one contour fixes k), read on the leaves
+//! before anything is proposed and on a candidate's rim before it is traced.
 
 use glam::Vec3;
 
@@ -107,9 +106,8 @@ pub fn layer_witnessed(lv: &Leaves) -> bool {
 const SLACK: f32 = 3. * NOISE;
 
 /// Whether a candidate's own relation `o = k b + m` is seen on a contour running on under its
-/// `mask`: along its rim, the pixels a step past the anti-aliasing inside and outside, pairs
-/// under the relation whose outsides span a step (the thin rings of substation-0623, whose
-/// leaves are bridged away, show it on their rims; auger's frame-wide k 0.32 layer does not).
+/// `mask`: on its rim, pixels a step past the anti-aliasing inside and outside that pair
+/// under the relation and whose outsides span a step.
 pub fn witnessed_at(target: &[Vec3], width: usize, k: f32, m: Vec3, mask: &[bool]) -> bool {
     let height = target.len() / width.max(1);
     let (w, h) = (width as i64, height as i64);

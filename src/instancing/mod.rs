@@ -206,6 +206,11 @@ fn primitive_moved(
 
 /// Whether two shapes cover a pixel in common, by any coverage.
 pub(crate) fn overlaps(a: &Shape, b: &Shape, width: usize) -> bool {
+    both_cover(a, b, width, 0.)
+}
+
+/// Whether both shapes cover some pixel by more than `least`.
+fn both_cover(a: &Shape, b: &Shape, width: usize, least: f32) -> bool {
     if a.min.x >= b.max.x || b.min.x >= a.max.x || a.min.y >= b.max.y || b.min.y >= a.max.y {
         return false;
     }
@@ -217,7 +222,18 @@ pub(crate) fn overlaps(a: &Shape, b: &Shape, width: usize) -> bool {
     };
     small
         .pixels(width)
-        .any(|(i, v)| v > 0. && other.at(i, width) > 0.)
+        .any(|(i, v)| v > least && other.at(i, width) > least)
+}
+
+/// The farthest any point of `shape`'s outline lies from its origin, at least 1.
+fn reach(shape: &Shape) -> f32 {
+    shape
+        .loops
+        .iter()
+        .flatten()
+        .flatten()
+        .map(|p| p.length())
+        .fold(1., f32::max)
 }
 
 /// Finds the scene's repeats and keeps them in [`Scene::repeats`], after reading each lattice
@@ -254,7 +270,7 @@ fn repeats_of(ctx: &Context, scene: &mut Scene) -> Vec<Repeat> {
     loop {
         let before = repeats.len();
         for cluster in find::clusters(scene, &taken) {
-            if let Some(repeat) = snap::snap(ctx, scene, cluster) {
+            if let Some(repeat) = snap::snap(ctx, scene, &cluster) {
                 taken.extend(repeat.members.iter().map(|m| m.0));
                 repeats.extend(structure::recognize(ctx, scene, repeat));
             }

@@ -42,7 +42,7 @@ pub(super) fn try_cut(
         gain,
         extra: price,
         width: 0.0,
-        kind: crate::translucency::vocabulary::MarkKind::Cut,
+        kind: MarkKind::Cut,
         shapes,
         cubics,
         position,
@@ -51,7 +51,7 @@ pub(super) fn try_cut(
 
 /// A line drawn over a cut along it: the area on each side (closed by [`closed_sides`] where
 /// the sides are one) refitted by [`fit_cut`] and drawn on top with the line over it, so a
-/// merged leg becomes its own shape; weighed jointly with `line`, priced as two marks.
+/// part merged into a shape becomes its own; weighed jointly with `line`, priced as two marks.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn line_cuts(
     ctx: &crate::Context,
@@ -70,33 +70,22 @@ pub(super) fn line_cuts(
     if through.len() < 2 {
         return Vec::new();
     }
-    let parts: Vec<u32> = match sides(areas, &through, w, h) {
-        Some(s) => s.to_vec(),
-        None => {
-            let nrm = normals(&through);
-            let mut v: Vec<u32> = through
-                .iter()
-                .zip(&nrm)
-                .step_by(2)
-                .flat_map(|(p, n)| [*p + 2.0 * *n, *p - 2.0 * *n])
-                .filter(|q| q.x >= 0.0 && q.y >= 0.0 && (q.x as usize) < w && (q.y as usize) < h)
-                .map(|q| areas.label[q.y as usize * w + q.x as usize])
-                .filter(|&l| l > 0)
-                .collect();
-            v.sort_unstable();
-            v.dedup();
-            let mut out = Vec::new();
-            for l in v {
-                if let Some([pa, pb]) = closed_sides(areas, l, &through, w, h) {
-                    let first = areas.pixels.len() as u32;
-                    areas.pixels.push(pa);
-                    areas.pixels.push(pb);
-                    out.extend([first, first + 1]);
-                    break;
-                }
+    let parts: Vec<u32> = if let Some(s) = sides(areas, &through, w, h) {
+        s.to_vec()
+    } else {
+        let mut v = labels_beside(areas, &through, w, h);
+        v.dedup();
+        let mut out = Vec::new();
+        for l in v {
+            if let Some([pa, pb]) = closed_sides(areas, l, &through, w, h) {
+                let first = areas.pixels.len() as u32;
+                areas.pixels.push(pa);
+                areas.pixels.push(pb);
+                out.extend([first, first + 1]);
+                break;
             }
-            out
         }
+        out
     };
     let top = scene.shapes.len();
     let mut out = Vec::new();
@@ -121,7 +110,7 @@ pub(super) fn line_cuts(
             field,
             opt.edge,
             window,
-            Variant::Same,
+            &Variant::Same,
             (top, &shapes),
         );
         let mut cubics = line.cubics.clone();
@@ -134,7 +123,7 @@ pub(super) fn line_cuts(
             gain,
             extra: line.extra + (1.0 + extra) * ctx.segment_cost + ctx.path_cost,
             width: line.width,
-            kind: crate::translucency::vocabulary::MarkKind::Line,
+            kind: MarkKind::Line,
             shapes,
             cubics,
             position: top,
@@ -186,7 +175,7 @@ pub(super) fn closing_path(
 ) -> Option<Vec<usize>> {
     use std::collections::VecDeque;
     let start = from.1 * width + from.0;
-    let mut parent: crate::HashMap<usize, usize> = Default::default();
+    let mut parent: crate::HashMap<usize, usize> = crate::HashMap::default();
     let mut queue = VecDeque::from([(start, 0usize)]);
     parent.insert(start, start);
     let o = DVec2::new(from.0 as f64, from.1 as f64);
@@ -232,7 +221,7 @@ pub(super) fn closing_path(
 }
 
 /// The two parts of area `label` either side of a step that fades out inside it (a shading
-/// step between two legs), the step and its closures at both ends ([`closing_path`]) taken
+/// step between two parts), the step and its closures at both ends ([`closing_path`]) taken
 /// out; none where they do not split it.
 pub(super) fn closed_sides(
     areas: &Areas,
@@ -294,18 +283,6 @@ pub(super) fn closed_sides(
             }
         }
     }
-    let mode = |v: &mut Vec<u32>| -> u32 {
-        v.sort_unstable();
-        let (mut best, mut i) = ((0, 0), 0);
-        while i < v.len() {
-            let j = v[i..].iter().take_while(|&&l| l == v[i]).count();
-            if j > best.1 {
-                best = (v[i], j);
-            }
-            i += j;
-        }
-        best.0
-    };
     let (a, b) = (mode(&mut votes[0]), mode(&mut votes[1]));
     if a == 0 || b == 0 || a == b {
         return None;
@@ -317,7 +294,7 @@ pub(super) fn closed_sides(
 /// The cut candidates: the areas either side of each step, and where its two sides are one
 /// area, the two parts its closure makes of it ([`closed_sides`]), added to `areas`.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn closing_cut_candidates(
+pub(super) async fn closing_cut_candidates(
     img: &Image,
     comp: &[DVec3],
     field: &EdgeField,
@@ -329,56 +306,37 @@ pub(super) fn closing_cut_candidates(
     closed: &mut usize,
 ) -> Vec<CutFit> {
     let (w, h) = (img.width, img.height);
-    let mut smooth: std::collections::BTreeMap<u32, f64> = Default::default();
+    let mut smooth: std::collections::BTreeMap<u32, f64> = std::collections::BTreeMap::new();
     for line in lines {
+        crate::progress::poll().await;
         let (_, through) = polylines(chains, line);
         let sm = discount(&through, field, weak);
-        let parts = match sides(areas, &through, w, h) {
-            Some(s) => s,
-            None => {
-                // one area on both sides: the one the samples past the line land in most
-                let nrm = normals(&through);
-                let mut v: Vec<u32> = through
-                    .iter()
-                    .zip(&nrm)
-                    .step_by(2)
-                    .flat_map(|(p, n)| [*p + 2.0 * *n, *p - 2.0 * *n])
-                    .filter(|q| {
-                        q.x >= 0.0 && q.y >= 0.0 && (q.x as usize) < w && (q.y as usize) < h
-                    })
-                    .map(|q| areas.label[q.y as usize * w + q.x as usize])
-                    .filter(|&l| l > 0)
-                    .collect();
-                v.sort_unstable();
-                let mut best = (0u32, 0usize);
-                let mut i = 0;
-                while i < v.len() {
-                    let j = v[i..].iter().take_while(|&&l| l == v[i]).count();
-                    if j > best.1 {
-                        best = (v[i], j);
-                    }
-                    i += j;
-                }
-                if best.0 == 0 {
-                    continue;
-                }
-                let Some([pa, pb]) = closed_sides(areas, best.0, &through, w, h) else {
-                    continue;
-                };
-                *closed += 1;
-                let first = areas.pixels.len() as u32;
-                areas.pixels.push(pa);
-                areas.pixels.push(pb);
-                [first, first + 1]
+        let parts = if let Some(s) = sides(areas, &through, w, h) {
+            s
+        } else {
+            // one area on both sides: the one the samples past the line land in most
+            let best = mode(&mut labels_beside(areas, &through, w, h));
+            if best == 0 {
+                continue;
             }
+            let Some([pa, pb]) = closed_sides(areas, best, &through, w, h) else {
+                continue;
+            };
+            *closed += 1;
+            let first = areas.pixels.len() as u32;
+            areas.pixels.push(pa);
+            areas.pixels.push(pb);
+            [first, first + 1]
         };
         for a in parts {
             let e = smooth.entry(a).or_insert(0.0);
             *e = e.max(sm);
         }
     }
-    smooth
-        .into_iter()
-        .filter_map(|(a, s)| fit_cut(img, comp, field, opt, areas, a, s))
-        .collect()
+    let mut fits = Vec::new();
+    for (a, s) in smooth {
+        crate::progress::poll().await;
+        fits.extend(fit_cut(img, comp, field, opt, areas, a, s));
+    }
+    fits
 }

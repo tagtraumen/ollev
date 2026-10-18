@@ -1,6 +1,9 @@
 //! The pin: the k scan and its rows.
 
-use super::*;
+use super::{
+    DVec3, InnerFit, InnerInputs, MATCH_TOL, Matcher, NOISE, arange, cheb, fit_at_score,
+    fit_fixed, in_gamut_c, vote_cells,
+};
 
 /// One k of the scan: the best fit over the point matcher's candidates of m.
 pub struct ScanRow {
@@ -10,17 +13,15 @@ pub struct ScanRow {
 
 /// The scan: per k of the grid the point matcher's vote cells refitted (as the pin does)
 /// give the candidates of m, each fitted with the layer alone; the best by score.
-pub fn scan(inp: &InnerInputs, ks: &[f64]) -> Vec<ScanRow> {
+pub async fn scan(inp: &InnerInputs, ks: &[f64]) -> Vec<ScanRow> {
     let mts = scan_matchers(inp);
-    ks.iter()
-        .map(|&k| ScanRow {
-            k,
-            // A cancelled trace scans no further
-            fit: (!crate::progress::poll())
-                .then(|| row_best(inp, &mts, k).map(|(m, _)| fit_fixed(inp, k, m)))
-                .flatten(),
-        })
-        .collect()
+    let mut rows = Vec::with_capacity(ks.len());
+    for &k in ks {
+        crate::progress::poll().await;
+        let fit = row_best(inp, &mts, k).map(|(m, _)| fit_fixed(inp, k, m));
+        rows.push(ScanRow { k, fit });
+    }
+    rows
 }
 
 /// The point matchers whose vote cells propose a scan's m: the inside palette with and
@@ -73,20 +74,20 @@ pub fn coarse_grid() -> Vec<f64> {
 pub const REPIN_REACH: f64 = 0.10;
 
 /// The pin again over the ks of [`pin_grid`] within [`REPIN_REACH`] of `k`, the last pin's.
-pub fn repin(inp: &InnerInputs, k: f64) -> Option<InnerFit> {
+pub async fn repin(inp: &InnerInputs, k: f64) -> Option<InnerFit> {
     let mut grid = pin_grid();
     grid.retain(|g| (g - k).abs() <= REPIN_REACH + 1e-9);
-    pin_over(inp, grid, Vec::new())
+    pin_over(inp, grid, Vec::new()).await
 }
 
 /// The pin over [`pin_grid`], the rows of `done` (such as the coarse scan) taken as scanned
 /// where their k equals a grid k to the bit; the best row wins, the last of equal scores in
 /// grid order.
-pub fn pin_with_rows(inp: &InnerInputs, done: Vec<ScanRow>) -> Option<InnerFit> {
-    pin_over(inp, pin_grid(), done)
+pub async fn pin_with_rows(inp: &InnerInputs, done: Vec<ScanRow>) -> Option<InnerFit> {
+    pin_over(inp, pin_grid(), done).await
 }
 
-fn pin_over(inp: &InnerInputs, mut grid: Vec<f64>, done: Vec<ScanRow>) -> Option<InnerFit> {
+async fn pin_over(inp: &InnerInputs, mut grid: Vec<f64>, done: Vec<ScanRow>) -> Option<InnerFit> {
     grid.retain(|&k| !done.iter().any(|r| r.k.to_bits() == k.to_bits()));
     // the rest of the grid with the rows done, in the grid's order (the matchers built once)
     let mts = scan_matchers(inp);
@@ -96,6 +97,7 @@ fn pin_over(inp: &InnerInputs, mut grid: Vec<f64>, done: Vec<ScanRow>) -> Option
     rows.sort_by(|a, b| a.0.total_cmp(&b.0));
     let mut best: Option<InnerFit> = None;
     for (k, done) in rows {
+        crate::progress::poll().await;
         let fit = match done {
             Some(fit) => fit,
             // a row of the rest scored without its record, its fit built only where it takes
@@ -116,6 +118,9 @@ fn pin_over(inp: &InnerInputs, mut grid: Vec<f64>, done: Vec<ScanRow>) -> Option
 
 #[cfg(test)]
 mod tests {
+    use super::super::{
+        Image, ShadingLines, fit_at, shading_residual, with_interior, with_interior_in,
+    };
     use super::*;
 
     /// The components kept within the mask's box are those kept over the whole image, at an
@@ -125,8 +130,8 @@ mod tests {
         let mut seed = 7u64;
         let mut next = || {
             seed = seed
-                .wrapping_mul(6364136223846793005)
-                .wrapping_add(1442695040888963407);
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
             (seed >> 33) as usize
         };
         for width in [330, 700, 1100] {
@@ -134,7 +139,7 @@ mod tests {
             let radius = crate::translucency::layer::interior_radius(width);
             for _ in 0..30 {
                 let mut mask = vec![false; width * height];
-                for _ in 0..1 + next() % 6 {
+                for _ in 0..=next() % 6 {
                     let (cx, cy) = (next() % width, next() % height);
                     let (rx, ry) = (1 + next() % 9, 1 + next() % 9);
                     for y in cy.saturating_sub(ry)..(cy + ry).min(height) {
@@ -158,8 +163,8 @@ mod tests {
         let mut seed = 99u64;
         let mut next = || {
             seed = seed
-                .wrapping_mul(6364136223846793005)
-                .wrapping_add(1442695040888963407);
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
             (seed >> 11) as f64 / (1u64 << 53) as f64
         };
         let mut matched = 0;
@@ -187,7 +192,7 @@ mod tests {
         assert!(matched > 1000);
     }
 
-    /// A layer at k 0.6 over a white ground and a shaded skin, with a white streak above:
+    /// A layer at k 0.6 over a white ground and a shaded tan, with a white streak above:
     /// the score without the record is the fit's, and the relation the same, bit for bit.
     #[test]
     fn the_score_alone_matches_the_fit() {
@@ -205,7 +210,7 @@ mod tests {
                 let (m2, score) = fit_at_score(&inp, k, m);
                 assert_eq!(full.score.to_bits(), score.to_bits(), "k {k}");
                 assert_eq!(full.m.to_array(), m2.to_array());
-                scored += (score > 0.0) as usize;
+                scored += usize::from(score > 0.0);
             }
         }
         assert!(scored > 10);
@@ -222,7 +227,7 @@ mod tests {
                 let b = if y < 20 {
                     DVec3::ONE
                 } else {
-                    // the skin, shaded along y
+                    // the tan, shaded along y
                     DVec3::new(0.95, 0.84, 0.72) - (y - 20) as f64 * DVec3::new(0.002, 0.003, 0.004)
                 };
                 let mut o = b;

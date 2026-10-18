@@ -62,6 +62,8 @@ pub fn fit(cost: &CoverageCost, stroke: &mut Stroke, origin: Vec2, off_by: f32) 
 /// Steps of a screening fit: a quarter of a whole one, after which the candidates are ranked
 /// and the best fitted on ([`fit_screened`]).
 pub(super) const SCREEN_STEPS: usize = crate::refine::MAX_STEPS / 4;
+/// Steps of a fit between two checkpoints.
+const CHECK_STEPS: usize = 5;
 
 /// A stroke's fit in progress ([`fit`] is one run of all its steps), kept between runs.
 pub(super) struct Fitting {
@@ -105,7 +107,7 @@ impl Fitting {
     }
 
     /// Starts the steps afresh from the best point reached: a restart settles lower than
-    /// steps already shrunk on a plateau (figtree's branches, 8242 against 8252).
+    /// steps already shrunk on a plateau.
     pub(super) fn restart(&mut self) {
         self.stroke = self.stroke.with_params(&self.best.1, self.origin);
         self.params = self.stroke.params(self.origin);
@@ -121,6 +123,15 @@ impl Fitting {
         self.since_best = 0;
         self.steps_done = 0;
         self.stopped = false;
+    }
+
+    /// [`Fitting::run`] with a checkpoint every few steps (see [`crate::progress`]): a large
+    /// stroke's step renders it whole.
+    async fn run_checked(&mut self, cost: &CoverageCost, until: usize) {
+        for at in (CHECK_STEPS..until).step_by(CHECK_STEPS).chain([until]) {
+            crate::progress::poll().await;
+            self.run(cost, at);
+        }
     }
 
     /// The best error and stroke reached.
@@ -147,14 +158,7 @@ impl Fitting {
                 Some(m) => current.geometry_of(m),
                 None => current.geometry(Some(&self.flattening)),
             };
-            let path = current.path_of(
-                self.origin,
-                match &self.mappings {
-                    Some(m) => current.geometry_of(m).1,
-                    None => current.pieces_with(Some(&self.flattening)),
-                },
-            );
-            let (value, grad) = cost.evaluate(&path);
+            let (value, grad) = cost.evaluate(&path_of(self.origin, &pieces));
             if value < self.best.0 * (1. - PLATEAU_GAIN) {
                 self.since_best = 0;
             } else {
@@ -263,7 +267,7 @@ fn gradient(
 /// Screens `candidates` (each with its starting step scale) for [`SCREEN_STEPS`] and fits the
 /// best by `rank` (the error with any price) on from where its screen stopped, the steps'
 /// scale restored; one candidate alone is fitted whole. `None` where none fits.
-pub(super) fn fit_screened(
+pub(super) async fn fit_screened(
     cost: &CoverageCost,
     origin: Vec2,
     candidates: Vec<(Stroke, f32)>,
@@ -275,7 +279,7 @@ pub(super) fn fit_screened(
         .collect();
     let best = if fittings.len() > 1 {
         for f in &mut fittings {
-            f.run(cost, SCREEN_STEPS);
+            f.run_checked(cost, SCREEN_STEPS).await;
         }
         // the first of equals, in the candidates' order
         let key = |f: &Fitting| rank(f.error(), &f.stroke);
@@ -287,11 +291,12 @@ pub(super) fn fit_screened(
         }
         let mut best = best?;
         best.restart();
-        best.run(cost, crate::refine::MAX_STEPS - SCREEN_STEPS);
+        best.run_checked(cost, crate::refine::MAX_STEPS - SCREEN_STEPS)
+            .await;
         best
     } else {
         let mut only = fittings.pop()?;
-        only.run(cost, crate::refine::MAX_STEPS);
+        only.run_checked(cost, crate::refine::MAX_STEPS).await;
         only
     };
     let (error, stroke) = best.finish();
@@ -358,14 +363,21 @@ pub(super) fn arc(from: Vec2, to: Vec2) -> Vec<Vec2> {
         .collect()
 }
 
+/// The length of `c`'s control polygon, at least its arc length.
+pub(crate) fn hull_length(c: &Cubic) -> f32 {
+    (c[1] - c[0]).length() + (c[2] - c[1]).length() + (c[3] - c[2]).length()
+}
+
+/// The straight cubic from `a` to `b`, its handles on the thirds.
+pub(crate) fn line(a: Vec2, b: Vec2) -> Cubic {
+    [a, a.lerp(b, 1. / 3.), a.lerp(b, 2. / 3.), b]
+}
+
 /// A closed polygon as line cubics.
 pub(super) fn polygon(points: &[Vec2]) -> Vec<Cubic> {
     let n = points.len();
     (0..n)
         .filter(|&i| points[i].distance(points[(i + 1) % n]) > 1e-4)
-        .map(|i| {
-            let (a, b) = (points[i], points[(i + 1) % n]);
-            [a, a.lerp(b, 1. / 3.), a.lerp(b, 2. / 3.), b]
-        })
+        .map(|i| line(points[i], points[(i + 1) % n]))
         .collect()
 }

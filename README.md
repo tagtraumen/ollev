@@ -25,7 +25,29 @@ for object in model.objects() {
 ```
 
 `trace_with` takes a progress callback as well: it hears the stage and how far it is, and
-the trace stops within a fraction of a second when the callback breaks.
+the trace stops (within about a second) when the callback breaks.
+
+A host that must not block, such as a UI thread or wasm in a browser, runs the trace in time
+slices with `Tracing`. No threads and no executor: each `step` runs the trace on the caller's
+thread until its callback breaks at a checkpoint, and the next `step` resumes it there.
+Checkpoints come many times a second, and on a megapixel picture less than a second apart
+on a desktop CPU; the host supplies the clock. Dropping the handle cancels the trace; the
+handle stays on the thread that made it (it is not `Send`).
+
+```rust
+let mut tracing = ollev::Tracing::new(&image, &ollev::TraceOptions::default()).unwrap();
+let model = loop {
+    let end = now() + 0.1; // the host's clock, in seconds
+    match tracing.step(|_| {
+        if now() < end { std::ops::ControlFlow::Continue(()) } else { std::ops::ControlFlow::Break(()) }
+    }) {
+        // where it paused: stage, fraction, and where it shows one the scene so far
+        // (`progress.model()`, in the form the finished trace returns)
+        ollev::Step::Paused(progress) => continue,
+        ollev::Step::Done(model) => break model,
+    }
+};
+```
 
 `TraceOptions` holds:
 

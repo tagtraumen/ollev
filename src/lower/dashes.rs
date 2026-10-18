@@ -69,7 +69,7 @@ fn dash(o: &Object, s: &StrokeGeometry, path: &Measured, a: f64, b: f64) -> Opti
         let loops = match s.cap {
             Cap::Butt => return None,
             Cap::Round => {
-                let k = 0.552_284_749_830_793_4;
+                let k = super::focus::KAPPA;
                 let axes = [u, v, -u, -v];
                 (0..4)
                     .map(|j| {
@@ -104,7 +104,7 @@ struct Measured<'a> {
     length: f64,
 }
 
-fn eval(c: &Curve, t: f64) -> DVec2 {
+pub(super) fn eval(c: &Curve, t: f64) -> DVec2 {
     let u = 1. - t;
     c[0] * (u * u * u) + c[1] * (3. * u * u * t) + c[2] * (3. * u * t * t) + c[3] * (t * t * t)
 }

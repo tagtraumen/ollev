@@ -8,7 +8,7 @@ pub mod boundary;
 pub mod completion;
 pub mod cost;
 pub mod discovery;
-pub mod dress_loop;
+
 pub mod evidence;
 pub mod extent;
 pub mod families;
@@ -20,6 +20,7 @@ pub mod leaves;
 pub mod lines;
 pub mod materials;
 pub mod mixed;
+pub mod proposal;
 pub mod rank;
 pub mod raster;
 pub mod region;
@@ -31,6 +32,7 @@ pub mod vocabulary;
 
 use crate::tracer::Cubic;
 use glam::{IVec2, Vec3};
+use raster::{Conn, dilate};
 
 use crate::{Context, Fill};
 use discovery::Shade;
@@ -50,7 +52,7 @@ pub const NOISE: f32 = 2. / 255.;
 pub const OPACITY_MARGIN: f32 = 0.02;
 /// Least the backgrounds have to show through a shape, as the difference its two inside
 /// colors keep of their backgrounds' difference: each is known to the noise, the difference
-/// to twice it (so a jellyfish's near-opaque shapes over dark water are not peeled).
+/// to twice it.
 pub const SHOW_THROUGH: f32 = 4. * NOISE;
 /// A plane slope below this per pixel is flat: half a level, the equation graph's.
 pub const SLOPE_MIN: f32 = 0.5 / 255.;
@@ -70,6 +72,26 @@ pub fn percentile(values: &mut [f32], q: f32) -> f32 {
     let at = q / 100. * (values.len() - 1) as f32;
     let (lo, hi) = (at.floor() as usize, at.ceil() as usize);
     values[lo] + (values[hi] - values[lo]) * (at - lo as f32)
+}
+
+/// The root of `a` in a union-find forest, halving the path on the way.
+pub fn find_root(parent: &mut [usize], mut a: usize) -> usize {
+    while parent[a] != a {
+        parent[a] = parent[parent[a]];
+        a = parent[a];
+    }
+    a
+}
+
+/// The box `min..max` of a frame mask's set pixels, `(MAX, MIN)` where none is set.
+pub fn mask_bounds(mask: &[bool], width: usize) -> (IVec2, IVec2) {
+    let (mut min, mut max) = (IVec2::MAX, IVec2::MIN);
+    for (i, _) in mask.iter().enumerate().filter(|(_, v)| **v) {
+        let p = IVec2::new((i % width) as i32, (i / width) as i32);
+        min = min.min(p);
+        max = max.max(p + 1);
+    }
+    (min, max)
 }
 
 /// The overlay's fill refitted by least squares of `target = k below + m` over the covered
@@ -151,8 +173,8 @@ pub struct Candidate {
 }
 
 /// What lies above a layer in its region, per pixel, as the pin's full fit reads it: a white
-/// (the dress's highlights) or a tint (its dark folds). Peeled with the layer so the beneath
-/// does not keep them as lenses, and drawn above it by the vocabulary.
+/// (highlights) or a tint (dark folds). Peeled with the layer so the beneath does not keep
+/// them as lenses, and drawn above it by the vocabulary.
 #[derive(Clone, Debug, Default)]
 pub struct Above {
     /// the white's opacity, 0 where there is none
@@ -183,6 +205,35 @@ impl Above {
 }
 
 impl Candidate {
+    /// A shape of relation `o = k b + m` over `mask`, its pixels within `bounds`.
+    pub fn new(
+        k: f32,
+        m: Vec3,
+        mask: Vec<bool>,
+        (min, max): (IVec2, IVec2),
+        shade: Option<Shade>,
+    ) -> Candidate {
+        Candidate {
+            k,
+            m,
+            mask,
+            min,
+            max,
+            shade,
+            above: None,
+            holes: None,
+        }
+    }
+
+    /// Adds a stage region's pixels to the shape.
+    fn cover(&mut self, r: &stage::Region, width: usize) {
+        for p in region_pixels(r) {
+            self.mask[p.y as usize * width + p.x as usize] = true;
+            self.min = self.min.min(p);
+            self.max = self.max.max(p + 1);
+        }
+    }
+
     /// What the shape is drawn with: its color at opacity `1 - k`.
     pub fn fill(&self) -> Fill {
         let color = match self.shade {
@@ -267,17 +318,12 @@ impl Candidate {
         let origin = IVec2::new(window.x as i32, window.y as i32);
         let mask: Vec<bool> = window.pixels(width).map(|i| self.mask[i]).collect();
         let size = IVec2::new(window.width as i32, window.height as i32);
-        Candidate {
-            k: self.k,
-            m: self.m,
-            mask,
-            min: (self.min - origin).clamp(IVec2::ZERO, size),
-            max: (self.max - origin).clamp(IVec2::ZERO, size),
-            shade: self.shade,
-            // read on the whole frame; the window's decision peels the layer alone
-            above: None,
-            holes: None,
-        }
+        // what lies above is read on the whole frame; the window's decision peels the layer alone
+        let bounds = (
+            (self.min - origin).clamp(IVec2::ZERO, size),
+            (self.max - origin).clamp(IVec2::ZERO, size),
+        );
+        Candidate::new(self.k, self.m, mask, bounds, self.shade)
     }
 }
 
@@ -287,17 +333,17 @@ const STAGE_TOP: usize = 20;
 /// black or white: the shading pass's Hough step. Layers past it would need a per-channel blend.
 const UNIFORM_SHADE: f32 = 0.025;
 
-/// The translucent shapes over `ctx`'s image read on its leaves `lv`, most likely on top first:
-/// each kept relation with the union of its passing regions, pieces merged ([`merge_phase`]),
-/// overlaps given to the shape on top; uncovered first, then by fitting boundary share times k
-/// and continuity. Kept only where a contour under the shape shows its relation
-/// ([`evidence::witnessed_at`]): auger's frame-wide layer at k 0.32 shows on none.
-pub fn candidates(ctx: &Context, lv: &leaves::Leaves) -> Vec<Candidate> {
+/// The translucent shapes over `ctx`'s image read on its leaves `lv`: each relation's passing
+/// regions, pieces merged ([`merge_phase`]), overlaps to the shape on top, ranked uncovered
+/// first, then by boundary share times k and continuity, kept where [`evidence::witnessed_at`].
+pub async fn candidates(ctx: &Context, lv: &leaves::Leaves) -> Vec<Candidate> {
     let debug = crate::diagnostics::debug();
     let (width, height) = (ctx.width, ctx.height);
     let target = &ctx.target[..];
     let plane = discovery::plane_pass(lv);
+    crate::progress::poll().await;
     let graph = discovery::equation_graph(lv);
+    crate::progress::poll().await;
     let hyps = discovery::merge_lists(&[plane.clone(), graph.clone()]);
     let layers = discovery::shading_pass(lv);
     if debug {
@@ -351,6 +397,7 @@ pub fn candidates(ctx: &Context, lv: &leaves::Leaves) -> Vec<Candidate> {
     // share, for the overlaps below
     let mut overlaps: Vec<stage::Region> = Vec::new();
     for (k, m, shade) in relations {
+        crate::progress::poll().await;
         let regions = stage::regions_of(lv, target, k, m, shade);
         overlaps.extend(regions.iter().filter(|r| r.show && r.interior).cloned());
         let good: Vec<&stage::Region> = regions.iter().filter(|r| r.kept()).collect();
@@ -387,46 +434,25 @@ pub fn candidates(ctx: &Context, lv: &leaves::Leaves) -> Vec<Candidate> {
         if !(OPACITY_MARGIN..=1. - OPACITY_MARGIN).contains(&k) {
             continue;
         }
-        // A translucent black or white, to the noise its color is known to (a level of the
-        // colors is `1 / (1 - k)` levels of it), is a shading layer whichever pass found it
-        let shade = shade.or_else(|| {
-            let margin = NOISE / (1. - k);
-            let c = m / (1. - k);
-            [Shade::Shadow, Shade::Highlight]
-                .into_iter()
-                .find(|kind| (c - kind.color()).abs().max_element() <= margin)
-        });
+        // A translucent black or white is a shading layer whichever pass found it
+        let shade = shade.or_else(|| Shade::of(m / (1. - k), k));
         if let Some(kind) = shade {
             m = (1. - k) * kind.color();
         }
-        let mut mask = vec![false; width * height];
-        let (mut min, mut max) = (IVec2::MAX, IVec2::MIN);
+        let empty = vec![false; width * height];
+        let mut candidate = Candidate::new(k, m, empty, (IVec2::MAX, IVec2::MIN), shade);
         for r in &good {
-            for p in region_pixels(r) {
-                mask[p.y as usize * width + p.x as usize] = true;
-                min = min.min(p);
-                max = max.max(p + 1);
-            }
+            candidate.cover(r, width);
         }
         let (fitting, pairs) = good
             .iter()
             .fold((0, 0), |(f, p), r| (f + r.fitting, p + r.pairs));
         let share = fitting as f32 / pairs.max(1) as f32;
-        let candidate = Candidate {
-            k,
-            m,
-            mask,
-            min,
-            max,
-            shade,
-            above: None,
-            holes: None,
-        };
         // The same shape from two relations is one; a shading layer's reading of it replaces
         // a colored one, the same picture for a segment less
         match found.iter().position(|(_, c)| c.mask == candidate.mask) {
             Some(at) if found[at].1.shade.is_none() && shade.is_some() => {
-                found[at] = (share, candidate)
+                found[at] = (share, candidate);
             }
             Some(_) => {}
             None => found.push((share, candidate)),
@@ -472,11 +498,7 @@ pub fn candidates(ctx: &Context, lv: &leaves::Leaves) -> Vec<Candidate> {
     for (t, list) in joined.into_iter().enumerate() {
         for o in list {
             let c = &mut found[t].1;
-            for p in region_pixels(&overlaps[o]) {
-                c.mask[p.y as usize * width + p.x as usize] = true;
-                c.min = c.min.min(p);
-                c.max = c.max.max(p + 1);
-            }
+            c.cover(&overlaps[o], width);
             if debug {
                 eprintln!(
                     "translucency: the overlap of {} px at k {:.3} joins the candidate at k {:.3}",
@@ -540,8 +562,8 @@ fn region_pixels(r: &stage::Region) -> impl Iterator<Item = IVec2> + '_ {
 /// Whether a pixel is in a mask or next to it.
 fn touches(mask: &[bool], p: IVec2, width: usize, height: usize) -> bool {
     [IVec2::ZERO, IVec2::X, -IVec2::X, IVec2::Y, -IVec2::Y]
-        .iter()
-        .map(|d| p + *d)
+        .into_iter()
+        .map(|d| p + d)
         .any(|q| {
             q.x >= 0
                 && q.y >= 0
@@ -549,55 +571,6 @@ fn touches(mask: &[bool], p: IVec2, width: usize, height: usize) -> bool {
                 && (q.y as usize) < height
                 && mask[q.y as usize * width + q.x as usize]
         })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Two bands with a disc at opacity one half over both: one candidate, the disc, at its
-    /// relation.
-    #[test]
-    fn finds_the_disc_over_two_bands() {
-        let (width, height) = (96usize, 96usize);
-        let (top, bottom) = (Vec3::new(0.9, 0.85, 0.7), Vec3::new(0.2, 0.3, 0.5));
-        let (color, opacity) = (Vec3::new(0.8, 0.2, 0.3), 0.5);
-        let mut rgb = Vec::with_capacity(width * height * 3);
-        for y in 0..height {
-            for x in 0..width {
-                let b = if y < height / 2 { top } else { bottom };
-                // The disc's coverage of the pixel, by 4 x 4 samples
-                let mut covered = 0.;
-                for s in 0..16 {
-                    let (u, v) = (
-                        x as f32 + (s % 4) as f32 / 4. + 0.125,
-                        y as f32 + (s / 4) as f32 / 4. + 0.125,
-                    );
-                    if (u - 48.).powi(2) + (v - 48.).powi(2) <= 30f32.powi(2) {
-                        covered += 1. / 16.;
-                    }
-                }
-                let o = b + covered * opacity * (color - b);
-                for c in o.to_array() {
-                    rgb.push((c * 255.).round() as u8);
-                }
-            }
-        }
-        let mut timings = crate::timing::Timings::default();
-        let (ctx, hierarchy) = crate::hierarchy::analyze(&rgb, width, height, 1., &mut timings);
-        let lv = leaves::Leaves::new(&ctx.target, hierarchy.labels(), width, height);
-        let found = candidates(&ctx, &lv);
-        let first = found.first().expect("a candidate");
-        assert!((first.k - 0.5).abs() < 0.02, "k {}", first.k);
-        assert!(
-            (first.fill().color - color).abs().max_element() < 4. / 255.,
-            "color {:?}",
-            first.fill().color * 255.
-        );
-        let area = first.mask.iter().filter(|&&m| m).count() as f32;
-        let disc = std::f32::consts::PI * 30f32.powi(2);
-        assert!((area - disc).abs() < 0.05 * disc, "area {area} for {disc}");
-    }
 }
 
 /// A group of pieces of one shape in the merge phase: its relation, its pieces, their
@@ -738,7 +711,7 @@ fn merge_phase(
             })
         })
         .collect();
-    let mut failed: crate::HashSet<(usize, usize)> = Default::default();
+    let mut failed = crate::HashSet::<(usize, usize)>::default();
     loop {
         let mut pairs: Vec<(f32, usize, usize)> = Vec::new();
         for i in 0..n {
@@ -789,16 +762,12 @@ fn merge_phase(
         if g.members.len() < 2 {
             continue;
         }
-        let mut mask = vec![false; width * height];
-        let (mut min, mut max) = (IVec2::MAX, IVec2::MIN);
+        let empty = vec![false; width * height];
+        let mut candidate = Candidate::new(g.k, g.m, empty, (IVec2::MAX, IVec2::MIN), None);
         for &i in &g.members {
-            for q in region_pixels(pieces[i]) {
-                mask[q.y as usize * width + q.x as usize] = true;
-                min = min.min(q);
-                max = max.max(q + 1);
-            }
+            candidate.cover(pieces[i], width);
         }
-        let Some(r) = stage::judge(lv, target, &mask, g.k, g.m, None, true)
+        let Some(r) = stage::judge(lv, target, &candidate.mask, g.k, g.m, None, true)
             .into_iter()
             .next()
         else {
@@ -817,19 +786,8 @@ fn merge_phase(
         if !r.share || !(OPACITY_MARGIN..=1. - OPACITY_MARGIN).contains(&r.k) {
             continue;
         }
-        out.push((
-            r.fitting as f32 / r.pairs as f32,
-            Candidate {
-                k: r.k,
-                m: r.m,
-                mask,
-                min,
-                max,
-                shade: None,
-                above: None,
-                holes: None,
-            },
-        ));
+        (candidate.k, candidate.m) = (r.k, r.m);
+        out.push((r.fitting as f32 / r.pairs as f32, candidate));
     }
     out
 }
@@ -852,49 +810,25 @@ fn continuity(target: &[Vec3], c: &Candidate, width: usize, height: usize) -> f3
     let (bw, bh) = ((hi.x - lo.x) as usize, (hi.y - lo.y) as usize);
     let frame = |j: usize| (lo.y as usize + j / bw) * width + lo.x as usize + j % bw;
     let inside: Vec<bool> = (0..bw * bh).map(|j| c.mask[frame(j)]).collect();
-    // City-block distances to the outside (inside) and to the inside (outside), the
-    // erosions and dilations by the cross
-    let city = |feature: &dyn Fn(usize) -> bool| -> Vec<u32> {
-        let far = u32::MAX / 2;
-        let mut d: Vec<u32> = (0..bw * bh)
-            .map(|j| if feature(j) { 0 } else { far })
-            .collect();
-        for j in 0..bw * bh {
-            let (u, v) = (j % bw, j / bw);
-            if u > 0 {
-                d[j] = d[j].min(d[j - 1] + 1);
-            }
-            if v > 0 {
-                d[j] = d[j].min(d[j - bw] + 1);
-            }
-        }
-        for j in (0..bw * bh).rev() {
-            let (u, v) = (j % bw, j / bw);
-            if u + 1 < bw {
-                d[j] = d[j].min(d[j + 1] + 1);
-            }
-            if v + 1 < bh {
-                d[j] = d[j].min(d[j + bw] + 1);
-            }
-        }
-        d
-    };
-    let to_outside = city(&|j| !inside[j]);
-    let to_inside = city(&|j| inside[j]);
+    let outside: Vec<bool> = inside.iter().map(|v| !v).collect();
+    // within two pixels of the outside and of the inside (city-block), and within the ring
+    let near_outside = dilate(&outside, bw, bh, Conn::Four, 2);
+    let near_inside = dilate(&inside, bw, bh, Conn::Four, 2);
+    let in_ring = dilate(&inside, bw, bh, Conn::Four, RING as usize);
     let mut core: Vec<usize> = (0..bw * bh)
-        .filter(|&j| inside[j] && to_outside[j] > 2)
+        .filter(|&j| inside[j] && !near_outside[j])
         .collect();
     if core.len() < PALETTE_MIN {
         core = (0..bw * bh).filter(|&j| inside[j]).collect();
     }
     let ring: Vec<usize> = (0..bw * bh)
-        .filter(|&j| !inside[j] && to_inside[j] > 2 && to_inside[j] <= RING as u32)
+        .filter(|&j| !inside[j] && !near_inside[j] && in_ring[j])
         .collect();
     if core.len() < PALETTE_MIN || ring.len() < PALETTE_MIN {
         return 0.;
     }
     let palette = |pixels: &[usize]| -> Vec<(Vec3, f32)> {
-        let mut counts: std::collections::BTreeMap<[i32; 3], f32> = Default::default();
+        let mut counts = std::collections::BTreeMap::<[i32; 3], f32>::new();
         for &j in pixels {
             let q = (target[frame(j)] * 255. / PALETTE_STEP).round().as_ivec3();
             *counts.entry(q.to_array()).or_default() += 1.;
@@ -927,4 +861,59 @@ fn continuity(target: &[Vec3], c: &Candidate, width: usize, height: usize) -> f3
         }
     }
     explained / total
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Two bands with a disc at opacity one half over both: one candidate, the disc, at its
+    /// relation.
+    #[test]
+    fn finds_the_disc_over_two_bands() {
+        let (width, height) = (96usize, 96usize);
+        let (top, bottom) = (Vec3::new(0.9, 0.85, 0.7), Vec3::new(0.2, 0.3, 0.5));
+        let (color, opacity) = (Vec3::new(0.8, 0.2, 0.3), 0.5);
+        let mut rgb = Vec::with_capacity(width * height * 3);
+        for y in 0..height {
+            for x in 0..width {
+                let b = if y < height / 2 { top } else { bottom };
+                // The disc's coverage of the pixel, by 4 x 4 samples
+                let mut covered = 0.;
+                for s in 0..16 {
+                    let (u, v) = (
+                        x as f32 + (s % 4) as f32 / 4. + 0.125,
+                        y as f32 + (s / 4) as f32 / 4. + 0.125,
+                    );
+                    if (u - 48.).powi(2) + (v - 48.).powi(2) <= 30f32.powi(2) {
+                        covered += 1. / 16.;
+                    }
+                }
+                let o = b + covered * opacity * (color - b);
+                for c in o.to_array() {
+                    rgb.push((c * 255.).round() as u8);
+                }
+            }
+        }
+        let mut timings = crate::timing::Timings::default();
+        let (ctx, hierarchy) = crate::progress::finish(crate::hierarchy::analyze(
+            &rgb,
+            width,
+            height,
+            1.,
+            &mut timings,
+        ));
+        let lv = leaves::Leaves::new(&ctx.target, hierarchy.labels(), width, height);
+        let found = crate::progress::finish(candidates(&ctx, &lv));
+        let first = found.first().expect("a candidate");
+        assert!((first.k - 0.5).abs() < 0.02, "k {}", first.k);
+        assert!(
+            (first.fill().color - color).abs().max_element() < 4. / 255.,
+            "color {:?}",
+            first.fill().color * 255.
+        );
+        let area = first.mask.iter().filter(|&&m| m).count() as f32;
+        let disc = std::f32::consts::PI * 30f32.powi(2);
+        assert!((area - disc).abs() < 0.05 * disc, "area {area} for {disc}");
+    }
 }

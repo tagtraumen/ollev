@@ -3,11 +3,11 @@
 use super::*;
 
 /// Most pixels per pixel of boundary a blend region has: about one pixel thick.
-pub(super) const BLEND_THICKNESS: f64 = 1.;
+const BLEND_THICKNESS: f64 = 1.;
 /// Farthest a blend region's mean color lies from the line between its two neighbors' colors.
-pub(super) const BLEND_DISTANCE: f64 = 0.06;
+const BLEND_DISTANCE: f64 = 0.06;
 /// Least color distance between two neighbors for a region between them to be their blend.
-pub(super) const BLEND_CONTRAST: f64 = 0.1;
+const BLEND_CONTRAST: f64 = 0.1;
 
 /// Dissolves the thin regions of a segmentation that are blends of two neighbors, as
 /// anti-aliasing leaves along edges, into those neighbors: each pixel goes to the one nearer its

@@ -4,20 +4,13 @@
 
 use crate::HashMap;
 
+use super::find_root as find;
 use super::materials::{LINK_LEVELS, Palette, min_material_px};
-use super::raster::{DVec2, DVec3, Image, SHOW_THROUGH, length_px, unit_of};
+use super::raster::{DVec2, DVec3, Image, SHOW_THROUGH, forward, length_px, unit_of};
 use super::region_graph::crack_cost;
 
 /// The frame outside the picture, as a label.
 const FRAME: u32 = u32::MAX;
-
-fn find(p: &mut [usize], mut a: usize) -> usize {
-    while p[a] != a {
-        p[a] = p[p[a]];
-        a = p[a];
-    }
-    a
-}
 
 /// The objects: leaves of one material joined where they touch.
 pub struct Pieces {
@@ -58,8 +51,7 @@ pub fn pieces(img: &Image, leaves: &[u32], rim: &[bool]) -> Pieces {
             let best = v
                 .into_iter()
                 .max_by(|a, b| a.1.total_cmp(&b.1).then(b.0.cmp(&a.0)))
-                .map(|(l, _)| l)
-                .unwrap_or(0);
+                .map_or(0, |(l, _)| l);
             (k, best)
         })
         .collect();
@@ -115,19 +107,13 @@ pub fn pieces(img: &Image, leaves: &[u32], rim: &[bool]) -> Pieces {
     // leaf adjacency, with the crack cost summed per pair
     let u = unit_of(w);
     let mut crack: HashMap<(u32, u32), (f64, usize)> = HashMap::default();
-    for y in 0..h {
-        for x in 0..w {
-            let i = y * w + x;
-            for j in [(x + 1 < w).then_some(i + 1), (y + 1 < h).then_some(i + w)]
-                .into_iter()
-                .flatten()
-            {
-                let (a, b) = (leaves[i], leaves[j]);
-                if a != b {
-                    let e = crack.entry((a.min(b), a.max(b))).or_default();
-                    e.0 += crack_cost(img, i, j) / u;
-                    e.1 += 1;
-                }
+    for i in 0..w * h {
+        for j in forward(i, w, h) {
+            let (a, b) = (leaves[i], leaves[j]);
+            if a != b {
+                let e = crack.entry((a.min(b), a.max(b))).or_default();
+                e.0 += crack_cost(img, i, j) / u;
+                e.1 += 1;
             }
         }
     }
@@ -225,19 +211,13 @@ pub fn pieces(img: &Image, leaves: &[u32], rim: &[bool]) -> Pieces {
 }
 
 /// Crack lengths between pieces, per unordered pair.
-pub fn boundaries(label: &[u32], w: usize, h: usize) -> HashMap<(u32, u32), usize> {
+fn boundaries(label: &[u32], w: usize, h: usize) -> HashMap<(u32, u32), usize> {
     let mut out: HashMap<(u32, u32), usize> = HashMap::default();
-    for y in 0..h {
-        for x in 0..w {
-            let i = y * w + x;
-            for j in [(x + 1 < w).then_some(i + 1), (y + 1 < h).then_some(i + w)]
-                .into_iter()
-                .flatten()
-            {
-                let (a, b) = (label[i], label[j]);
-                if a != b {
-                    *out.entry((a.min(b), a.max(b))).or_default() += 1;
-                }
+    for i in 0..w * h {
+        for j in forward(i, w, h) {
+            let (a, b) = (label[i], label[j]);
+            if a != b {
+                *out.entry((a.min(b), a.max(b))).or_default() += 1;
             }
         }
     }
@@ -246,22 +226,23 @@ pub fn boundaries(label: &[u32], w: usize, h: usize) -> HashMap<(u32, u32), usiz
 
 /// One junction of three objects on the crack contours.
 #[derive(Clone, Debug)]
-pub struct Junction {
-    pub p: DVec2,
+struct Junction {
+    p: DVec2,
     /// the object whose sector is straight (in front), and the two of the stem
-    pub front: u32,
-    pub stem: [u32; 2],
+    front: u32,
+    stem: [u32; 2],
     /// the stem's direction, away from the junction
-    pub s: DVec2,
+    s: DVec2,
     /// the stem pieces' local colours and centroids
-    pub col: [DVec3; 2],
-    pub cen: [DVec2; 2],
+    col: [DVec3; 2],
+    cen: [DVec2; 2],
     /// paired with another T across a gap (index), and how
-    pub pair: Option<(usize, Pair)>,
+    pair: Option<(usize, Pair)>,
 }
 
+/// How two facing Ts read.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Pair {
+enum Pair {
     /// the same contour, the same colours: an opaque thing between
     Between,
     /// one relation, k < 1: the lower contrast side is under a layer
@@ -339,7 +320,7 @@ fn follow(
 /// The pieces as the junctions read them: every object under [`min_material_px`] taken into
 /// its neighbour of the nearest colour, so slivers and specks do not cut a contour into arms
 /// of a pixel or two.
-pub fn coarse(img: &Image, pieces: &Pieces) -> Vec<u32> {
+fn coarse(img: &Image, pieces: &Pieces) -> Vec<u32> {
     let (w, h) = (pieces.w, pieces.h);
     let min_px = min_material_px(img);
     let bounds = boundaries(&pieces.label, w, h);
@@ -385,8 +366,8 @@ pub fn coarse(img: &Image, pieces: &Pieces) -> Vec<u32> {
 
 /// Every three-object junction of the coarsened pieces (none on the frame), read as a T
 /// where one sector is straight within 22.5 degrees and the others turn by 30 at least; arms
-/// followed up to 6 units, tangent the chord. Also the three- and four-object corner counts.
-pub fn junctions(img: &Image, pieces: &Pieces) -> (Vec<Junction>, usize, usize) {
+/// followed up to 6 units, tangent the chord.
+fn junctions(img: &Image, pieces: &Pieces) -> Vec<Junction> {
     let (w, h) = (pieces.w, pieces.h);
     let coarse = coarse(img, pieces);
     let label = &coarse;
@@ -395,18 +376,13 @@ pub fn junctions(img: &Image, pieces: &Pieces) -> (Vec<Junction>, usize, usize) 
     let r_col = length_px(w, 3.0) as isize;
     let tol_t = std::f64::consts::PI / 8.0;
     let tol_stem = std::f64::consts::PI / 6.0;
-    let (mut out, mut threes, mut fours) = (Vec::new(), 0, 0);
+    let mut out = Vec::new();
     for y in 1..h {
         for x in 1..w {
             let c = corner(label, w, h, x, y);
-            let nd = distinct(c);
-            if nd == 4 {
-                fours += 1;
-            }
-            if nd != 3 {
+            if distinct(c) != 3 {
                 continue;
             }
-            threes += 1;
             let p = DVec2::new(x as f64, y as f64);
             // the three arms
             let mut arms: Vec<((u32, u32), DVec2, f64)> = Vec::new();
@@ -504,7 +480,7 @@ pub fn junctions(img: &Image, pieces: &Pieces) -> (Vec<Junction>, usize, usize) 
             });
         }
     }
-    (out, threes, fours)
+    out
 }
 
 fn cross(a: DVec2, b: DVec2) -> f64 {
@@ -523,8 +499,8 @@ fn step_lr(j: &Junction, s: DVec2) -> (DVec3, DVec3) {
 
 /// Pairs Ts whose stems face each other across up to 8 units, collinear within 25 degrees,
 /// offset at most 1.5 px plus a fifth of their distance, read as between (same colours),
-/// veil (one relation, k < 1) or broken. Returns the counts of the three.
-pub fn pair_junctions(js: &mut [Junction], w: usize) -> [usize; 3] {
+/// veil (one relation, k < 1) or broken.
+fn pair_junctions(js: &mut [Junction], w: usize) {
     let gap = length_px(w, 8.0) as f64;
     let cell = gap.max(1.0);
     let mut grid: HashMap<(i64, i64), Vec<usize>> = HashMap::default();
@@ -534,7 +510,6 @@ pub fn pair_junctions(js: &mut [Junction], w: usize) -> [usize; 3] {
             .push(i);
     }
     let cos_tol = (25f64).to_radians().cos();
-    let mut counts = [0usize; 3];
     let mut taken = vec![false; js.len()];
     for i in 0..js.len() {
         if taken[i] {
@@ -611,37 +586,30 @@ pub fn pair_junctions(js: &mut [Junction], w: usize) -> [usize; 3] {
         };
         js[i].pair = Some((k, read));
         js[k].pair = Some((i, flip));
-        counts[match read {
-            Pair::Between => 0,
-            Pair::Veil { .. } => 1,
-            Pair::Broken => 2,
-        }] += 1;
     }
-    counts
+}
+
+/// Each veil pair once: its low-contrast T, its high-contrast T and the pair's relation.
+fn veil_pairs(js: &[Junction]) -> impl Iterator<Item = (&Junction, &Junction, f64, DVec3)> {
+    js.iter().enumerate().filter_map(|(i, j)| {
+        let Some((k, Pair::Veil { k: kk, m, lo_is_self })) = j.pair else {
+            return None;
+        };
+        if k < i {
+            return None;
+        }
+        let o = &js[k];
+        let (lo, hi) = if lo_is_self { (j, o) } else { (o, j) };
+        Some((lo, hi, kk, m))
+    })
 }
 
 /// The veil pairs' votes per object: for each veil pair, each object of the low-contrast
 /// stem that is not of the high-contrast stem is seen through the layer, with the pair's
 /// relation.
-pub fn veil_votes(js: &[Junction]) -> HashMap<u32, Vec<(f64, DVec3)>> {
+fn veil_votes(js: &[Junction]) -> HashMap<u32, Vec<(f64, DVec3)>> {
     let mut veil: HashMap<u32, Vec<(f64, DVec3)>> = HashMap::default();
-    for (i, j) in js.iter().enumerate() {
-        let Some((
-            k,
-            Pair::Veil {
-                k: kk,
-                m,
-                lo_is_self,
-            },
-        )) = j.pair
-        else {
-            continue;
-        };
-        if k < i {
-            continue;
-        }
-        let o = &js[k];
-        let (lo, hi) = if lo_is_self { (j, o) } else { (o, j) };
+    for (lo, hi, kk, m) in veil_pairs(js) {
         for &l in &lo.stem {
             if hi.stem.contains(&l) {
                 continue;
@@ -655,18 +623,10 @@ pub fn veil_votes(js: &[Junction]) -> HashMap<u32, Vec<(f64, DVec3)>> {
 /// The veil pairs' fronts per veiled object: the front of either T that is of neither stem,
 /// where the contour runs on under it, so in front of both sides and the layer. Keyed by the
 /// low-contrast stem's objects, as [`veil_votes`] is.
-pub fn veil_fronts(js: &[Junction]) -> HashMap<u32, Vec<u32>> {
+fn veil_fronts(js: &[Junction]) -> HashMap<u32, Vec<u32>> {
     let mut fronts: HashMap<u32, Vec<u32>> = HashMap::default();
-    for (i, j) in js.iter().enumerate() {
-        let Some((k, Pair::Veil { lo_is_self, .. })) = j.pair else {
-            continue;
-        };
-        if k < i {
-            continue;
-        }
-        let o = &js[k];
-        let (lo, hi) = if lo_is_self { (j, o) } else { (o, j) };
-        for f in [j.front, o.front] {
+    for (lo, hi, ..) in veil_pairs(js) {
+        for f in [lo.front, hi.front] {
             if lo.stem.contains(&f) || hi.stem.contains(&f) {
                 continue;
             }
@@ -681,21 +641,13 @@ pub fn veil_fronts(js: &[Junction]) -> HashMap<u32, Vec<u32>> {
 }
 
 /// The veil pairs' bare objects per veiled object: the high-contrast stem's objects of
-/// neither the low-contrast stem nor a front, the veiled objects seen bare (the wall's grid
-/// outside glassware's glass). Keyed as [`veil_votes`] is.
-pub fn veil_bare(js: &[Junction]) -> HashMap<u32, Vec<u32>> {
+/// neither the low-contrast stem nor a front, the veiled objects seen bare. Keyed as
+/// [`veil_votes`] is.
+fn veil_bare(js: &[Junction]) -> HashMap<u32, Vec<u32>> {
     let mut bare: HashMap<u32, Vec<u32>> = HashMap::default();
-    for (i, j) in js.iter().enumerate() {
-        let Some((k, Pair::Veil { lo_is_self, .. })) = j.pair else {
-            continue;
-        };
-        if k < i {
-            continue;
-        }
-        let o = &js[k];
-        let (lo, hi) = if lo_is_self { (j, o) } else { (o, j) };
+    for (lo, hi, ..) in veil_pairs(js) {
         for &b in &hi.stem {
-            if lo.stem.contains(&b) || b == j.front || b == o.front {
+            if lo.stem.contains(&b) || b == lo.front || b == hi.front {
                 continue;
             }
             for &l in &lo.stem {
@@ -738,7 +690,7 @@ impl Proposal {
 /// a second agreeing contour, as one reading is any two steps in that ratio.
 pub fn proposals(img: &Image, pieces: &Pieces) -> Vec<Proposal> {
     let (w, h) = (pieces.w, pieces.h);
-    let (mut js, _, _) = junctions(img, pieces);
+    let mut js = junctions(img, pieces);
     pair_junctions(&mut js, w);
     let veil = veil_votes(&js);
     let front_of = veil_fronts(&js);
@@ -777,22 +729,18 @@ pub fn proposals(img: &Image, pieces: &Pieces) -> Vec<Proposal> {
             let members: Vec<bool> = (0..pieces.n as u32)
                 .map(|p| veil.contains_key(&p) && find(&mut parent, p as usize) == root)
                 .collect();
-            let mut front = vec![false; pieces.n];
-            for (p, fs) in &front_of {
-                if members[*p as usize] {
-                    for &f in fs {
-                        front[f as usize] = true;
+            // the objects the members' lists name, per pixel
+            let named = |of: &HashMap<u32, Vec<u32>>| -> Vec<bool> {
+                let mut named = vec![false; pieces.n];
+                for (p, list) in of {
+                    if members[*p as usize] {
+                        for &q in list {
+                            named[q as usize] = true;
+                        }
                     }
                 }
-            }
-            let mut bare = vec![false; pieces.n];
-            for (p, bs) in &bare_of {
-                if members[*p as usize] {
-                    for &b in bs {
-                        bare[b as usize] = true;
-                    }
-                }
-            }
+                pieces.label.iter().map(|&p| named[p as usize]).collect()
+            };
             let mask: Vec<bool> = pieces.label.iter().map(|&p| members[p as usize]).collect();
             let px = mask.iter().filter(|v| **v).count();
             Proposal {
@@ -801,8 +749,8 @@ pub fn proposals(img: &Image, pieces: &Pieces) -> Vec<Proposal> {
                 mask,
                 px,
                 votes: votes.len(),
-                fronts: pieces.label.iter().map(|&p| front[p as usize]).collect(),
-                bare: pieces.label.iter().map(|&p| bare[p as usize]).collect(),
+                fronts: named(&front_of),
+                bare: named(&bare_of),
             }
         })
         .collect();

@@ -4,6 +4,7 @@
 use glam::{IVec2, Vec3};
 
 use super::leaves::{Leaves, components};
+use super::raster::neighbours4;
 use super::{NOISE, SHOW_THROUGH, in_gamut, percentile};
 
 /// A box of pixels, `min..max`.
@@ -39,15 +40,7 @@ impl Bounds {
 
 /// The box of the set pixels of a frame mask.
 fn bounds_of(mask: &[bool], width: usize) -> Option<Bounds> {
-    let mut min = IVec2::MAX;
-    let mut max = IVec2::MIN;
-    for (i, &m) in mask.iter().enumerate() {
-        if m {
-            let p = IVec2::new((i % width) as i32, (i / width) as i32);
-            min = min.min(p);
-            max = max.max(p + 1);
-        }
-    }
+    let (min, max) = super::mask_bounds(mask, width);
     (min.x <= max.x).then_some(Bounds { min, max })
 }
 
@@ -111,7 +104,7 @@ pub fn distance_squared(width: usize, height: usize, feature: impl Fn(usize) -> 
 }
 
 /// The gap a line drawn under or over a shape leaves in its mask, closed: the width the
-/// leaves bridge, so strokes under a veil do not cut it into strips (the rice terraces).
+/// leaves bridge, so strokes under a veil do not cut it into strips.
 const CLOSE: f32 = 3.;
 
 /// The shape's pixels for `o = k b + m` grown from its seed leaves where a pixel is nearer its
@@ -140,16 +133,7 @@ pub fn grow_pixels(lv: &Leaves, target: &[Vec3], seeds: &[bool], k: f32, m: Vec3
             && (through - plain).abs().max_element() > 2. * NOISE
     };
     while let Some(i) = frontier.pop() {
-        let (x, y) = (i % width, i / width);
-        for j in [
-            (x > 0).then(|| i - 1),
-            (x + 1 < width).then(|| i + 1),
-            (y > 0).then(|| i - width),
-            (y + 1 < height).then(|| i + width),
-        ]
-        .into_iter()
-        .flatten()
-        {
+        for j in neighbours4(i, width, height) {
             if !mask[j] && candidate(j) {
                 mask[j] = true;
                 frontier.push(j);
@@ -241,7 +225,7 @@ pub fn grow_pixels(lv: &Leaves, target: &[Vec3], seeds: &[bool], k: f32, m: Vec3
             .any(|c| (*c - mean).abs().max_element() <= 2. * NOISE);
     }
     for j in 0..bw * bh {
-        if fill[part[j] as usize] && !mask[frame(j)] {
+        if fill[part[j] as usize] {
             mask[frame(j)] = true;
         }
     }
@@ -295,16 +279,14 @@ pub fn regions_of(
     shade: Option<super::discovery::Shade>,
 ) -> Vec<Region> {
     let fits = lv.pair_fits(k, m);
+    if !fits.contains(&true) {
+        return Vec::new();
+    }
     let mut seeds = vec![false; lv.n];
-    let mut any = false;
     for (p, &f) in lv.pairs.iter().zip(&fits) {
         if f {
             seeds[p.x as usize] = true;
-            any = true;
         }
-    }
-    if !any {
-        return Vec::new();
     }
     let mask = grow_pixels(lv, target, &seeds, k, m);
     judge(lv, target, &mask, k, m, shade, false)
@@ -429,7 +411,7 @@ pub fn judge(
             let o = target[iy * width + ix];
             let out = oy * width + ox;
             // The outside sample carried to the inside one by its leaf's slope: on a gradient
-            // the background 2d px away is not the one beneath (the jellyfish's band over water)
+            // the background 2d px away is not the one beneath
             let mut b = target[out];
             if lv.filled[out] >= 0 {
                 b += lv.plane[lv.filled[out] as usize].step(glam::Vec2::new(
@@ -539,7 +521,7 @@ mod tests {
         let (width, height) = (23, 17);
         let feature = |i: usize| (i * 7919).is_multiple_of(31) || i == 100;
         let d = distance_squared(width, height, feature);
-        for i in 0..width * height {
+        for (i, &di) in d.iter().enumerate() {
             let (x, y) = ((i % width) as i64, (i / width) as i64);
             let best = (0..width * height)
                 .filter(|&j| feature(j))
@@ -548,7 +530,7 @@ mod tests {
                     ((u - x).pow(2) + (v - y).pow(2)) as f32
                 })
                 .fold(f32::INFINITY, f32::min);
-            assert_eq!(d[i], best, "pixel {x}, {y}");
+            assert_eq!(di, best, "pixel {x}, {y}");
         }
     }
 }

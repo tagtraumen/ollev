@@ -16,6 +16,8 @@ mod focus;
 pub(crate) mod layers;
 mod nonzero;
 mod render;
+#[cfg(feature = "svg")]
+pub(crate) use render::ranges;
 #[cfg(test)]
 mod tests;
 
@@ -72,13 +74,19 @@ impl Default for Capabilities {
 /// those whose best form still misses the model by more than a segment's price.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Report {
+    /// Path gradients drawn as bands.
     pub path_gradients: usize,
+    /// Radial gradients whose focus was dropped or drawn as discs.
     pub foci: usize,
+    /// Objects baked into nested shapes.
     pub layered: usize,
+    /// Dashed strokes cut into dashes.
     pub dashed: usize,
+    /// Even-odd loops wound for the nonzero rule.
     pub wound: usize,
     /// Objects written in place of the rewritten ones.
     pub written: usize,
+    /// Rewritten objects missing by more than a segment's price.
     pub missed: usize,
     /// The largest miss of a rewritten object, in segment prices.
     pub worst: f64,
@@ -137,7 +145,9 @@ pub fn lower(model: &Model, host: &Capabilities) -> (Model, Report) {
         .collect();
     let mut clips = std::mem::take(&mut lowering.clips);
     if !host.even_odd {
-        clips.iter_mut().for_each(|c| nonzero::clip(&lowering, c));
+        for c in &mut clips {
+            nonzero::clip(&lowering, c);
+        }
     }
     out.clips = clips;
     (out, report)

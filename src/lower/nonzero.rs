@@ -73,20 +73,10 @@ fn nonzero(l: &Lowering, loops: &[Vec<Curve>]) -> Vec<Vec<Curve>> {
 /// The loops flattened to polygons, finely enough to tell inside from outside.
 fn polygon(cubics: &[Curve]) -> Vec<DVec2> {
     const STEPS: usize = 16;
-    let mut out = Vec::with_capacity(cubics.len() * STEPS);
-    for c in cubics {
-        for s in 0..STEPS {
-            let t = s as f64 / STEPS as f64;
-            let u = 1. - t;
-            out.push(
-                c[0] * (u * u * u)
-                    + c[1] * (3. * u * u * t)
-                    + c[2] * (3. * u * t * t)
-                    + c[3] * (t * t * t),
-            );
-        }
-    }
-    out
+    cubics
+        .iter()
+        .flat_map(|c| (0..STEPS).map(move |s| super::dashes::eval(c, s as f64 / STEPS as f64)))
+        .collect()
 }
 
 fn contains(polygon: &[DVec2], p: DVec2) -> bool {

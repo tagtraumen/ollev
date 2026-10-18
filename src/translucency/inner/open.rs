@@ -1,6 +1,11 @@
 //! The outside materials in the open per relation, and the colours they classify.
 
-use super::*;
+use crate::HashMap;
+
+use super::{
+    ChebGrid, Class, Conn, DVec3, InnerInputs, MATCH_TOL, NO_FIT, PixelFit, SHOW_THROUGH, VEIL_MAX,
+    VOTE_GRID, cheb, label,
+};
 
 /// The outside under one relation: the colors that are the layer elsewhere, the materials
 /// in the open, the sources and the inside colors scored.
@@ -109,16 +114,21 @@ pub fn open_at(inp: &InnerInputs, k: f64, m: DVec3) -> Open {
         if !first.scored[e] || tried[e] || pc[e].class != Class::None {
             continue;
         }
-        let near: f64 = inp.nearby[e]
-            .iter()
-            .filter(|&&j| open[inp.bmat[j as usize]] && !layer[j as usize])
-            .map(|&j| inp.bw[j as usize])
-            .sum();
+        let near = open_near(inp, &open, &layer, e);
         if near > 0.0 && inp.weights[e] > near {
             pc[e] = shading_fit(&first, &lines, inp.colors[e]);
         }
     }
     build_open(inp, k, m, &layer, open, Some(&pc))
+}
+
+/// The pixels of the open sources near inside color `e`, the layer's colors left out.
+fn open_near(inp: &InnerInputs, open: &[bool], layer: &[bool], e: usize) -> f64 {
+    inp.nearby[e]
+        .iter()
+        .filter(|&&j| open[inp.bmat[j as usize]] && !layer[j as usize])
+        .map(|&j| inp.bw[j as usize])
+        .sum()
 }
 
 /// The outside with the given materials open: the sources (open, not the layer), their
@@ -132,6 +142,7 @@ pub(super) fn build_open(
     open: Vec<bool>,
     pc: Option<&[PixelFit]>,
 ) -> Open {
+    type Cell = ((usize, [i64; 3]), (DVec3, f64));
     let (mut b, mut bmat) = (Vec::new(), Vec::new());
     let mut grid: HashMap<(usize, [i64; 3]), (DVec3, f64)> = HashMap::default();
     for (j, (c, &r)) in inp.b.iter().zip(&inp.bmat).enumerate() {
@@ -147,7 +158,6 @@ pub(super) fn build_open(
         }
     }
     // the cells by material and place, for a deterministic order
-    type Cell = ((usize, [i64; 3]), (DVec3, f64));
     let mut cells: Vec<Cell> = grid.into_iter().collect();
     cells.sort_by_key(|c| c.0);
     let images = cells
@@ -158,11 +168,7 @@ pub(super) fn build_open(
         .map(|e| match pc {
             None => true,
             Some(pc) => {
-                let near: f64 = inp.nearby[e]
-                    .iter()
-                    .filter(|&&j| open[inp.bmat[j as usize]] && !layer[j as usize])
-                    .map(|&j| inp.bw[j as usize])
-                    .sum();
+                let near = open_near(inp, &open, layer, e);
                 near == 0.0 || (pc[e].class != Class::None && inp.weights[e] > near)
             }
         })
@@ -337,7 +343,7 @@ pub(super) fn near_avx2(near: &mut [bool], lines: [&[f32]; 6], color: [f32; 10])
     near_lanes(near, lines, color);
 }
 
-/// A color as white or black above an image `q` at an opacity t in (0, VEIL_MAX], the
+/// A color as white or black above an image `q` at an opacity t in (0, [`VEIL_MAX`]], the
 /// inner layer moving the image by more than the tolerance (else it is the image itself at
 /// a looser tolerance): the better of the two within the tolerance, its t and residual.
 pub(super) fn shading_residual(o: DVec3, q: DVec3) -> Option<(Class, f64, f64)> {

@@ -34,7 +34,7 @@ fn walk(stroke: &Stroke) -> Vec<Vec2> {
     let mut out = vec![stroke.centerline[0][0]];
     let (mut walked, mut next) = (0f32, PROFILE_STEP);
     for c in &stroke.centerline {
-        let length = (c[1] - c[0]).length() + (c[2] - c[1]).length() + (c[3] - c[2]).length();
+        let length = hull_length(c);
         let steps = ((length / PROFILE_STEP * 2.).ceil() as usize).clamp(1, 1 << 16);
         let mut from = c[0];
         for i in 1..=steps {
@@ -113,10 +113,9 @@ fn fold(x: &[f32], period: f32) -> Vec<f32> {
         .collect()
 }
 
-/// The lags, in pixels, of the profile's autocorrelation peaks that may be its period: the
-/// highest peak among those overlapping the profile by a shortest period, and every lower peak it
-/// is a whole multiple of (a pattern repeats at its period's multiples as well), read on the
-/// profile averaged to a pixel per sample.
+/// The lags, in pixels, of the profile's autocorrelation peaks that may be its period (read at
+/// a pixel per sample): the highest peak among those overlapping the profile by a shortest
+/// period, and every lower peak it is a whole multiple of.
 fn seeds(x: &[f32], closed: bool) -> Vec<f32> {
     let coarse: Vec<f32> = x
         .chunks(DECIMATE)
@@ -169,11 +168,9 @@ fn seeds(x: &[f32], closed: bool) -> Vec<f32> {
         .collect()
 }
 
-/// The patterns along a profile of `x` (see [`profile`], `noise` in its units) at each period
-/// [`seeds`] proposes, where dashes and gaps differ by [`CONTRAST`] noise. The profile folded at
-/// the seed gives the dashes of one period; each dash seen along the profile is matched to one
-/// of those, and the period and the dashes' phases are the least squares line through the
-/// seen centres, which a drift of a fraction of a pixel per period does not escape.
+/// The patterns along a profile `x` (`noise` in its units) at each period [`seeds`] proposes,
+/// where dashes and gaps differ by [`CONTRAST`] noise: the profile folded there gives one period's
+/// dashes, and period and phases are the least squares line through the seen dashes' centres.
 pub(super) fn read(x: &[f32], noise: f32, closed: bool, quantum: f32) -> Vec<Reading> {
     let n = x.len();
     let total = (n - 1) as f32 * PROFILE_STEP;
@@ -236,8 +233,8 @@ pub(super) fn read(x: &[f32], noise: f32, closed: bool, quantum: f32) -> Vec<Rea
         let mut periodic = true;
         for s in 0..phases.len() {
             let mine: Vec<&(usize, f32, f32, f32)> = matched.iter().filter(|m| m.0 == s).collect();
-            // two dashes fix a period and phase; two more must bear it out (lacebobbins: three
-            // scattered dots on a dome read as a dotted line)
+            // two dashes fix a period and phase; two more must bear it out (three scattered
+            // dots read as a dotted line)
             periodic &= mine.len() >= 2 * MIN_DASHES;
             if mine.is_empty() {
                 continue;
@@ -341,10 +338,10 @@ fn crossings(values: &[f32], mid: f32, width: f32, circular: bool) -> Option<Vec
 
 /// Whether the picture along a dashed stroke shows its gaps as the ground beside it: every gap
 /// long enough to reach it, and the gaps nearer the ground on one side than to `colour`, so a
-/// line in pieces (niabot's shaded rails, whose gaps are the line) has none.
+/// line in pieces (a shaded line, whose gaps are the line) has none.
 pub(super) fn gaps_seen(ctx: &Context, stroke: &Stroke, colour: Vec3) -> bool {
     // a gap reaches the ground's full contrast over two anti-aliasing steps (see MIN_PERIOD);
-    // one the pattern closed below that is a solid line in pieces (niabot 1052's hair)
+    // one the pattern closed below that is a solid line in pieces
     let closed = stroke.dashes.as_ref().is_none_or(|d| {
         d.array
             .iter()
@@ -388,22 +385,15 @@ pub(super) fn gaps_seen(ctx: &Context, stroke: &Stroke, colour: Vec3) -> bool {
     if gaps.is_empty() {
         return false;
     }
-    let median = |v: &mut Vec<Vec3>| {
-        let mut channel = |k: usize| {
-            v.sort_by(|a, b| a[k].total_cmp(&b[k]));
-            v[v.len() / 2][k]
-        };
-        Vec3::new(channel(0), channel(1), channel(2))
-    };
     // how far a colour lies along the line from a ground to the paint
     let toward = |t: Vec3, ground: Vec3| {
         let d = colour - ground;
         (t - ground).dot(d) / d.length_squared()
     };
-    let shown = median(&mut gaps);
+    let shown = median_color(&mut gaps);
     let Some(ground) = sides
         .iter_mut()
-        .map(median)
+        .map(|side| median_color(side))
         .filter(|g| g.distance(colour) >= CONTRAST * NOISE)
         .min_by(|a, b| toward(shown, *a).total_cmp(&toward(shown, *b)))
     else {
@@ -415,13 +405,13 @@ pub(super) fn gaps_seen(ctx: &Context, stroke: &Stroke, colour: Vec3) -> bool {
     // and each gap's mean nearer that ground
     let mut run = (0f32, 0usize);
     for (i, &p) in points.iter().enumerate().take(last + 1).skip(first) {
-        if !on(i) {
-            run = (run.0 + toward(at(p), ground), run.1 + 1);
-        } else {
+        if on(i) {
             let (sum, n) = std::mem::take(&mut run);
             if n > 0 && sum / n as f32 >= 0.5 {
                 return false;
             }
+        } else {
+            run = (run.0 + toward(at(p), ground), run.1 + 1);
         }
     }
     true
@@ -474,8 +464,8 @@ pub(super) fn seen_spans(reading: &Reading, reach: f32, least: f32) -> Vec<(f32,
 mod tests {
     use super::*;
 
-    /// A 4 on 12 off pattern starting 3 px in, 27 periods long, as binary's dotted rows: the
-    /// period read to a hundredth of a pixel, so the last dash stays in step, and the phase.
+    /// A 4 on 12 off pattern starting 3 px in, 27 periods long: the period read to a hundredth
+    /// of a pixel, so the last dash stays in step, and the phase.
     #[test]
     fn reads_period_and_phase() {
         let (period, on, start) = (16f32, 4f32, 3f32);
@@ -514,9 +504,9 @@ mod tests {
             closed: false,
             width: 4.,
             cap: Cap::Butt,
-            join: crate::stroke::Join::Miter,
+            join: Join::Miter,
             corners: vec![false],
-            dashes: Some(crate::stroke::Dashes {
+            dashes: Some(Dashes {
                 array: vec![6., 4.],
                 offset: 0.,
             }),

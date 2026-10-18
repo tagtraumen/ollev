@@ -9,7 +9,7 @@ use std::fmt::Write;
 
 use crate::model::{Geometry, Object};
 use crate::render::Gradient;
-use glam::{Vec2, Vec3};
+use glam::Vec3;
 
 use crate::emit::svg::{curves, hex, loops, rule_attribute};
 use crate::lower::bands;
@@ -44,7 +44,10 @@ pub fn write(
         near: *near,
         far: *far,
     };
-    let cubics: Vec<[glam::DVec2; 4]> = contour.cubics().map(|c| c.map(|p| p.as_dvec2())).collect();
+    let cubics: Vec<[glam::DVec2; 4]> = contour
+        .cubics()
+        .map(|c| c.map(glam::Vec2::as_dvec2))
+        .collect();
     // What the strokes run along (an open curve with its rays to the box), and the region of
     // negative distance (an open curve closed by its rays and the box)
     let (curve, region) = if contour.is_closed() {
@@ -54,10 +57,10 @@ pub fn write(
         let open = curves(&cubics, false, 2);
         let closure = contour.closure();
         let (end, start) = (closure[0], closure[closure.len() - 1]);
-        let line: String = closure
-            .iter()
-            .map(|q| format!("L{:.2} {:.2}", q.x, q.y))
-            .collect();
+        let line = closure.iter().fold(String::new(), |mut line, q| {
+            let _ = write!(line, "L{:.2} {:.2}", q.x, q.y);
+            line
+        });
         (
             format!(
                 "M{:.2} {:.2}L{}L{:.2} {:.2}",
@@ -70,10 +73,7 @@ pub fn write(
             format!("{open}{line}Z"),
         )
     };
-    let points = l.iter().flatten().flatten().map(|p| p.as_vec2());
-    let (min, max) = points.fold((Vec2::INFINITY, Vec2::NEG_INFINITY), |(a, b), p| {
-        (a.min(p), b.max(p))
-    });
+    let (min, max) = crate::model::bounds(l);
     let Level {
         breaks,
         simple,
@@ -81,16 +81,15 @@ pub fn write(
     } = bands::level(&profile, level);
     let pad = 3. * sigma + 2.;
     let (lo, hi) = (min - pad, max + pad);
-    let rect = |fill: Vec3| {
-        format!(
-            "<rect x=\"{:.2}\" y=\"{:.2}\" width=\"{:.2}\" height=\"{:.2}\" fill=\"{}\"/>",
-            lo.x,
-            lo.y,
-            hi.x - lo.x,
-            hi.y - lo.y,
-            hex(fill.as_dvec3())
-        )
-    };
+    // The box the drawing and its filters cover
+    let area = format!(
+        "x=\"{:.2}\" y=\"{:.2}\" width=\"{:.2}\" height=\"{:.2}\"",
+        lo.x,
+        lo.y,
+        hi.x - lo.x,
+        hi.y - lo.y
+    );
+    let rect = |fill: Vec3| format!("<rect {area} fill=\"{}\"/>", hex(fill.as_dvec3()));
     let stroke = |colour: Vec3, width: f32| {
         format!(
             "<use href=\"#pc{n}\" fill=\"none\" stroke=\"{}\" stroke-width=\"{width:.2}\" stroke-linejoin=\"round\"/>",
@@ -107,11 +106,7 @@ pub fn write(
     let blur = if sigma > 0. {
         let _ = writeln!(
             defs,
-            "<filter id=\"pf{n}\" filterUnits=\"userSpaceOnUse\" x=\"{:.2}\" y=\"{:.2}\" width=\"{:.2}\" height=\"{:.2}\" color-interpolation-filters=\"sRGB\"><feGaussianBlur stdDeviation=\"{sigma:.3}\"/></filter>",
-            lo.x,
-            lo.y,
-            hi.x - lo.x,
-            hi.y - lo.y
+            "<filter id=\"pf{n}\" filterUnits=\"userSpaceOnUse\" {area} color-interpolation-filters=\"sRGB\"><feGaussianBlur stdDeviation=\"{sigma:.3}\"/></filter>"
         );
         format!(" filter=\"url(#pf{n})\"")
     } else {
@@ -138,11 +133,7 @@ pub fn write(
         );
         let _ = writeln!(
             defs,
-            "<mask id=\"pm{n}\" maskUnits=\"userSpaceOnUse\" x=\"{:.2}\" y=\"{:.2}\" width=\"{:.2}\" height=\"{:.2}\">\n{content}</mask>",
-            lo.x,
-            lo.y,
-            hi.x - lo.x,
-            hi.y - lo.y
+            "<mask id=\"pm{n}\" maskUnits=\"userSpaceOnUse\" {area}>\n{content}</mask>"
         );
         format!(" mask=\"url(#pm{n})\"")
     };
@@ -194,20 +185,13 @@ fn sides(
     stroke: &dyn Fn(Vec3, f32) -> String,
 ) {
     for (clipped, sign, base) in [(false, 1f32, f32::INFINITY), (true, -1., f32::NEG_INFINITY)] {
-        let mut radii: Vec<f32> = breaks
-            .iter()
-            .map(|s| sign * s)
-            .filter(|&r| r > 0.)
-            .collect();
-        radii.sort_by(|a, b| b.total_cmp(a));
         let clip = if clipped {
             format!(" clip-path=\"url(#pi{n})\"")
         } else {
             String::new()
         };
         let _ = writeln!(svg, "<g{clip}><g{blur}>{}", rect(value(base)));
-        for (k, &r) in radii.iter().enumerate() {
-            let inner = radii.get(k + 1).copied().unwrap_or(0.);
+        for (r, inner) in bands::rings(breaks, sign) {
             let colour = value(sign * 0.5 * (r + inner));
             let _ = writeln!(svg, "{}", stroke(colour, 2. * r));
         }

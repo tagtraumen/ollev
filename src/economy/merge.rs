@@ -1,7 +1,6 @@
-//! Merging an object into a shape beneath it: the shape traced again over the pixels of both
-//! (a union, where their fills agree within the noise, or where the object is a sliver), or
-//! over its own pixels less the object's (a difference, where the object only restores what
-//! lies beneath that shape). Kept where the scene's error plus price falls.
+//! Merging an object into a shape beneath it, retraced over both (a union: fills within the
+//! noise, or a sliver) or over its own pixels less the object's (a difference: the object
+//! restores what lies beneath), where the scene's error plus price falls.
 
 use glam::{IVec2, Vec3};
 
@@ -26,12 +25,13 @@ enum Kind {
 
 /// Merges, from the top of the stack down, each object into the shape beneath it where that
 /// lowers the scene's error plus price; returns how many merged.
-pub(super) fn merge_all(
-    judge: &Judge,
+pub(super) async fn merge_all(
+    judge: &Judge<'_>,
     scene: &mut Scene,
     fixed: &crate::HashSet<usize>,
     tolerances: &[f32],
 ) -> usize {
+    let repeated = super::repeated(scene);
     let free = |s: &Shape| {
         !fixed.contains(&s.id)
             && s.stroke.is_none()
@@ -39,10 +39,7 @@ pub(super) fn merge_all(
             && s.layer.is_none()
             && s.blur == 0.
             && s.fill.opacity == 1.
-            && !scene
-                .repeats
-                .iter()
-                .any(|r| r.members.iter().any(|m| m.0 == s.id))
+            && !repeated.contains(&s.id)
     };
     let ids: Vec<usize> = scene
         .shapes
@@ -54,20 +51,16 @@ pub(super) fn merge_all(
     let candidates: crate::HashSet<usize> = ids.iter().copied().collect();
     let mut merged = 0;
     // A shape whose retrace lost, which a merge seldom wins back at the acceptance price, is
-    // not traced again (pegboard's board, refitted for each peg)
+    // not traced again
     let mut lost = crate::HashSet::default();
     for id in ids {
-        if crate::progress::poll() {
-            break;
-        }
+        crate::progress::poll().await;
         let Some(top) = scene.shapes.iter().position(|s| s.id == id) else {
             continue;
         };
         let mut best: Option<(f64, usize, Shape)> = None;
         for below in (1..top).rev() {
-            if crate::progress::poll() {
-                break;
-            }
+            crate::progress::poll().await;
             let b = &scene.shapes[below];
             if !candidates.contains(&b.id)
                 || lost.contains(&b.id)

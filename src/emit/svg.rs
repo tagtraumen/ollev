@@ -31,6 +31,11 @@ pub(crate) fn rule_attribute(paint: &str, rule: FillRule) -> String {
     }
 }
 
+/// The `clip-path` attribute of clip `clip`, if any.
+fn clip_attribute(clip: Option<usize>) -> String {
+    clip.map_or(String::new(), |c| format!(" clip-path=\"url(#c{c})\""))
+}
+
 /// The cubics as path data from their start, `Z` at the end when closed.
 pub(crate) fn curves(cubics: &[Curve], close: bool, p: usize) -> String {
     let mut d = String::new();
@@ -60,8 +65,7 @@ pub(crate) fn loops(loops: &[Vec<Curve>], p: usize) -> String {
 }
 
 /// The dash offset as written, at `decimals`: one landing on a dash's end as written moves a
-/// written step into the gap, since a renderer draws that dash's zero-length rest with its caps
-/// (jellycycle's bar: a round dot beside its end).
+/// written step into the gap, since a renderer draws that dash's zero-length rest with its caps.
 pub(crate) fn dash_offset(array: &[f64], offset: f64, decimals: usize) -> f64 {
     let scale = 10f64.powi(decimals as i32);
     let round = |v: f64| (v * scale).round() / scale;
@@ -89,14 +93,6 @@ pub(crate) fn dash_offset(array: &[f64], offset: f64, decimals: usize) -> f64 {
     written
 }
 
-/// The box of the control points, in single precision as the scene keeps it.
-fn bounds(loops: &[Vec<Curve>]) -> (Vec2, Vec2) {
-    let points = loops.iter().flatten().flatten().map(|p| p.as_vec2());
-    let min = points.clone().fold(Vec2::INFINITY, |a, p| a.min(p));
-    let max = points.fold(Vec2::NEG_INFINITY, |a, p| a.max(p));
-    (min, max)
-}
-
 /// An instance: its definition under its matrix.
 fn use_of(svg: &mut String, i: &Instance) {
     let m = i.transform;
@@ -120,10 +116,6 @@ struct Writer<'a> {
 }
 
 impl Writer<'_> {
-    fn clip_attribute(&self, clip: Option<usize>) -> String {
-        clip.map_or(String::new(), |c| format!(" clip-path=\"url(#c{c})\""))
-    }
-
     fn items(&mut self, svg: &mut String, items: &[Item], level: Option<u8>) {
         for item in items {
             match item {
@@ -160,7 +152,9 @@ impl Writer<'_> {
                         instances.len(),
                         parameters.join(" ")
                     );
-                    instances.iter().for_each(|i| use_of(svg, i));
+                    for i in instances {
+                        use_of(svg, i);
+                    }
                     svg.push_str("</g>\n");
                 }
             }
@@ -171,7 +165,7 @@ impl Writer<'_> {
         if let Paint::Gradient(g) = &o.paint
             && let (from, gradient @ crate::render::Gradient::Path { .. }) = g.ramp()
         {
-            let clip = self.clip_attribute(o.clip);
+            let clip = clip_attribute(o.clip);
             let n = self.bands;
             self.bands += 1;
             return crate::emit::bands::write(
@@ -206,7 +200,7 @@ impl Writer<'_> {
                 String::new()
             }
         };
-        let clip = self.clip_attribute(o.clip);
+        let clip = clip_attribute(o.clip);
         match &o.geometry {
             Geometry::Stroke(s) => {
                 let cap = match s.cap {
@@ -243,7 +237,7 @@ impl Writer<'_> {
                     self.filters += 1;
                     let sigma = o.blur as f32;
                     let reach = Vec2::splat(crate::render::blur::reach(sigma) as f32);
-                    let (min, max) = bounds(l);
+                    let (min, max) = crate::model::bounds(l);
                     let (min, max) = (min - reach, max + reach);
                     let _ = writeln!(
                         self.defs,
@@ -271,6 +265,7 @@ impl Writer<'_> {
 
 /// The model as an SVG document, object `k` of [`Model::objects`] at level `levels[k]` (0
 /// where none is given).
+#[must_use]
 pub fn encode(model: &Model, levels: &[u8]) -> String {
     let (w, h) = (model.width, model.height);
     let mut svg = format!(
@@ -283,13 +278,13 @@ pub fn encode(model: &Model, levels: &[u8]) -> String {
         gradients: 0,
         filters: 0,
         bands: 0,
-        groups: Default::default(),
+        groups: HashMap::new(),
     };
     for (c, clip) in model.clips.iter().enumerate() {
         let _ = writeln!(
             svg,
             "<clipPath id=\"c{c}\"{}><path d=\"{}\"{}/></clipPath>",
-            writer.clip_attribute(clip.parent),
+            clip_attribute(clip.parent),
             loops(&clip.loops, 2),
             rule_attribute("clip", clip.rule)
         );

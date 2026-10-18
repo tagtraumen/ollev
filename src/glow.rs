@@ -6,8 +6,10 @@
 use glam::{Vec2, Vec3};
 
 use crate::fill::{Costs, Over, concentric, ellipse_transform, stretch, with_alpha};
-use crate::soft::{Bands, NONE, is_band};
+use crate::soft::{Bands, NONE, is_band, price};
+use crate::tracer::primitives::Primitive;
 use crate::translucency::NOISE;
+use crate::context::neighbours;
 use crate::{Context, HashSet, Scene, Shape, Window};
 
 /// How far a pixel's colour stands from the ground's for the ground's residual to hold a glow
@@ -15,7 +17,7 @@ use crate::{Context, HashSet, Scene, Shape, Window};
 const GLOW_STEP: f32 = 2. * NOISE;
 
 /// The plain squared error of pixel `i` showing `rendered`: glows are judged as the economy
-/// judges objects, the tolerance aside (under it Lena's skin passes for a flat ground).
+/// judges objects, the tolerance aside (under it smooth shading passes for a flat ground).
 fn plain(ctx: &Context, i: usize, rendered: Vec3) -> f32 {
     ctx.target[i].distance_squared(rendered)
 }
@@ -32,7 +34,7 @@ fn plain_error(ctx: &Context, window: Window, rendered: &[Vec3]) -> f32 {
 /// The ground's colour: the most common colour of its pixels, to 8 bits, then the mean of the
 /// pixels within the noise of it, so a glow folded into the ground does not tint it.
 fn ground_colour(ctx: &Context, pixels: &[usize]) -> Option<Vec3> {
-    let mut counts: crate::HashMap<[u8; 3], usize> = Default::default();
+    let mut counts: crate::HashMap<[u8; 3], usize> = crate::HashMap::default();
     let key = |c: Vec3| c.to_array().map(|v| (v.clamp(0., 1.) * 255.).round() as u8);
     for &i in pixels {
         *counts.entry(key(ctx.target[i])).or_default() += 1;
@@ -58,7 +60,7 @@ fn members(scene: &Scene, bands: &Bands, k: usize, ground: Vec3) -> Vec<usize> {
     let within = |s: &Shape| {
         s.paint_min().cmpge(g.paint_min()).all() && s.paint_max().cmple(g.paint_max()).all()
     };
-    let mut found: HashSet<usize> = Default::default();
+    let mut found: HashSet<usize> = HashSet::default();
     let mut stack = vec![(k, 0f32)];
     while let Some((j, d)) = stack.pop() {
         for &m in bands.linked.get(&j).into_iter().flatten() {
@@ -81,8 +83,8 @@ fn members(scene: &Scene, bands: &Bands, k: usize, ground: Vec3) -> Vec<usize> {
 }
 
 /// The 4-connected pieces of `mask` (indices into the image), each as its pixels.
-fn pieces(mask: &HashSet<usize>, width: usize) -> Vec<Vec<usize>> {
-    let mut seen: HashSet<usize> = Default::default();
+fn pieces(mask: &HashSet<usize>, width: usize, height: usize) -> Vec<Vec<usize>> {
+    let mut seen: HashSet<usize> = HashSet::default();
     let mut out = Vec::new();
     let mut sorted: Vec<usize> = mask.iter().copied().collect();
     sorted.sort_unstable();
@@ -93,14 +95,7 @@ fn pieces(mask: &HashSet<usize>, width: usize) -> Vec<Vec<usize>> {
         let (mut piece, mut stack) = (Vec::new(), vec![start]);
         while let Some(i) = stack.pop() {
             piece.push(i);
-            let (x, y) = (i % width, i / width);
-            let near = [
-                (x > 0).then(|| i - 1),
-                (x + 1 < width).then(|| i + 1),
-                (y > 0).then(|| i - width),
-                Some(i + width),
-            ];
-            for j in near.into_iter().flatten() {
+            for j in neighbours(i, width, height) {
                 if mask.contains(&j) && seen.insert(j) {
                     stack.push(j);
                 }
@@ -185,8 +180,8 @@ fn fit_glow(
     }
     let fill = with_alpha(&samples, &opaque, costs.stop, true)?;
     // A glow fades: from half its contrast with what lies below to nothing over more than an
-    // anti-aliased edge's two pixels; one that falls off within them is a crisp shape
-    // (duckparade's pond rim), not a glow. Contrast as the knots paint it over the ground
+    // anti-aliased edge's two pixels; one that falls off within them is a crisp shape, not a
+    // glow. Contrast as the knots paint it over the ground
     let gradient = fill.gradient?;
     let below = under[(center.y.clamp(0., ctx.height as f32 - 1.) as usize) * w
         + center.x.clamp(0., w as f32 - 1.) as usize];
@@ -211,10 +206,10 @@ fn fit_glow(
             };
             k[0].0 + (k[1].0 - k[0].0) * u.min(1.)
         });
-    // Along its narrowest axis, so a sliver of an ellipse is no glow (b001-doubleback-round-23)
+    // Along its narrowest axis, so a sliver of an ellipse is no glow
     let minor = radius * squash.min(1.);
-    // and seen fading so on the pixels it explains, not under the shapes over it (gondola's
-    // windows over their halos: no glow of the window's own)
+    // and seen fading so on the pixels it explains, not under the shapes over it (a lit object
+    // over its halo has no glow of its own)
     let fade = samples
         .iter()
         .map(|s| gradient.t(s.p))
@@ -225,7 +220,7 @@ fn fit_glow(
     let crisp = minor * (1. - half) <= 2. * crate::edges::SIGMA as f32
         || minor * (fade.1 - fade.0) <= 2. * crate::edges::SIGMA as f32;
     // A dot's inside is flat: the pixels it shows clear of its anti-aliased rim (at half the
-    // contrast) within the noise of one colour; small discs (G3) are drawn so, not as glows
+    // contrast) within the noise of one colour; small discs are drawn so, not as glows
     let aa = 2. * crate::edges::SIGMA as f32;
     // Clear: farther from the edge along its own ray from the centre than an edge's AA
     let clear = |p: Vec2| {
@@ -245,17 +240,19 @@ fn fit_glow(
     if crisp && !flat {
         return None;
     }
-    let (radius, fill) = match flat {
-        true => (radius * half, crate::Fill::solid(mean)),
-        false => (radius, fill),
+    let (radius, fill) = if flat {
+        (radius * half, crate::Fill::solid(mean))
+    } else {
+        (radius, fill)
     };
-    let outline = match squash < 1. {
-        true => crate::tracer::primitives::Primitive::Ellipse {
+    let outline = if squash < 1. {
+        Primitive::Ellipse {
             center,
             radii: Vec2::new(radius, radius * squash),
             angle,
-        },
-        false => crate::tracer::primitives::Primitive::Circle { center, radius },
+        }
+    } else {
+        Primitive::Circle { center, radius }
     };
     let mut shape = Shape::new(vec![outline.cubics()], fill);
     shape.primitive = Some((0, outline));
@@ -267,7 +264,7 @@ fn fit_glow(
 /// The pixels inside loop `l` of `s` alone, wholly covered.
 fn inside_loop(s: &Shape, l: usize, w: usize, h: usize) -> Vec<usize> {
     let r = crate::scene::coverage_raster(
-        &crate::scene::loops_path(&s.loops[l..l + 1]),
+        &crate::scene::loops_path(&s.loops[l..=l]),
         crate::render::FillRule::EvenOdd,
     );
     r.pixels(w)
@@ -282,7 +279,7 @@ fn outer_loop(s: &Shape, w: usize, h: usize) -> Option<usize> {
 }
 
 /// The holes of band `m` through which what lies below it shows (mostly), each as its loop and
-/// pixels: the objects a glow drawn as `m` must keep, as the note in mezzo's lamp light.
+/// pixels: the objects a glow drawn as `m` must keep, as an object lying in a lamp's light.
 fn shown_through(
     scene: &Scene,
     bands: &Bands,
@@ -306,15 +303,10 @@ fn shown_through(
         .collect()
 }
 
-/// What a shape costs at the acceptance price: its segments, its path and its paint.
-fn price(ctx: &Context, s: &Shape, costs: Costs) -> f64 {
-    s.cost_segments() * ctx.accept_cost() + ctx.accept_path_cost() + costs.of(&s.fill) as f64
-}
-
 /// Ground `k` drawn flat in its own colour, with glows fitted from its residual over it, the
 /// bands its glow was drawn as removed and the holes they filled closed, where that lowers the
 /// error plus price; the place of the topmost glow, or None with the scene as it was.
-fn propose(
+async fn propose(
     ctx: &Context,
     scene: &mut Scene,
     bands: &Bands,
@@ -366,9 +358,8 @@ fn propose(
             && (o as usize == k || members.binary_search(&(o as usize)).is_ok())
     };
     // Apart from a glow clipped to the ground: under shapes above it, or on a shape below the
-    // ground showing its own flat colour there, untinted (falconfield's road); a tinted one
-    // is the glow's ground (b007-furlong-0873's halo is not over the patch the trace cut)
-    let modes: std::cell::RefCell<crate::HashMap<u32, Option<Vec3>>> = Default::default();
+    // ground showing its own flat colour there, untinted; a tinted one is the glow's ground
+    let modes: std::cell::RefCell<crate::HashMap<u32, Option<Vec3>>> = std::cell::RefCell::default();
     let apart = |i: usize| {
         let o = bands.owner[i];
         if o == NONE || hidden.contains(&i) || of(i) {
@@ -384,25 +375,13 @@ fn propose(
         mode.is_some_and(|m| (ctx.target[i] - m).abs().max_element() <= GLOW_STEP)
     };
     // The pixels the ground and its glow show, the rim against anything else left out
-    let shown = |i: usize| {
-        let (x, y) = (i % w, i / w);
-        of(i)
-            && [
-                (x > 0).then(|| i - 1),
-                (x + 1 < w).then(|| i + 1),
-                (y > 0).then(|| i - w),
-                (y + 1 < h).then(|| i + w),
-            ]
-            .into_iter()
-            .flatten()
-            .all(of)
-    };
+    let shown = |i: usize| of(i) && neighbours(i, w, h).all(of);
     let residual: HashSet<usize> = std::iter::once(k)
         .chain(members.iter().copied())
         .flat_map(|m| bands.pixels[m].iter().copied())
         .filter(|&i| shown(i) && (ctx.target[i] - ground).abs().max_element() > GLOW_STEP)
         .collect();
-    let mut found: Vec<(f64, Vec<usize>)> = pieces(&residual, w)
+    let mut found: Vec<(f64, Vec<usize>)> = pieces(&residual, w, h)
         .into_iter()
         .map(|p| {
             let mass: f64 = p.iter().map(|&i| plain(ctx, i, ground) as f64).sum();
@@ -420,11 +399,12 @@ fn propose(
     let mut under = vec![ground; w * h];
     let mut glows: Vec<Shape> = Vec::new();
     for (_, piece) in &found {
+        crate::progress::poll().await;
         let Some(mut glow) = fit_glow(ctx, piece, &shown, &of, &apart, &under, costs) else {
             continue;
         };
         // A glow lies over its ground alone where it would reach a shape below the ground that
-        // shows untinted (falconfield's road and lamp pole under the sky): clipped to it
+        // shows untinted: clipped to it
         if glow.fill.gradient.is_some()
             && glow
                 .raster()
@@ -447,8 +427,9 @@ fn propose(
     if glows.is_empty() {
         return None;
     }
+    crate::progress::poll().await;
     // Dots alone lie over the ground as it is drawn: they explain no band and no reason to
-    // redraw the ground flat (Lena's skin and background)
+    // redraw the ground flat
     let dots = glows.iter().all(|g| g.fill.gradient.is_none());
     // A band goes where the glows explain its pixels better than it does, by more than it costs
     let removed: Vec<usize> = members
@@ -483,23 +464,23 @@ fn propose(
                 })
         })
         .collect();
-    // What showed through a removed band's holes is an object over the glow (mezzo's note):
-    // each such hole is lifted over the glows, painted as what showed through it most
+    // What showed through a removed band's holes is an object over the glow: each such hole is
+    // lifted over the glows, painted as what showed through it most
     let lifted: Vec<Shape> = through
         .iter()
         .filter(|t| gone(t.0 as u32))
         .filter_map(|(_, l, pixels)| {
-            let mut owners: crate::HashMap<u32, usize> = Default::default();
+            let mut owners: crate::HashMap<u32, usize> = crate::HashMap::default();
             for &i in pixels {
                 *owners.entry(bands.owner[i]).or_default() += 1;
             }
             let (o, _) = owners.into_iter().max_by_key(|&(o, n)| (n, o))?;
             // Painted as what showed through, or flat in its own colour where that went too
-            let fill = match o != NONE && !gone(o) {
-                true => scene.shapes[o as usize].fill,
-                false => crate::Fill::solid(
-                    pixels.iter().map(|&i| ctx.target[i]).sum::<Vec3>() / pixels.len() as f32,
-                ),
+            let fill = if o != NONE && !gone(o) {
+                scene.shapes[o as usize].fill
+            } else {
+                let sum = pixels.iter().map(|&i| ctx.target[i]).sum::<Vec3>();
+                crate::Fill::solid(sum / pixels.len() as f32)
             };
             let mut s = Shape::new(vec![l.clone()], fill);
             s.smooth = base.smooth;
@@ -519,9 +500,8 @@ fn propose(
         flat.primitive = None;
         flat.update_bounds();
     }
-    // Shapes below the ground seen whole through its holes where the glows lie (mezzo's note)
-    // are objects over the glow: they go over it, in their order. Seen whole: what the ground
-    // hides of them is no more than a unit along their rim
+    // Shapes below the ground seen whole (what it hides of them no more than a unit along their
+    // rim) through its holes where the glows lie are objects over the glow, raised in order
     let unit = crate::translucency::raster::unit_of(w) as f32;
     let raised: Vec<usize> = (1..k)
         .filter(|&j| !dots && !gone(j as u32) && !members.contains(&j))
@@ -538,9 +518,10 @@ fn propose(
         })
         .collect();
     // Judged over everything that changes, as the planner prices a shape at all
-    let (mut min, mut max) = match (kept || dots) && closed.is_empty() {
-        true => (Vec2::INFINITY, Vec2::NEG_INFINITY),
-        false => (base.paint_min(), base.paint_max()),
+    let (mut min, mut max) = if (kept || dots) && closed.is_empty() {
+        (Vec2::INFINITY, Vec2::NEG_INFINITY)
+    } else {
+        (base.paint_min(), base.paint_max())
     };
     let moving = removed.iter().chain(&raised).map(|&m| &scene.shapes[m]);
     for s in moving.chain(&glows).chain(&lifted) {
@@ -553,6 +534,7 @@ fn propose(
             .chain(removed.iter().copied())
             .map(|m| price(ctx, &scene.shapes[m], costs))
             .sum::<f64>();
+    crate::progress::poll().await;
     let saved = scene.shapes.clone();
     let mut taken: Vec<usize> = removed.iter().chain(&raised).copied().collect();
     taken.sort_unstable();
@@ -589,14 +571,16 @@ fn propose(
     let mut after = cost(scene, count + lifts);
     let mut j = at + 1;
     while j <= at + count + lifts {
+        crate::progress::poll().await;
         let shape = scene.shapes.remove(j);
         scene.change();
         let without = cost(scene, count + lifts - 1);
         if without < after {
             after = without;
-            match j <= at + count {
-                true => count -= 1,
-                false => lifts -= 1,
+            if j <= at + count {
+                count -= 1;
+            } else {
+                lifts -= 1;
             }
         } else {
             scene.shapes.insert(j, shape);
@@ -622,20 +606,20 @@ fn propose(
 
 /// Replaces grounds of the decided `scene` by their flat colour and glows over it where that
 /// lowers the error plus price (see [`propose`]), walked from the bottom. Returns how many.
-pub fn glow_scene(ctx: &Context, scene: &mut Scene) -> usize {
+pub async fn glow_scene(ctx: &Context, scene: &mut Scene) -> usize {
     let mut bands = Bands::of(ctx, scene);
     let full = Window::full(ctx.width, ctx.height);
     let mut now = scene.render(full, 0..scene.shapes.len(), [1.; 3]);
     let (mut done, mut k) = (0, 0);
     while k < scene.shapes.len() {
-        if crate::progress::poll() {
-            break;
-        }
+        crate::progress::poll().await;
         if is_band(&scene.shapes[k])
-            && let Some(top) = propose(ctx, scene, &bands, &now, k)
+            && let Some(top) = propose(ctx, scene, &bands, &now, k).await
         {
             done += 1;
+            crate::progress::poll().await;
             bands = Bands::of(ctx, scene);
+            crate::progress::poll().await;
             now = scene.render(full, 0..scene.shapes.len(), [1.; 3]);
             k = top;
         }
@@ -677,7 +661,7 @@ mod tests {
         }
         let full = Window::full(w, w);
         let before = ctx.error(full, &scene.render(full, 0..scene.shapes.len(), [0.; 3]));
-        assert_eq!(glow_scene(&ctx, &mut scene), 1);
+        assert_eq!(crate::progress::finish(glow_scene(&ctx, &mut scene)), 1);
         let after = ctx.error(full, &scene.render(full, 0..scene.shapes.len(), [0.; 3]));
         assert!(scene.shapes.len() < 5, "{} shapes", scene.shapes.len());
         let glow = scene
@@ -709,7 +693,7 @@ mod tests {
             .collect();
         let ctx = Context::new(&rgb, w, w, 1.);
         let mut scene = Scene::with_background(w, w, ground);
-        assert_eq!(glow_scene(&ctx, &mut scene), 1);
+        assert_eq!(crate::progress::finish(glow_scene(&ctx, &mut scene)), 1);
         assert_eq!(scene.shapes.len(), 2);
         let s = &scene.shapes[1];
         assert!(s.fill.gradient.is_none(), "{:?}", s.fill);

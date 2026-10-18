@@ -71,38 +71,21 @@ pub fn coverage_backward(
     d_coverage: &[f32],
 ) -> (Vec<Vec<Vec2>>, f32) {
     let polys = flatten(path);
-    let (d_flat, d_sigma) = if path.blur > 0. {
-        let b = blur::Blurred::new(
-            polys.clone(),
-            path.fill_rule,
-            path.blur,
-            width as usize,
-            height as usize,
-        );
-        b.backward(d_coverage)
-    } else {
-        let winding = rasterize(&polys, width, height);
-        let d_winding: Vec<f32> = winding
-            .values
-            .iter()
-            .zip(d_coverage)
-            .map(|(&w, &d)| d * fill_coverage(w, path.fill_rule).1)
-            .collect();
-        (rasterize_backward(&polys, &winding, &d_winding), 0.)
-    };
-    let mut d_points: Vec<Vec<Vec2>> = path
-        .subpaths
-        .iter()
-        .map(|s| vec![Vec2::ZERO; s.points.len()])
-        .collect();
-    for ((poly, d_poly), d_subpath) in polys.iter().zip(&d_flat).zip(&mut d_points) {
-        for (point, d_point) in poly.iter().zip(d_poly) {
-            for (&src, &weight) in point.src.iter().zip(&point.weights) {
-                d_subpath[src as usize] += weight * *d_point;
-            }
-        }
+    if path.blur > 0. {
+        let (w, h) = (width as usize, height as usize);
+        let b = blur::Blurred::new(polys, path.fill_rule, path.blur, w, h);
+        let (d_flat, d_sigma) = b.backward(d_coverage);
+        return (path.points_gradient(&b.polys, &d_flat), d_sigma);
     }
-    (d_points, d_sigma)
+    let winding = rasterize(&polys, width, height);
+    let d_winding: Vec<f32> = winding
+        .values
+        .iter()
+        .zip(d_coverage)
+        .map(|(&w, &d)| d * fill_coverage(w, path.fill_rule).1)
+        .collect();
+    let d_flat = rasterize_backward(&polys, &winding, &d_winding);
+    (path.points_gradient(&polys, &d_flat), 0.)
 }
 
 /// The image index and center of each pixel in the winding's box, in the order of its values.

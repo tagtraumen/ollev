@@ -11,9 +11,9 @@ mod merge;
 
 /// Segments an object costs beyond its cubics per loop, as the bench and usvg count them: the
 /// move that opens the loop and the close that ends it.
-pub const LOOP_SEGMENTS: f64 = 2.;
+const LOOP_SEGMENTS: f64 = 2.;
 /// Segments an object's paint costs: a colour, three numbers at a segment per two.
-pub const PAINT_SEGMENTS: f64 = 1.5;
+const PAINT_SEGMENTS: f64 = 1.5;
 
 /// The whole-scene objective: per pixel its plain squared error, weighted by the edge term where
 /// the target has an edge (under the tolerance a missing outline would cost nothing).
@@ -112,9 +112,10 @@ impl<'a> Judge<'a> {
 /// The segments an object is charged for: its cubics, a move and a close per loop, and its
 /// paint, a colour of three numbers at a segment per two (as a transform's are priced).
 fn segments(shape: &Shape) -> f64 {
-    let loops = match &shape.stroke {
-        Some(_) => 1,
-        None => shape.loops.iter().filter(|l| !l.is_empty()).count(),
+    let loops = if shape.stroke.is_some() {
+        1
+    } else {
+        shape.loops.iter().filter(|l| !l.is_empty()).count()
     };
     shape.cost_segments()
         + LOOP_SEGMENTS * loops as f64
@@ -141,7 +142,7 @@ pub struct Report {
 /// Drops every object of `scene` whose part of the picture costs less error than its price,
 /// the cheapest first, and every loop of a shape (a hole or an island) that does not pay its
 /// own. Translucent layers, what lies above or beneath them, and clips stay.
-pub fn economize(
+pub async fn economize(
     ctx: &Context,
     scene: &mut Scene,
     edge: Option<EdgeTerm>,
@@ -153,18 +154,17 @@ pub fn economize(
     let units = units(&judge, scene, &fixed);
     let log = crate::diagnostics::log();
     // Each unit's worth once, the cheapest tried first and judged again as the scene stands
-    let mut order: Vec<(f64, usize)> = units
-        .iter()
-        .enumerate()
-        .take_while(|_| !crate::progress::poll())
-        .map(|(u, unit)| (worth(&judge, scene, &unit.ids) - unit.price, u))
-        .filter(|(margin, _)| *margin < 0.)
-        .collect();
+    let mut order: Vec<(f64, usize)> = Vec::new();
+    for (u, unit) in units.iter().enumerate() {
+        crate::progress::poll().await;
+        let margin = worth(&judge, scene, &unit.ids) - unit.price;
+        if margin < 0. {
+            order.push((margin, u));
+        }
+    }
     order.sort_by(|a, b| a.0.total_cmp(&b.0));
     for (_, u) in order {
-        if crate::progress::poll() {
-            break;
-        }
+        crate::progress::poll().await;
         let unit = &units[u];
         let worth = worth(&judge, scene, &unit.ids);
         if worth >= unit.price {
@@ -185,8 +185,8 @@ pub fn economize(
             report.dropped += 1;
         }
     }
-    report.merged = merge::merge_all(&judge, scene, &fixed, tolerances);
-    report.loops_dropped = drop_loops(&judge, scene, &fixed);
+    report.merged = merge::merge_all(&judge, scene, &fixed, tolerances).await;
+    report.loops_dropped = drop_loops(&judge, scene, &fixed).await;
     report
 }
 
@@ -208,6 +208,15 @@ pub(crate) fn fixed(scene: &Scene) -> crate::HashSet<usize> {
         }
     }
     fixed
+}
+
+/// The ids of the shapes drawn as members of a repeat.
+pub(crate) fn repeated(scene: &Scene) -> crate::HashSet<usize> {
+    scene
+        .repeats
+        .iter()
+        .flat_map(|r| r.members.iter().map(|m| m.0))
+        .collect()
 }
 
 /// The scene's objects the pass may drop: each repeat as one, each other shape alone.
@@ -273,17 +282,11 @@ fn worth(judge: &Judge, scene: &mut Scene, ids: &[usize]) -> f64 {
 
 /// Drops each loop of a many-looped shape (a hole filled, an island gone) whose part of the
 /// picture costs less error than its cubics and its move and close; returns how many went.
-fn drop_loops(judge: &Judge, scene: &mut Scene, fixed: &crate::HashSet<usize>) -> usize {
-    let repeated: crate::HashSet<usize> = scene
-        .repeats
-        .iter()
-        .flat_map(|r| r.members.iter().map(|m| m.0))
-        .collect();
+async fn drop_loops(judge: &Judge<'_>, scene: &mut Scene, fixed: &crate::HashSet<usize>) -> usize {
+    let repeated = repeated(scene);
     let mut dropped = 0;
     for k in 1..scene.shapes.len() {
-        if crate::progress::poll() {
-            break;
-        }
+        crate::progress::poll().await;
         let id = scene.shapes[k].id;
         if fixed.contains(&id) || repeated.contains(&id) || scene.shapes[k].stroke.is_some() {
             continue;
@@ -352,7 +355,7 @@ mod tests {
         let mut scene = Scene::with_background(32, 32, Vec3::ONE);
         scene.push(Shape::new(square(a, b), dark));
         scene.push(Shape::new(square(a, b), dark));
-        let report = economize(&ctx, &mut scene, None, &[]);
+        let report = crate::progress::finish(economize(&ctx, &mut scene, None, &[]));
         assert_eq!((report.dropped, scene.shapes.len()), (1, 2));
         let mut loops = square(a, b);
         loops.extend(square(Vec2::splat(2.), Vec2::new(2., 6.)));
@@ -361,7 +364,7 @@ mod tests {
             ..Shape::new(loops, dark)
         };
         scene.change();
-        let report = economize(&ctx, &mut scene, None, &[]);
+        let report = crate::progress::finish(economize(&ctx, &mut scene, None, &[]));
         assert_eq!((report.loops_dropped, scene.shapes[1].loops.len()), (1, 1));
     }
 
@@ -374,7 +377,7 @@ mod tests {
         let mut scene = Scene::with_background(32, 32, Vec3::ONE);
         scene.push(Shape::new(square(a, Vec2::new(16., 24.)), dark));
         scene.push(Shape::new(square(Vec2::new(16., 8.), b), dark));
-        let report = economize(&ctx, &mut scene, None, &[2., 4., 8.]);
+        let report = crate::progress::finish(economize(&ctx, &mut scene, None, &[2., 4., 8.]));
         assert_eq!(report.merged, 1);
         assert_eq!(scene.shapes.len(), 2);
     }

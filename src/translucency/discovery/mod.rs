@@ -2,13 +2,12 @@
 //! over contact points) and the equation graph (slope pairs and crossings scored as cuts),
 //! merged into one list; and the shading pass, shadows and highlights as their own class.
 
-use crate::HashMap;
-use crate::HashSet;
+use crate::{HashMap, HashSet};
 
 use glam::{IVec3, Vec3};
 
 use super::leaves::{Leaves, Plane, slope_fits};
-use super::{NOISE, SHOW_THROUGH, SLOPE_MIN, in_gamut, percentile};
+use super::{NOISE, in_gamut};
 
 mod graph;
 mod shading;

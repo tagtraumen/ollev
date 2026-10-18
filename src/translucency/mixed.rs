@@ -170,7 +170,7 @@ mod tests {
                 if x == 19 {
                     labels[i] = 1;
                     px[i] = (a + b) * 0.5;
-                } else if x >= 20 && x < 30 {
+                } else if (20..30).contains(&x) {
                     labels[i] = 2;
                     px[i] = b;
                 } else if x == 30 {

@@ -5,9 +5,17 @@ use super::*;
 /// How many positions down the stack a stroke is tried at, below the shapes it overlaps.
 pub(super) const MAX_POSITIONS: usize = 2;
 
+/// The best reading of a band so far: its gain, position, strokes, remainder and bridges.
+type Best = (f64, usize, Vec<(Stroke, Fill)>, Option<Shape>, Vec<Shape>);
+
+/// Whether the boxes of `a` and `b` meet.
+fn boxes_meet(a: &Shape, b: &Shape) -> bool {
+    a.min.cmple(b.max).all() && b.min.cmple(a.max).all()
+}
+
 /// Whether a stroke covers by half a pixel more than a pixel from everything the shape, its
 /// region and the network's `bridges` ([`join_lines`]) cover by half, since a stroke stands
-/// for its band (as a box's face of `b006-climbingwall-17`, whose round cap spilled).
+/// for its band (a round cap may spill past it).
 pub(super) fn draws_beyond(
     hierarchy: &Hierarchy,
     shape: &Shape,
@@ -18,24 +26,12 @@ pub(super) fn draws_beyond(
 ) -> bool {
     let drawn = stroke.shape(shape.fill);
     let (rs, ro) = (drawn.raster(), shape.raster());
-    let bridged: Vec<&Raster> = bridges.iter().map(|b| b.raster()).collect();
+    let bridged: Vec<&Raster> = bridges.iter().map(Shape::raster).collect();
     let own = |x: usize, y: usize| -> bool {
-        let inside_shape = x >= ro.x0
-            && y >= ro.y0
-            && x < ro.x0 + ro.w
-            && y < ro.y0 + ro.h
-            && ro.values[(y - ro.y0) * ro.w + x - ro.x0] >= 0.5;
-        inside_shape
-            || shape
-                .node
-                .is_some_and(|n| hierarchy.contains(n, y * width + x))
-            || bridged.iter().any(|b| {
-                x >= b.x0
-                    && y >= b.y0
-                    && x < b.x0 + b.w
-                    && y < b.y0 + b.h
-                    && b.values[(y - b.y0) * b.w + x - b.x0] >= 0.5
-            })
+        let i = y * width + x;
+        ro.at(i, width) >= 0.5
+            || shape.node.is_some_and(|n| hierarchy.contains(n, i))
+            || bridged.iter().any(|b| b.at(i, width) >= 0.5)
     };
     for y in rs.y0..(rs.y0 + rs.h).min(height) {
         for x in rs.x0..(rs.x0 + rs.w).min(width) {
@@ -70,7 +66,7 @@ fn fill_under(
     // Over the shapes it goes under too, so a bridge hidden by them is measured
     let mut framed = shape.clone();
     for s in &scene.shapes[j..k] {
-        if s.min.cmple(shape.max).all() && shape.min.cmple(s.max).all() {
+        if boxes_meet(s, shape) {
             framed.min = framed.min.min(s.min);
             framed.max = framed.max.max(s.max);
         }
@@ -94,7 +90,7 @@ fn fill_under(
     // What the band hid of the shapes over it now shows, so they are fitted again
     for i in j + 1..=k {
         let s = &trial.shapes[i];
-        if !(s.min.cmple(filled.max).all() && filled.min.cmple(s.max).all()) || s.blur > 0. {
+        if !boxes_meet(s, &filled) || s.blur > 0. {
             continue;
         }
         let s = trial.shapes.remove(i);
@@ -129,15 +125,13 @@ fn fill_under(
 /// Turns the scene's bands into strokes where that costs less, each tried where the shape is
 /// and below the shapes it overlaps (where a notching shape leaves its edges free). A stroke
 /// that draws beyond the shape it replaces is not taken ([`draws_beyond`]).
-pub fn recognize(ctx: &Context, hierarchy: &Hierarchy, scene: &mut Scene) {
+pub async fn recognize(ctx: &Context, hierarchy: &Hierarchy, scene: &mut Scene) {
     let mut k = 1;
     while k < scene.shapes.len() {
-        if crate::progress::poll() {
-            break;
-        }
+        crate::progress::poll().await;
         // A stroke interpolates edges, which only anti-aliased edges ask for (pixel art stays
         // blocks, a blurred shape soft); a shape anti-aliased but not smooth (of more than one
-        // colour) is tried only where its skeleton branches, as a network (glassware's grid)
+        // colour) is tried only where its skeleton branches, as a network
         let candidate = &scene.shapes[k];
         if candidate.clip.is_some()
             || candidate.blur > 0.
@@ -168,7 +162,7 @@ pub fn recognize(ctx: &Context, hierarchy: &Hierarchy, scene: &mut Scene) {
                 break;
             }
             let other = &scene.shapes[j];
-            let overlaps = other.min.cmple(shape.max).all() && shape.min.cmple(other.max).all();
+            let overlaps = boxes_meet(other, &shape);
             let holds = other.min.cmple(shape.min).all() && shape.max.cmple(other.max).all();
             if overlaps && !holds {
                 lower.push(j);
@@ -179,7 +173,6 @@ pub fn recognize(ctx: &Context, hierarchy: &Hierarchy, scene: &mut Scene) {
         // the shape's own error as the cost reads it, and as the context measures it
         // rendered (a network's lines in their own colours are measured rendered)
         let mut free: Option<(f32, f32)> = None;
-        type Best = (f64, usize, Vec<(Stroke, Fill)>, Option<Shape>, Vec<Shape>);
         let mut best: Option<(Best, Place)> = None;
         // the single stroke fitted where the shape is, which a lower position refits
         let mut own: Option<Stroke> = None;
@@ -196,9 +189,7 @@ pub fn recognize(ctx: &Context, hierarchy: &Hierarchy, scene: &mut Scene) {
             total(free_error, shape.cost_segments()) - t
         };
         for position in positions {
-            if crate::progress::poll() {
-                break;
-            }
+            crate::progress::poll().await;
             // The window covers the region's box too, since the shape's simplified outline can
             // fall short of the band
             let mut framed = shape.clone();
@@ -210,6 +201,7 @@ pub fn recognize(ctx: &Context, hierarchy: &Hierarchy, scene: &mut Scene) {
             let Some(place) = Place::new(ctx, scene, &framed, position, MARGIN) else {
                 continue;
             };
+            crate::progress::poll().await;
             let cost = place.cost(ctx, shape.fill);
             if position == k {
                 free = Some((
@@ -227,7 +219,7 @@ pub fn recognize(ctx: &Context, hierarchy: &Hierarchy, scene: &mut Scene) {
                         .is_finite()
                         .then(|| (error, vec![(stroke, shape.fill)], None, Vec::new()))
                 }
-                _ => fit_at(ctx, hierarchy, &place, &cost, &shape),
+                _ => fit_at(ctx, hierarchy, &place, &cost, &shape).await,
             };
             let (Some(fitted), Some(free)) = (fitted, free) else {
                 continue;
@@ -249,9 +241,9 @@ pub fn recognize(ctx: &Context, hierarchy: &Hierarchy, scene: &mut Scene) {
             k += 1;
             continue;
         };
-        // A band's excess over its stroke and caps stays a fill over it (showroom's rail between
-        // its end discs), set against the shape as its cost reads it, as the stroke alone is;
-        // tried only where the two, drawn exactly, could gain more than the stroke alone
+        // A band's excess over its stroke and caps stays a fill over it, set against the shape
+        // as its cost reads it, as the stroke alone is; tried only where the two, drawn
+        // exactly, could gain more than the stroke alone
         let bound = |b: &Best| {
             let segments = b.2.iter().map(|(s, _)| s.segments()).sum::<usize>() as f64;
             total(free.0, shape.cost_segments()) - total(0., segments) - ctx.path_cost
@@ -282,15 +274,15 @@ pub fn recognize(ctx: &Context, hierarchy: &Hierarchy, scene: &mut Scene) {
             continue;
         }
         // A band around shapes drawn just below it may be a fill under them instead
-        let under = (strokes.len() == 1 && remainder.is_none())
-            .then(|| {
-                lower.iter().filter(|&&j| j <= position).find_map(|&j| {
-                    let mut chosen: Vec<Shape> = scene.shapes[j..k].to_vec();
-                    chosen.insert(position - j, strokes[0].0.shape(strokes[0].1));
-                    fill_under(ctx, scene, &shape, j, k, &chosen).map(|u| (j, u))
-                })
-            })
-            .flatten();
+        let single = strokes.len() == 1 && remainder.is_none();
+        let under = lower
+            .iter()
+            .filter(|&&j| single && j <= position)
+            .find_map(|&j| {
+                let mut chosen: Vec<Shape> = scene.shapes[j..k].to_vec();
+                chosen.insert(position - j, strokes[0].0.shape(strokes[0].1));
+                fill_under(ctx, scene, &shape, j, k, &chosen).map(|u| (j, u))
+            });
         if let Some((j, under)) = under {
             let change = scene.change();
             let under = under.into_iter().map(|s| Shape {
@@ -318,21 +310,13 @@ pub fn recognize(ctx: &Context, hierarchy: &Hierarchy, scene: &mut Scene) {
         replaced.fitted = change;
         scene.shapes.insert(position, replaced);
         scene.change();
-        let mut at = position + 1;
-        for (stroke, fill) in strokes {
-            let line = Shape {
-                clip: shape.clip,
-                ..stroke.shape(fill)
-            };
-            scene.insert(at, line);
-            at += 1;
-        }
-        if let Some(remainder) = remainder {
+        let rest = strokes.map(|(stroke, fill)| stroke.shape(fill));
+        for (at, s) in (position + 1..).zip(rest.chain(remainder)) {
             scene.insert(
                 at,
                 Shape {
                     clip: shape.clip,
-                    ..remainder
+                    ..s
                 },
             );
         }
@@ -350,7 +334,6 @@ mod dash_tests {
 
     #[test]
     fn dashes_cover_their_spans_only() {
-        let line = |a: Vec2, b: Vec2| -> Cubic { [a, a.lerp(b, 1. / 3.), a.lerp(b, 2. / 3.), b] };
         let stroke = Stroke {
             centerline: vec![line(Vec2::new(10., 20.), Vec2::new(110., 20.))],
             closed: false,
@@ -388,19 +371,19 @@ mod dash_tests {
             ..stroke.clone()
         };
         let plain_covered: f32 = plain
-            .shape(crate::Fill::solid(glam::Vec3::ZERO))
+            .shape(Fill::solid(Vec3::ZERO))
             .raster()
             .values
             .iter()
             .sum();
         let one = stroke.between(spans[1].0, spans[1].1, &ends).0;
         let one_covered: f32 = one
-            .shape(crate::Fill::solid(glam::Vec3::ZERO))
+            .shape(Fill::solid(Vec3::ZERO))
             .raster()
             .values
             .iter()
             .sum();
-        let shape = stroke.shape(crate::Fill::solid(glam::Vec3::ZERO));
+        let shape = stroke.shape(Fill::solid(Vec3::ZERO));
         let covered: f32 = shape.raster().values.iter().sum();
         assert!(
             (covered - 700.).abs() < 20.,
@@ -422,7 +405,7 @@ mod dot_tests {
         let width = 10.;
         let length = 0.5;
         let stroke = Stroke {
-            centerline: vec![[a, a.lerp(b, 1. / 3.), a.lerp(b, 2. / 3.), b]],
+            centerline: vec![line(a, b)],
             closed: false,
             width,
             cap: Cap::Round,
@@ -437,7 +420,7 @@ mod dot_tests {
         let spans = stroke.dash_spans(&ends);
         // At 0, 20, 40, 60 and 80, and the one at 100 has no length left
         assert_eq!(spans.len(), 5, "{spans:?}");
-        let shape = stroke.shape(crate::Fill::solid(glam::Vec3::ZERO));
+        let shape = stroke.shape(Fill::solid(Vec3::ZERO));
         let covered: f32 = shape.raster().values.iter().sum();
         let disc = std::f32::consts::PI * width * width / 4. + length * width;
         assert!(
@@ -447,7 +430,7 @@ mod dot_tests {
         );
         // Each dot is round: as wide along the path as across it, by the half pixel
         let one = stroke.between(spans[2].0, spans[2].1, &ends).0;
-        let dot = one.shape(crate::Fill::solid(glam::Vec3::ZERO));
+        let dot = one.shape(Fill::solid(Vec3::ZERO));
         let extent = dot.max - dot.min;
         assert!(
             (extent.x - width - length).abs() < 0.1 && (extent.y - width).abs() < 0.1,
@@ -488,7 +471,7 @@ mod network_tests {
     fn a_cross_is_two_lines() {
         let (w, h) = (60, 50);
         let mask = grid(w, h, &[30], &[24]);
-        let Some(Skeletons::Network(lines)) = skeletons_of(mask, w + 2, h + 2, IVec2::ZERO) else {
+        let Some(Skeletons::Network(lines)) = skeletons_of(&mask, w + 2, h + 2, IVec2::ZERO) else {
             panic!("a network");
         };
         let lengths: Vec<usize> = lines.iter().map(|l| l.chain.len()).collect();
@@ -510,11 +493,11 @@ mod network_tests {
     fn a_grid_is_its_lines() {
         let (w, h) = (90, 70);
         let mask = grid(w, h, &[20, 45, 70], &[22, 48]);
-        let Some(Skeletons::Network(lines)) = skeletons_of(mask, w + 2, h + 2, IVec2::ZERO) else {
+        let Some(Skeletons::Network(lines)) = skeletons_of(&mask, w + 2, h + 2, IVec2::ZERO) else {
             panic!("a network");
         };
         let mut lengths: Vec<usize> = lines.iter().map(|l| l.chain.len()).collect();
-        lengths.sort();
+        lengths.sort_unstable();
         assert_eq!(lines.len(), 5, "{lengths:?}");
         for line in &lines {
             let (a, b) = (line.chain[0], line.chain[line.chain.len() - 1]);

@@ -3,8 +3,8 @@
 //! with round joins covering exactly `|d| < r`, stacked widest first on each side of the curve
 //! and clipped to that side and to the object. The levels, cheapest first: the profile as one
 //! blurred step (a terminator) or one blurred stroke (a ridge) where it is one, 4 and 8 bands
-//! of equal colour change under a blur of half the narrowest, and 32 exact bands. The `emit`
-//! crate writes the same levels as SVG.
+//! of equal colour change under a blur of half the narrowest, and 32 exact bands. The SVG
+//! emitter writes the same levels.
 
 use crate::render::{FillRule, Gradient};
 use glam::{DVec2, Vec2, Vec3};
@@ -75,9 +75,9 @@ impl Profile<'_> {
     pub fn knots(&self) -> Vec<(f32, Vec3)> {
         let w = self.far - self.near;
         let opaque = self.gradient.is_opaque();
-        let colour = |c: [f32; 4]| match opaque {
-            true => glam::Vec4::from(c).truncate(),
-            false => glam::Vec4::from(c).truncate() * c[3],
+        let colour = |c: [f32; 4]| {
+            let straight = glam::Vec4::from(c).truncate();
+            if opaque { straight } else { straight * c[3] }
         };
         std::iter::once((self.near, self.from))
             .chain(
@@ -205,14 +205,14 @@ pub(super) fn lower(l: &mut super::Lowering, o: &Object) -> Option<Vec<Object>> 
     };
     let (loops, rule) = match &o.geometry {
         Geometry::Fill { loops, rule } => (loops.clone(), *rule),
-        stroke => {
+        stroke @ Geometry::Stroke(_) => {
             let (loops, rule) = stroke.outline();
             (crate::model::loops64(&loops), rule)
         }
     };
     // What the strokes run along (an open curve with its rays to the box), and the region of
     // negative distance (an open curve closed by its rays and the box)
-    let cubics: Vec<Curve> = contour.cubics().map(|c| c.map(|p| p.as_dvec2())).collect();
+    let cubics: Vec<Curve> = contour.cubics().map(|c| c.map(glam::Vec2::as_dvec2)).collect();
     let (centerline, region) = if contour.is_closed() {
         (cubics.clone(), cubics)
     } else {
@@ -229,10 +229,7 @@ pub(super) fn lower(l: &mut super::Lowering, o: &Object) -> Option<Vec<Object>> 
         region.push(line(start, first));
         (centerline, region)
     };
-    let points = loops.iter().flatten().flatten().map(|p| p.as_vec2());
-    let (min, max) = points.fold((Vec2::INFINITY, Vec2::NEG_INFINITY), |(a, b), p| {
-        (a.min(p), b.max(p))
-    });
+    let (min, max) = crate::model::bounds(&loops);
     let object = l.clip(Clip {
         loops,
         rule,
@@ -263,6 +260,15 @@ pub(super) fn lower(l: &mut super::Lowering, o: &Object) -> Option<Vec<Object>> 
         (k > 0 || lv.simple.is_some()).then(|| drawing.objects(&lv))
     });
     Some(l.coarsest(o, forms))
+}
+
+/// The breakpoints on the side of `sign` as radii, widest first, each with the next radius in,
+/// the inner one of its band.
+pub fn rings(breaks: &[f32], sign: f32) -> Vec<(f32, f32)> {
+    let mut radii: Vec<f32> = breaks.iter().map(|s| sign * s).filter(|&r| r > 0.).collect();
+    radii.sort_by(|a, b| b.total_cmp(a));
+    let inner = radii.iter().skip(1).copied().chain([0.]);
+    radii.iter().copied().zip(inner).collect()
 }
 
 /// The straight line from `a` to `b` as a cubic.
@@ -348,16 +354,8 @@ impl Drawing<'_> {
             (outside, 1f32, f32::INFINITY),
             (inside, -1., f32::NEG_INFINITY),
         ] {
-            let mut radii: Vec<f32> = level
-                .breaks
-                .iter()
-                .map(|s| sign * s)
-                .filter(|&r| r > 0.)
-                .collect();
-            radii.sort_by(|a, b| b.total_cmp(a));
             out.push(object(fill(rect.clone(), FillRule::NonZero), base, clip));
-            for (k, &r) in radii.iter().enumerate() {
-                let inner = radii.get(k + 1).copied().unwrap_or(0.);
+            for (r, inner) in rings(&level.breaks, sign) {
                 out.push(object(stroke(2. * r), sign * 0.5 * (r + inner), clip));
             }
         }

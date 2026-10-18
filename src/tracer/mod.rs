@@ -82,7 +82,6 @@ impl Default for Params {
                 gradient_cost: 2.,
                 contrast: 0.04,
                 max_fit_error: 0.06,
-                cancelled: || false,
             },
             detail: 1.,
         }
@@ -106,7 +105,7 @@ pub fn unmixed_colors(
     height: usize,
     antialias: &AntialiasParams,
 ) -> Vec<DVec3> {
-    antialias::unmix(&rgb_colors(rgb), width, height, antialias).0
+    antialias::unmix(&rgb_colors(rgb), width, height, antialias)
 }
 
 /// The colors segmentation works on: denoised and with anti-aliased pixels unmixed back to the
@@ -117,7 +116,7 @@ pub fn segmentation_colors(rgb: &[u8], width: usize, height: usize, params: &Par
         colors = bilateral(&colors, width, height, range);
     }
     if let Some(antialias) = &params.antialias {
-        colors = antialias::unmix(&colors, width, height, antialias).0;
+        colors = antialias::unmix(&colors, width, height, antialias);
     }
     colors
 }

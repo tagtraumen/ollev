@@ -207,7 +207,7 @@ fn region_loops(chains: &[Chain], region_count: usize) -> Vec<Vec<Vec<ChainUse>>
         .into_iter()
         .map(|mut starts| {
             let mut loops = Vec::new();
-            while let Some(first) = starts.values_mut().find_map(|uses| uses.pop()) {
+            while let Some(first) = starts.values_mut().find_map(Vec::pop) {
                 let first_start = use_endpoints(chains, first).0;
                 let mut current = vec![first];
                 let mut last = first;
@@ -229,8 +229,7 @@ fn region_loops(chains: &[Chain], region_count: usize) -> Vec<Vec<Vec<ChainUse>>
                             last = candidates.swap_remove(i);
                             current.push(last);
                         }
-                        _ if closes => break,
-                        // An open walk means the map is inconsistent; keep what we have
+                        // Closed, or an open walk (an inconsistent map): keep what we have
                         _ => break,
                     }
                 }

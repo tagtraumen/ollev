@@ -1,8 +1,9 @@
 //! Cubics fitted to point chains.
 
-use super::*;
+use glam::DVec2;
 
-// ----------------------------------------------------------------------------- fitting
+use super::Bezier;
+use crate::translucency::raster::{linspace, np_sum};
 
 pub(super) fn hyp(v: DVec2) -> f64 {
     v.x.hypot(v.y)
@@ -203,6 +204,15 @@ pub(super) fn fit(p: &[DVec2], t1: DVec2, t2: DVec2, tol: f64, depth: usize) -> 
     let mut out = fit(&p[..=i], t1, tc, tol, depth + 1);
     out.extend(fit(&p[i..], -tc, t2, tol, depth + 1));
     out
+}
+
+/// An open polyline smoothed by [1, 2, 1] / 4 inside (a pixel chain's staircase).
+pub fn smooth_open(p: &[DVec2]) -> Vec<DVec2> {
+    let mut q = p.to_vec();
+    for i in 1..p.len().saturating_sub(1) {
+        q[i] = 0.25 * p[i - 1] + 0.5 * p[i] + 0.25 * p[i + 1];
+    }
+    q
 }
 
 /// The signed curvature of the cubic at t (positive turning left).

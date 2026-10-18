@@ -8,7 +8,7 @@ use std::collections::VecDeque;
 use glam::DVec3;
 
 use super::materials::{MATCH_TOL, Palette};
-use super::raster::{Conn, Image, SHOW_THROUGH, label, unit_of};
+use super::raster::{Conn, Image, SHOW_THROUGH, forward, label, unit_of};
 use super::region::{evidence, fill_holes};
 
 /// What the relation says of a pixel.
@@ -80,7 +80,7 @@ pub fn classes(
     let m = (1.0 - k) * c;
     // A material's reading under the layer (dichromatic): triangles with apex its base image I,
     // a far end of its polyline's image (highlight to k + m, shade to m) and an end above (white,
-    // black, c, or a pin tint: niabot's dark folds)
+    // black, c, or a pin tint)
     let above: Vec<DVec3> = [DVec3::ONE, DVec3::ZERO, c]
         .into_iter()
         .chain(tints.iter().copied())
@@ -137,7 +137,7 @@ pub fn crack_cost(img: &Image, i: usize, j: usize) -> f64 {
     // the pixels one further out across the crack, where the image has them
     let (o_i, o_j) = if j == i + 1 {
         (
-            if !i.is_multiple_of(w) { i - 1 } else { i },
+            if i.is_multiple_of(w) { i } else { i - 1 },
             if j % w + 1 < w { j + 1 } else { j },
         )
     } else {
@@ -176,7 +176,8 @@ pub fn region(
     if crate::diagnostics::debug() {
         let count = |want: Class| reading.class.iter().filter(|&&v| v == want).count();
         eprintln!(
-            "region: relation k {k:.3} c {:?} with {} tints: core {} px, inner {} px, bare {} px, region {} px",
+            "region: relation k {k:.3} c {:?} with {} tints: core {} px, inner {} px, bare {} \
+             px, region {} px",
             (c * 255.).round().to_array(),
             tints.len(),
             count(Class::Core),
@@ -309,11 +310,7 @@ pub fn from_graph(reading: &Reading, nodes: &[u32], img: &Image, min_px: f64) ->
     }
     let mut boundary: HashMap<(u32, u32), f64> = HashMap::default();
     for i in 0..n {
-        let (x, y) = (i % w, i / w);
-        for j in [(x + 1 < w).then(|| i + 1), (y + 1 < h).then(|| i + w)]
-            .into_iter()
-            .flatten()
-        {
+        for j in forward(i, w, h) {
             let (a, b) = (nodes[i], nodes[j]);
             if a != b {
                 *boundary.entry((a.min(b), a.max(b))).or_insert(0.0) += crack_cost(img, i, j);

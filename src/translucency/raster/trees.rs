@@ -1,24 +1,24 @@
 //! Nearest neighbours in the Chebyshev metric: a k-d tree and a grid.
 
-use super::*;
+use super::{DVec3, cheb};
 
 /// Nearest neighbors among colors in the Chebyshev metric (as scipy's `cKDTree` with
 /// `p=inf`): a balanced tree of boxes, leaves of up to 16 points.
 pub struct ChebTree {
-    pub(super) pts: Vec<DVec3>,
-    pub(super) idx: Vec<usize>,
-    pub(super) nodes: Vec<Node>,
+    pts: Vec<DVec3>,
+    idx: Vec<usize>,
+    nodes: Vec<Node>,
 }
 
-pub(super) struct Node {
-    pub(super) lo: DVec3,
-    pub(super) hi: DVec3,
-    pub(super) start: usize,
-    pub(super) end: usize,
-    pub(super) kids: Option<(usize, usize)>,
+struct Node {
+    lo: DVec3,
+    hi: DVec3,
+    start: usize,
+    end: usize,
+    kids: Option<(usize, usize)>,
 }
 
-pub(super) const LEAF: usize = 16;
+const LEAF: usize = 16;
 
 impl ChebTree {
     pub fn new(pts: &[DVec3]) -> Self {
@@ -37,7 +37,7 @@ impl ChebTree {
         self.pts.is_empty()
     }
 
-    pub(super) fn build(&mut self, start: usize, end: usize) -> usize {
+    fn build(&mut self, start: usize, end: usize) -> usize {
         let mut lo = DVec3::splat(f64::INFINITY);
         let mut hi = DVec3::splat(f64::NEG_INFINITY);
         for &i in &self.idx[start..end] {
@@ -74,7 +74,7 @@ impl ChebTree {
         id
     }
 
-    pub(super) fn box_dist(n: &Node, q: DVec3) -> f64 {
+    fn box_dist(n: &Node, q: DVec3) -> f64 {
         let d = (n.lo - q).max(q - n.hi).max(DVec3::ZERO);
         d.max_element()
     }
@@ -90,7 +90,7 @@ impl ChebTree {
         best
     }
 
-    pub(super) fn search(
+    fn search(
         &self,
         node: usize,
         q: DVec3,
@@ -140,13 +140,13 @@ impl ChebTree {
 /// cubes the query's box reaches (widened past the rounding) are searched, ties to the lowest
 /// index as the tree; a query reaching more cubes than there are points scans the points.
 pub struct ChebGrid {
-    pub(super) pts: Vec<DVec3>,
-    pub(super) lo: DVec3,
-    pub(super) side: f64,
-    pub(super) dims: [usize; 3],
+    pts: Vec<DVec3>,
+    lo: DVec3,
+    side: f64,
+    dims: [usize; 3],
     /// per cube the range of `order` holding its points, the points by cube then index
-    pub(super) start: Vec<u32>,
-    pub(super) order: Vec<u32>,
+    start: Vec<u32>,
+    order: Vec<u32>,
 }
 
 impl ChebGrid {
@@ -203,7 +203,7 @@ impl ChebGrid {
     }
 
     /// The cube along axis `a` of coordinate `v`, clamped to the grid.
-    pub(super) fn axis(&self, v: f64, a: usize) -> usize {
+    fn axis(&self, v: f64, a: usize) -> usize {
         let s = ((v - self.lo[a]) / self.side).floor();
         if s >= (self.dims[a] - 1) as f64 {
             self.dims[a] - 1
@@ -214,7 +214,7 @@ impl ChebGrid {
         }
     }
 
-    pub(super) fn cube(&self, p: DVec3) -> usize {
+    fn cube(&self, p: DVec3) -> usize {
         let [x, y, z] = [0, 1, 2].map(|a| self.axis(p[a], a));
         (z * self.dims[1] + y) * self.dims[0] + x
     }
@@ -264,6 +264,7 @@ impl ChebGrid {
 
 #[cfg(test)]
 mod tests {
+    use super::super::{Conn, arange, area_px, deep_in, label, length_px, pairwise, skeletonize};
     use super::*;
 
     /// The grid's nearest point is the tree's, the distance and the index on ties, at bounds
@@ -273,8 +274,8 @@ mod tests {
         let mut seed = 11u64;
         let mut next = || {
             seed = seed
-                .wrapping_mul(6364136223846793005)
-                .wrapping_add(1442695040888963407);
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
             (seed >> 11) as f64 / (1u64 << 53) as f64
         };
         for n in [0, 1, 5, 300, 3000] {

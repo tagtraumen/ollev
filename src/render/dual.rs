@@ -13,7 +13,6 @@ pub trait Real:
 {
     fn cst(v: f32) -> Self;
     fn val(self) -> f32;
-
 }
 
 impl Real for f32 {

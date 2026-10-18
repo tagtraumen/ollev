@@ -1,5 +1,5 @@
-//! How much a rewrite misses the object it replaces, by the verify loop's measure (see the
-//! `emit` crate): the squared colour distance beyond the range the original takes over a
+//! How much a rewrite misses the object it replaces, by the verify loop's measure (see
+//! `emit::verify`): the squared colour distance beyond the range the original takes over a
 //! pixel's 3 x 3 neighbourhood (an anti-aliasing pixel of position) and beyond the noise.
 
 use glam::Vec3;
@@ -47,26 +47,39 @@ pub(super) fn miss(l: &Lowering, original: &[Object], form: &[Object]) -> f64 {
     let window = [x0, y0, ww, wh];
     let reference = model(original).render_window(window);
     let emitted = model(form).render_window(window);
+    let (lo, hi) = ranges(&reference, ww, wh);
     let floor = NOISE as f32;
     let mut miss = 0f64;
     for y in 0..wh {
         for x in 0..ww {
-            let (mut lo, mut hi) = (Vec3::INFINITY, Vec3::NEG_INFINITY);
-            for yy in y.saturating_sub(1)..(y + 2).min(wh) {
-                for xx in x.saturating_sub(1)..(x + 2).min(ww) {
-                    let v = reference[yy * ww + xx];
-                    (lo, hi) = (lo.min(v), hi.max(v));
-                }
-            }
-            let e = emitted[y * ww + x];
+            let (i, e) = (y * ww + x, emitted[y * ww + x]);
             let tolerance = l
                 .tolerance
                 .as_ref()
                 .and_then(|t| t.get((y0 + y) * w + x0 + x))
                 .map_or(floor, |&t| t.max(floor));
-            let over = ((e.clamp(lo, hi) - e).length() - tolerance).max(0.) as f64;
+            let over = ((e.clamp(lo[i], hi[i]) - e).length() - tolerance).max(0.) as f64;
             miss += over * over;
         }
     }
     miss
+}
+
+/// Per pixel of a render `width` by `height`, the least and the greatest colour over its 3 x 3
+/// neighbourhood: what an anti-aliasing pixel of position may take.
+pub(crate) fn ranges(render: &[Vec3], width: usize, height: usize) -> (Vec<Vec3>, Vec<Vec3>) {
+    let n = width * height;
+    let (mut lo, mut hi) = (vec![Vec3::INFINITY; n], vec![Vec3::NEG_INFINITY; n]);
+    for y in 0..height {
+        for x in 0..width {
+            let i = y * width + x;
+            for yy in y.saturating_sub(1)..(y + 2).min(height) {
+                for xx in x.saturating_sub(1)..(x + 2).min(width) {
+                    let v = render[yy * width + xx];
+                    (lo[i], hi[i]) = (lo[i].min(v), hi[i].max(v));
+                }
+            }
+        }
+    }
+    (lo, hi)
 }

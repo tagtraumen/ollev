@@ -53,9 +53,9 @@ pub(super) struct Planner<'a> {
     pub(super) drawn: Vec<f64>,
     /// Each node's ramp once fitted, which depends on its pixels alone and so holds over the
     /// rounds of planning.
-    pub(super) ramps: std::cell::RefCell<Vec<Option<Option<std::rc::Rc<RampFill>>>>>,
+    pub(super) ramps: Vec<std::cell::OnceCell<Option<std::rc::Rc<RampFill>>>>,
     /// Each node's radial as painted once fitted, likewise.
-    pub(super) ellipses: std::cell::RefCell<Vec<Option<Option<std::rc::Rc<RampFill>>>>>,
+    pub(super) ellipses: Vec<std::cell::OnceCell<Option<std::rc::Rc<RampFill>>>>,
     /// Under the weighted edge term, each node's pixels at their weights, the error's sums
     /// (see [`crate::edges::weighted_stats`]).
     pub(super) weighted: Option<Vec<Stats>>,
@@ -84,8 +84,8 @@ impl<'a> Planner<'a> {
             model,
             color,
             drawn: vec![0.; hierarchy.nodes.len()],
-            ramps: std::cell::RefCell::new(vec![None; hierarchy.nodes.len()]),
-            ellipses: std::cell::RefCell::new(vec![None; hierarchy.nodes.len()]),
+            ramps: vec![std::cell::OnceCell::new(); hierarchy.nodes.len()],
+            ellipses: vec![std::cell::OnceCell::new(); hierarchy.nodes.len()],
             weighted: None,
             tolerance: ctx.tolerance.as_ref().map(|t| {
                 let leaves = hierarchy
@@ -134,8 +134,7 @@ impl<'a> Planner<'a> {
         field: &crate::edges::EdgeField,
         term: crate::edges::EdgeTerm,
     ) -> Self {
-        let l = term.lambda;
-        self.weighted = Some(crate::edges::weighted_stats(self.hierarchy, field, l));
+        self.weighted = Some(crate::edges::weighted_stats(self.hierarchy, field, term.lambda));
         self
     }
 
@@ -167,7 +166,7 @@ impl<'a> Planner<'a> {
     /// The error of `node` about a ramp. A ramp's residual is tabled over the pixels as they
     /// are; with the edge term weighted it is taken as spread evenly over the node's pixels,
     /// so it counts at their mean weight (ramps are for shading, where edges are few).
-    pub(super) fn ramp_sse(&self, r: &RampFill, node: u32) -> f64 {
+    fn ramp_sse(&self, r: &RampFill, node: u32) -> f64 {
         self.evenly(r.sse(self.hierarchy, node), node)
     }
 
@@ -187,7 +186,7 @@ impl<'a> Planner<'a> {
     }
 
     /// Squared error of the pixels of `node` around `p`, as it is.
-    pub(super) fn raw_about(&self, node: u32, p: &Model) -> f64 {
+    fn raw_about(&self, node: u32, p: &Model) -> f64 {
         let stats = self.err(node);
         match p {
             Model::Solid(c) => stats.sse_about(*c),
@@ -199,7 +198,7 @@ impl<'a> Planner<'a> {
 
     /// [`Planner::shown`] for `node`, a solid colour's saving weighted by its salience: its
     /// contrast against the spread of its surroundings, clamped to 0.5 to 2.
-    pub(super) fn shown_node(&self, node: u32, p: &Model) -> f64 {
+    fn shown_node(&self, node: u32, p: &Model) -> f64 {
         let stats = self.err(node);
         let Model::Solid(color) = *p else {
             return self.shown(node, p);
@@ -246,7 +245,7 @@ impl<'a> Planner<'a> {
 
     /// [`Planner::parts`] where `part` is the node's body, drawn as the node in the part's
     /// model `p`.
-    pub(super) fn body_parts(&self, part: u32, other: u32, p: &Model) -> f64 {
+    fn body_parts(&self, part: u32, other: u32, p: &Model) -> f64 {
         self.skipped(part, p) + self.best(other, p)
     }
 
@@ -321,8 +320,8 @@ impl<'a> Planner<'a> {
         let cheapest = options.iter().map(|o| o.0).fold(f64::INFINITY, f64::min);
         if let Some(f) = fitted
             && gradient + stop < cheapest
-            && let Some(ramp) = self.ramps.borrow_mut()[node as usize]
-                .get_or_insert_with(|| {
+            && let Some(ramp) = self.ramps[node as usize]
+                .get_or_init(|| {
                     RampFill::fit(self.hierarchy, node, &f, stop).map(std::rc::Rc::new)
                 })
                 .clone()
@@ -351,13 +350,13 @@ impl<'a> Planner<'a> {
             }
         }
         // Where the circle shades the node, the radial as painted (linear in the radius,
-        // stretched into an ellipse where that fits: an oval lit from its middle,
-        // `b004-radial-05`), its shading paying within the leaves as the circle's does
+        // stretched into an ellipse where that fits), its shading paying within the leaves as
+        // the circle's does
         let cheapest = options.iter().map(|o| o.0).fold(f64::INFINITY, f64::min);
         if let Some(Model::Radial(f)) = &radial
             && gradient < cheapest
-            && let Some(ellipse) = self.ellipses.borrow_mut()[node as usize]
-                .get_or_insert_with(|| {
+            && let Some(ellipse) = self.ellipses[node as usize]
+                .get_or_init(|| {
                     RampFill::fit_radial(self.hierarchy, node, f, self.ctx.segment_cost)
                         .map(std::rc::Rc::new)
                 })
@@ -392,33 +391,21 @@ impl<'a> Planner<'a> {
     /// Chooses the nodes to draw: the `background` always, and every node cheaper drawn than
     /// left to its nearest drawn ancestor, each in the mean colour of what it shows. Parents
     /// come before their children, larger siblings first.
-    pub(super) fn plan(&mut self, background: u32) -> Vec<Drawn> {
+    pub(super) async fn plan(&mut self, background: u32) -> Vec<Drawn> {
         let root = self.hierarchy.root;
         let mut plan = Vec::new();
         {
             // Children come before their parents in the node order
             for node in 0..self.hierarchy.nodes.len() as u32 {
-                if crate::progress::poll() {
-                    break;
-                }
+                crate::progress::poll().await;
                 let (cost, model) = self.draw(node);
                 self.drawn[node as usize] = cost;
                 self.color[node as usize] = model.at(self.stats(node).centroid());
                 self.model[node as usize] = model;
             }
-            // A cancelled trace plans the background alone, which costs nothing to draw
-            if crate::progress::cancelled() {
-                plan.push(Drawn {
-                    node: background,
-                    parent: None,
-                    color: self.color[background as usize],
-                    gradient: false,
-                });
-                return plan;
-            }
-            // A whole image painted with one ramp is its own ground (a sky through three
-            // colours): the root replaces the background where its ramp makes neither part
-            // worth drawing and it costs less than the background with the other part
+            // A whole image painted with one ramp is its own ground: the root replaces the
+            // background where its ramp makes neither part worth drawing and it costs less than
+            // the background with the other part
             let model = &self.model[root as usize];
             let background = match self.hierarchy.nodes[root as usize].children {
                 Some([a, b])
@@ -509,7 +496,7 @@ impl<'a> Planner<'a> {
 }
 
 /// Each node's mean of the squared tolerance `t` over its pixels, from the leaves up.
-pub(super) fn mean_squares(hierarchy: &Hierarchy, t: &[f32]) -> Vec<f64> {
+fn mean_squares(hierarchy: &Hierarchy, t: &[f32]) -> Vec<f64> {
     let mut sums = vec![0f64; hierarchy.nodes.len()];
     for (i, &t) in t.iter().enumerate() {
         sums[hierarchy.leaf(i) as usize] += (t * t) as f64;
@@ -529,7 +516,7 @@ pub(super) fn mean_squares(hierarchy: &Hierarchy, t: &[f32]) -> Vec<f64> {
 /// The fill of every drawn node, fitted to the pixels it shows: its own less those of the
 /// drawn nodes on it, each pixel going to the innermost drawn node holding it, and less the
 /// [`crate::fill::RIM`] along other nodes; see [`crate::fill::fit`].
-pub(super) fn fit_fills(ctx: &Context, hierarchy: &Hierarchy, plan: &[Drawn]) -> Vec<Fill> {
+pub(super) async fn fit_fills(ctx: &Context, hierarchy: &Hierarchy, plan: &[Drawn]) -> Vec<Fill> {
     let drawn: HashMap<u32, usize> = plan.iter().enumerate().map(|(k, d)| (d.node, k)).collect();
     let mut owner: HashMap<u32, usize> = HashMap::default();
     let (width, height) = (ctx.width, ctx.height);
@@ -594,28 +581,23 @@ pub(super) fn fit_fills(ctx: &Context, hierarchy: &Hierarchy, plan: &[Drawn]) ->
         }
     }
     let costs = crate::fill::Costs::at(ctx.segment_cost);
-    plan.iter()
-        .zip(&samples)
-        .zip(&extents)
-        .zip(&tolerances)
-        .map(|(((d, samples), extent), tolerance)| {
-            // A cancelled trace takes the plan's own colours, which cost nothing
-            if crate::progress::poll() {
-                return Fill::solid(ctx.rgb(d.color));
+    let mut fills = Vec::with_capacity(plan.len());
+    for (((d, samples), extent), tolerance) in plan.iter().zip(&samples).zip(&extents).zip(&tolerances)
+    {
+        crate::progress::poll().await;
+        // A node the plan painted with a gradient takes any gradient that helps: the plan
+        // left the detail the gradient explains undrawn. Its stops still pay their way
+        let costs = if d.gradient {
+            crate::fill::Costs {
+                gradient: 0.,
+                ..costs
             }
-            // A node the plan painted with a gradient takes any gradient that helps: the plan
-            // left the detail the gradient explains undrawn. Its stops still pay their way
-            let costs = if d.gradient {
-                crate::fill::Costs {
-                    gradient: 0.,
-                    ..costs
-                }
-            } else {
-                costs
-            };
-            crate::fill::fit(samples, tolerance, ctx.rgb(d.color), None, costs, extent).0
-        })
-        .collect()
+        } else {
+            costs
+        };
+        fills.push(crate::fill::fit(samples, tolerance, ctx.rgb(d.color), None, costs, extent).0);
+    }
+    fills
 }
 
 /// Pixel weights over `window` for fitting a shape in `color`: zero on the leaves of the
@@ -628,18 +610,16 @@ pub(super) fn detail_weights(
     color: DVec3,
     window: Window,
 ) -> Weights {
-    let mut leaves: HashMap<u32, ()> = HashMap::default();
+    let mut leaves = crate::HashSet::default();
     for &(part, part_color) in masked {
         for &leaf in hierarchy.leaves(part) {
             let leaf_color = hierarchy.nodes[leaf as usize].stats.mean();
             if leaf_color.distance(part_color) < leaf_color.distance(color) {
-                leaves.insert(leaf, ());
+                leaves.insert(leaf);
             }
         }
     }
-    let mut weights = Weights::masking(window, ctx.width, |i| {
-        leaves.contains_key(&hierarchy.leaf(i))
-    });
+    let mut weights = Weights::masking(window, ctx.width, |i| leaves.contains(&hierarchy.leaf(i)));
     // The context's free pixels (see [`Context::free`]) are left out too, but not grown as the
     // masked detail is, which would free the gaps between dense line art whole
     if let Some(free) = ctx.free.as_deref() {
@@ -655,7 +635,7 @@ pub(super) fn detail_weights(
 /// How much the pixels of shapes drawn later count in a fit: next to nothing, so the shape does
 /// not reach for pixels another shape will cover, but not nothing, so its outline is not free
 /// there in case that shape never pays.
-pub(super) const LATER_WEIGHT: f32 = 0.01;
+const LATER_WEIGHT: f32 = 0.01;
 
 /// [`detail_weights`] with the pixels of the `later` shapes' regions at [`LATER_WEIGHT`].
 pub(super) fn plan_weights(
@@ -667,14 +647,13 @@ pub(super) fn plan_weights(
     window: Window,
 ) -> Weights {
     let mut weights = detail_weights(ctx, hierarchy, masked, color, window);
-    let mut leaves: HashMap<u32, ()> = HashMap::default();
-    for &part in later {
-        for &leaf in hierarchy.leaves(part) {
-            leaves.insert(leaf, ());
-        }
-    }
+    let leaves: crate::HashSet<u32> = later
+        .iter()
+        .flat_map(|&part| hierarchy.leaves(part))
+        .copied()
+        .collect();
     for (w, i) in weights.values.iter_mut().zip(window.pixels(ctx.width)) {
-        if leaves.contains_key(&hierarchy.leaf(i)) {
+        if leaves.contains(&hierarchy.leaf(i)) {
             *w = w.min(LATER_WEIGHT);
         }
     }

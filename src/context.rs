@@ -12,8 +12,8 @@ pub struct Context {
     /// The image, RGB in `0..=1`, row-major, shared by the copies made for other weights.
     pub target: std::sync::Arc<Vec<Vec3>>,
     /// The picture with anti-aliased pixels unmixed to the side they mostly belong to, in RGB,
-    /// for the translucency stage's materials: no chain of blends links two materials (as the
-    /// skin and sky between niabot's legs). None where built without the analysis.
+    /// for the translucency stage's materials, so no chain of blends links two materials. None
+    /// where built without the analysis.
     pub unmixed: Option<std::sync::Arc<Vec<Vec3>>>,
     /// What a path costs on top of its segments, in units of the error.
     pub path_cost: f64,
@@ -151,6 +151,19 @@ impl Context {
     }
 }
 
+/// The four neighbours of pixel `i` of a `width` by `height` frame: left, right, up, down.
+pub(crate) fn neighbours(i: usize, width: usize, height: usize) -> impl Iterator<Item = usize> {
+    let (x, y) = (i % width, i / width);
+    [
+        (x > 0).then(|| i - 1),
+        (x + 1 < width).then(|| i + 1),
+        (y > 0).then(|| i - width),
+        (y + 1 < height).then(|| i + width),
+    ]
+    .into_iter()
+    .flatten()
+}
+
 /// Weights for the pixels of a window, and one everywhere else.
 #[derive(Clone, Debug)]
 pub struct Weights {
@@ -168,12 +181,7 @@ impl Weights {
         let inside: Vec<bool> = window.pixels(image_width).map(masked).collect();
         let values = (0..w * h)
             .map(|k| {
-                let (x, y) = (k % w, k / w);
-                let near = inside[k]
-                    || (x > 0 && inside[k - 1])
-                    || (x + 1 < w && inside[k + 1])
-                    || (y > 0 && inside[k - w])
-                    || (y + 1 < h && inside[k + w]);
+                let near = inside[k] || neighbours(k, w, h).any(|j| inside[j]);
                 if near { 0. } else { 1. }
             })
             .collect();
@@ -239,6 +247,13 @@ impl Window {
         let (x, y) = (i % image_width, i / image_width);
         (x >= self.x && y >= self.y && x < self.x + self.width && y < self.y + self.height)
             .then(|| (y - self.y) * self.width + x - self.x)
+    }
+
+    /// The position in the window of the pixel holding point `p`, if it lies within.
+    pub fn cell(&self, p: Vec2) -> Option<usize> {
+        let (x, y) = (p.x.floor() - self.x as f32, p.y.floor() - self.y as f32);
+        (x >= 0. && y >= 0. && (x as usize) < self.width && (y as usize) < self.height)
+            .then(|| y as usize * self.width + x as usize)
     }
 
     /// Image indices of the window's pixels, row by row.

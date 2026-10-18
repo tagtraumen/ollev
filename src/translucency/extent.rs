@@ -1,9 +1,11 @@
 //! A layer's extent carried under the opaque parts above it: the region stops where something
-//! opaque lies over the layer, though the layer runs on beneath (niabot's sleeve under a lock
-//! of hair), so the region's outline is continued across those parts.
+//! opaque lies over the layer, though the layer runs on beneath, so the region's outline is
+//! continued across those parts.
 
-use super::completion::{End, V2, contour_ends, pair_ends};
-use super::raster::{DVec3, length_px};
+use super::completion::{
+    End, V2, add, components, contour_ends, cross, dot, mul, norm, pair_ends, sub,
+};
+use super::raster::{DVec3, length_px, neighbours4};
 
 /// What the carrying did, for the log.
 #[derive(Default, Debug)]
@@ -25,36 +27,6 @@ pub struct Report {
     pub ends_at: Vec<End>,
 }
 
-/// 4-connected components of `mask`.
-fn components(mask: &[bool], w: usize, h: usize) -> (Vec<u32>, usize) {
-    let mut comp = vec![u32::MAX; w * h];
-    let mut n = 0u32;
-    let mut stack = Vec::new();
-    for s in 0..w * h {
-        if !mask[s] || comp[s] != u32::MAX {
-            continue;
-        }
-        comp[s] = n;
-        stack.push(s);
-        while let Some(i) = stack.pop() {
-            let (x, y) = (i % w, i / w);
-            for (ok, j) in [
-                (x > 0, i.wrapping_sub(1)),
-                (x + 1 < w, i + 1),
-                (y > 0, i.wrapping_sub(w)),
-                (y + 1 < h, i + w),
-            ] {
-                if ok && mask[j] && comp[j] == u32::MAX {
-                    comp[j] = n;
-                    stack.push(j);
-                }
-            }
-        }
-        n += 1;
-    }
-    (comp, n as usize)
-}
-
 /// The region carried under `parts`: its contour ends at the parts ([`contour_ends`], and with
 /// `lines` [`junction_ends`]) paired across a part and joined by tangent cubics as barriers; a
 /// piece they cut off, bounded by counterpart curves and the region alone, joins the extent.
@@ -67,8 +39,8 @@ pub fn carry_under(
 ) -> (Vec<bool>, Report) {
     let mut parts: Vec<bool> = parts.iter().zip(region).map(|(p, r)| *p && !*r).collect();
     // what the parts enclose is under them as much as they are: a piece of no part that
-    // touches only the parts and the region (a highlight of the hair the relation reads as the
-    // ground, which would cut niabot's lock into slivers)
+    // touches only the parts and the region (a highlight on a part the relation reads as the
+    // ground would cut it into slivers)
     {
         let rest: Vec<bool> = (0..w * h).map(|i| !parts[i] && !region[i]).collect();
         let (comp, n) = components(&rest, w, h);
@@ -83,15 +55,8 @@ pub fn carry_under(
             if x == 0 || y == 0 || x + 1 == w || y + 1 == h {
                 open[c] = true;
             }
-            for (ok, j) in [
-                (x > 0, i.wrapping_sub(1)),
-                (x + 1 < w, i + 1),
-                (y > 0, i.wrapping_sub(w)),
-                (y + 1 < h, i + w),
-            ] {
-                if ok && parts[j] {
-                    by_part[c] = true;
-                }
+            if neighbours4(i, w, h).any(|j| parts[j]) {
+                by_part[c] = true;
             }
         }
         for i in 0..w * h {
@@ -127,7 +92,7 @@ pub fn carry_under(
             // one end per place and direction: the crack reading may have it already
             if ends
                 .iter()
-                .any(|f| norm2(sub2(f.p, e.p)) <= 1.5 && dot2(f.d, e.d) > 0.9)
+                .any(|f| norm(sub(f.p, e.p)) <= 1.5 && dot(f.d, e.d) > 0.9)
             {
                 continue;
             }
@@ -141,8 +106,8 @@ pub fn carry_under(
     report.curves = curves;
     report.ends_at = ends;
     // An end with no partner continues along its tangent while it stays in the part; where it
-    // comes out on the region, the ray is a barrier too (niabot's sleeve edge meeting the blouse
-    // under the hair). Every curve and ray links the two region pieces at its ends.
+    // comes out on the region, the ray is a barrier too. Every curve and ray links the two
+    // region pieces at its ends.
     let (rcomp, _) = components(region, w, h);
     // the region piece an end stands on: the nearest region pixel within the anti-aliasing
     // scale, as a junction end is read up to the scale off the region
@@ -159,6 +124,26 @@ pub fn carry_under(
                 (xx - x) * (xx - x) + (yy - y) * (yy - y)
             })
             .map(|i| rcomp[i])
+    };
+    // the pixels off the region from `p` along `back` within the anti-aliasing scale, where
+    // a curve or ray is sealed to the region behind its end
+    let behind = |p: V2, back: V2| -> Vec<usize> {
+        let mut out = Vec::new();
+        let mut t = 0.5;
+        while t <= near as f64 + 0.5 {
+            let q = add(p, mul(back, t));
+            let (x, y) = (q[0].floor(), q[1].floor());
+            if x < 0.0 || y < 0.0 || x >= w as f64 || y >= h as f64 {
+                break;
+            }
+            let i = y as usize * w + x as usize;
+            if region[i] {
+                break;
+            }
+            out.push(i);
+            t += 0.5;
+        }
+        out
     };
     let mut curve_of = vec![u32::MAX; w * h];
     // the pixels each curve or ray draws, assigned to `curve_of` once the counterparts are
@@ -189,7 +174,7 @@ pub fn carry_under(
                     + c[3][1] * t * t * t,
             ]
         };
-        let samples = (norm2(sub2(c[3], c[0])) * 8.0).ceil().max(8.0) as usize;
+        let samples = (norm(sub(c[3], c[0])) * 8.0).ceil().max(8.0) as usize;
         for k in 0..=samples {
             let q = eval(k as f64 / samples as f64);
             let (x, y) = (q[0].floor(), q[1].floor());
@@ -201,14 +186,8 @@ pub fn carry_under(
                 } else if !parts[i] {
                     // the pairing draws a sample outside the parts onto the part pixels
                     // beside it (see pair_ends): those are this curve's too
-                    let (xi, yi) = (x as usize, y as usize);
-                    for (ok, j) in [
-                        (xi > 0, i.wrapping_sub(1)),
-                        (xi + 1 < w, i + 1),
-                        (yi > 0, i.wrapping_sub(w)),
-                        (yi + 1 < h, i + w),
-                    ] {
-                        if ok && barrier[j] {
+                    for j in neighbours4(i, w, h) {
+                        if barrier[j] {
                             curve_px.last_mut().unwrap().push(j);
                         }
                     }
@@ -218,29 +197,17 @@ pub fn carry_under(
         // the curve sealed to the region at both ends: a junction end stands up to the
         // anti-aliasing scale off the region, and the piece behind the curve would run around
         // its end through the part pixels between
-        for (p, d) in [(c[0], sub2(c[1], c[0])), (c[3], sub2(c[2], c[3]))] {
-            let n = norm2(d);
+        for (p, d) in [(c[0], sub(c[1], c[0])), (c[3], sub(c[2], c[3]))] {
+            let n = norm(d);
             if n < 1e-9 {
                 continue;
             }
-            let back = mul2(d, -1.0 / n);
-            let mut t = 0.5;
-            while t <= near as f64 + 0.5 {
-                let q = add2(p, mul2(back, t));
-                let (x, y) = (q[0].floor(), q[1].floor());
-                if x < 0.0 || y < 0.0 || x >= w as f64 || y >= h as f64 {
-                    break;
-                }
-                let i = y as usize * w + x as usize;
-                if region[i] {
-                    break;
-                }
+            for i in behind(p, mul(d, -1.0 / n)) {
                 closed[i] = true;
                 if parts[i] {
                     barrier[i] = true;
                     curve_px.last_mut().unwrap().push(i);
                 }
-                t += 0.5;
             }
         }
     }
@@ -280,23 +247,12 @@ pub fn carry_under(
                 curve_px.last_mut().unwrap().push(i);
             }
             // and the ray sealed to the region behind its end, as the curves are
-            let mut t = 0.5;
-            while t <= near as f64 + 0.5 {
-                let q = [e.p[0] - e.d[0] * t, e.p[1] - e.d[1] * t];
-                let (x, y) = (q[0].floor(), q[1].floor());
-                if x < 0.0 || y < 0.0 || x >= w as f64 || y >= h as f64 {
-                    break;
-                }
-                let i = y as usize * w + x as usize;
-                if region[i] {
-                    break;
-                }
+            for i in behind(e.p, mul(e.d, -1.0)) {
                 closed[i] = true;
                 if parts[i] {
                     barrier[i] = true;
                     curve_px.last_mut().unwrap().push(i);
                 }
-                t += 0.5;
             }
         }
     }
@@ -317,7 +273,7 @@ pub fn carry_under(
     // Only the curves with a counterpart (another curve or ray linking the same two pieces
     // of the region) cut the parts into pieces: a curve alone encloses nothing by the rule
     // below, and as a barrier it would only cut the band between its counterparts
-    let mut count: crate::HashMap<(u32, u32), usize> = Default::default();
+    let mut count = crate::HashMap::<(u32, u32), usize>::default();
     for l in &links {
         if l.0 != u32::MAX {
             *count.entry(*l).or_default() += 1;
@@ -353,13 +309,8 @@ pub fn carry_under(
         if x == 0 || y == 0 || x + 1 == w || y + 1 == h {
             reaches[c] = true;
         }
-        for (ok, j) in [
-            (x > 0, i.wrapping_sub(1)),
-            (x + 1 < w, i + 1),
-            (y > 0, i.wrapping_sub(w)),
-            (y + 1 < h, i + w),
-        ] {
-            if !ok || parts[j] {
+        for j in neighbours4(i, w, h) {
+            if parts[j] {
                 continue;
             }
             if region[j] {
@@ -380,14 +331,8 @@ pub fn carry_under(
         if !barrier[i] || curve_of[i] == u32::MAX {
             continue;
         }
-        let (x, y) = (i % w, i / w);
-        for (ok, j) in [
-            (x > 0, i.wrapping_sub(1)),
-            (x + 1 < w, i + 1),
-            (y > 0, i.wrapping_sub(w)),
-            (y + 1 < h, i + w),
-        ] {
-            if ok && open[j] {
+        for j in neighbours4(i, w, h) {
+            if open[j] {
                 let c = comp[j] as usize;
                 if !bound[c].contains(&curve_of[i]) {
                     bound[c].push(curve_of[i]);
@@ -426,16 +371,7 @@ pub fn carry_under(
         if !barrier[i] || out[i] {
             continue;
         }
-        let (x, y) = (i % w, i / w);
-        let next = [
-            (x > 0, i.wrapping_sub(1)),
-            (x + 1 < w, i + 1),
-            (y > 0, i.wrapping_sub(w)),
-            (y + 1 < h, i + w),
-        ];
-        if next
-            .iter()
-            .any(|&(ok, j)| ok && open[j] && inside[comp[j] as usize])
+        if neighbours4(i, w, h).any(|j| open[j] && inside[comp[j] as usize])
         {
             out[i] = true;
             report.added_px += 1;
@@ -456,8 +392,8 @@ pub fn junction_ends(
     w: usize,
     h: usize,
 ) -> Vec<End> {
-    // only a line of the grain can be the occluder at a junction: the sky beside niabot's cuff
-    // is no line, and read as one it points the band's bottom edge down the cuff's side
+    // only a line of the grain can be the occluder at a junction: a ground beside the region
+    // read as one would point the region's edge down the side of what it meets
     let on_grain: crate::HashSet<u32> = (0..w * h)
         .filter(|&i| objects[i] != u32::MAX)
         .map(|i| lines[i])
@@ -546,13 +482,13 @@ pub fn junction_ends(
                         .iter()
                         .filter(|(pair, _)| *pair == (xa, yb))
                         .map(|(_, m)| *m)
-                        .filter(|m| norm2(sub2(*m, r)) <= reach)
-                        .min_by(|a, b| norm2(sub2(*a, r)).total_cmp(&norm2(sub2(*b, r))))
+                        .filter(|m| norm(sub(*m, r)) <= reach)
+                        .min_by(|a, b| norm(sub(*a, r)).total_cmp(&norm(sub(*b, r))))
                     else {
                         continue;
                     };
                     if !points.iter().any(|(u, v, q)| {
-                        *u == xa && *v == yb && norm2(sub2(*q, p)) <= length_px(w, 1.5) as f64
+                        *u == xa && *v == yb && norm(sub(*q, p)) <= length_px(w, 1.5) as f64
                     }) {
                         points.push((xa, yb, p));
                     }
@@ -568,28 +504,28 @@ pub fn junction_ends(
         }
         let mut c = [0.0, 0.0];
         for q in pts {
-            c = add2(c, *q);
+            c = add(c, *q);
         }
-        c = mul2(c, 1.0 / pts.len() as f64);
+        c = mul(c, 1.0 / pts.len() as f64);
         let (mut sxx, mut sxy, mut syy) = (0.0, 0.0, 0.0);
         for q in pts {
-            let d = sub2(*q, c);
+            let d = sub(*q, c);
             sxx += d[0] * d[0];
             sxy += d[0] * d[1];
             syy += d[1] * d[1];
         }
         let theta = 0.5 * (2.0 * sxy).atan2(sxx - syy);
         let mut d = [theta.cos(), theta.sin()];
-        if dot2(d, sub2(p, c)) < 0.0 {
-            d = mul2(d, -1.0);
+        if dot(d, sub(p, c)) < 0.0 {
+            d = mul(d, -1.0);
         }
-        (norm2(sub2(p, c)) >= reach / 4.0).then_some((c, d))
+        (norm(sub(p, c)) >= reach / 4.0).then_some((c, d))
     };
     let mut ends: Vec<End> = Vec::new();
     for (sx, sy, p) in points {
         let near = |line: u32| -> Vec<V2> {
             edge.iter()
-                .filter(|(s, m, _)| *s == line && norm2(sub2(*m, p)) <= reach)
+                .filter(|(s, m, _)| *s == line && norm(sub(*m, p)) <= reach)
                 .map(|(_, m, _)| *m)
                 .collect()
         };
@@ -599,7 +535,7 @@ pub fn junction_ends(
         // the X/Y boundary leaving the junction: its far point over the reach
         let far: Vec<V2> = between
             .iter()
-            .filter(|(pair, m)| *pair == (sx, sy) && norm2(sub2(*m, p)) <= reach)
+            .filter(|(pair, m)| *pair == (sx, sy) && norm(sub(*m, p)) <= reach)
             .map(|(_, m)| *m)
             .collect();
         if far.is_empty() {
@@ -612,17 +548,17 @@ pub fn junction_ends(
             let ahead: Vec<V2> = far
                 .iter()
                 .copied()
-                .filter(|m| dot2(d, sub2(*m, p)) > 0.0)
+                .filter(|m| dot(d, sub(*m, p)) > 0.0)
                 .collect();
             if ahead.len() < 2 {
                 return false;
             }
-            let f = mul2(
-                ahead.iter().fold([0.0, 0.0], |c, q| add2(c, *q)),
+            let f = mul(
+                ahead.iter().fold([0.0, 0.0], |c, q| add(c, *q)),
                 1.0 / ahead.len() as f64,
             );
-            let l = norm2(sub2(f, p));
-            l >= reach / 4.0 && cross2(d, sub2(f, c)).abs() <= offset_tol(l)
+            let l = norm(sub(f, p));
+            l >= reach / 4.0 && cross(d, sub(f, c)).abs() <= offset_tol(l)
         };
         let (stem_dir, stem_line) = if on_grain.contains(&sx) && along(cx, dx) {
             (dy, sy)
@@ -634,8 +570,8 @@ pub fn junction_ends(
         // the region's side of the stem: the region pixels of the stem's cracks
         let mut side = 0.0;
         for (s, m, r) in &edge {
-            if *s == stem_line && norm2(sub2(*m, p)) <= reach {
-                side += cross2(stem_dir, sub2(*r, p)).signum();
+            if *s == stem_line && norm(sub(*m, p)) <= reach {
+                side += cross(stem_dir, sub(*r, p)).signum();
             }
         }
         let (left, right) = if side > 0.0 {
@@ -654,31 +590,12 @@ pub fn junction_ends(
     ends
 }
 
-fn sub2(a: V2, b: V2) -> V2 {
-    [a[0] - b[0], a[1] - b[1]]
-}
-fn add2(a: V2, b: V2) -> V2 {
-    [a[0] + b[0], a[1] + b[1]]
-}
-fn mul2(a: V2, s: f64) -> V2 {
-    [a[0] * s, a[1] * s]
-}
-fn dot2(a: V2, b: V2) -> f64 {
-    a[0] * b[0] + a[1] * b[1]
-}
-fn cross2(a: V2, b: V2) -> f64 {
-    a[0] * b[1] - a[1] * b[0]
-}
-fn norm2(a: V2) -> f64 {
-    dot2(a, a).sqrt()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// A band (the sleeve) crossed by an opaque bar (the lock): the band is carried under the
-    /// bar between its two edges, and the bar's ends beyond the band stay out.
+    /// A band crossed by an opaque bar: the band is carried under the bar between its two
+    /// edges, and the bar's ends beyond the band stay out.
     #[test]
     fn band_carried_under_a_crossing_bar() {
         // at the reference width, so the completion's reach (4 units) is 4 px
@@ -701,9 +618,9 @@ mod tests {
         }
     }
 
-    /// A band whose edges border a wide line all along (the sleeve under the hair) crossed
-    /// by a second line: the junction reading gives the band's edges their ends at the
-    /// crossing, and the band is carried under it.
+    /// A band whose edges border a wide line all along crossed by a second line: the junction
+    /// reading gives the band's edges their ends at the crossing, and the band is carried
+    /// under it.
     #[test]
     fn band_along_a_line_crossed_by_another() {
         let (w, h) = (330usize, 120usize);

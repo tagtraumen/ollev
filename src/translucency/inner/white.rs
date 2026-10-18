@@ -1,6 +1,11 @@
 //! The inner layers above the layer: the white by opening, the tints, the full fit.
 
-use super::*;
+use crate::HashMap;
+
+use super::{
+    Class, DVec3, InnerFit, InnerInputs, MATCH_TOL, NO_FIT, NOISE, Open, PixelFit, Tint, VEIL_MAX,
+    arange, assemble, cheb, classify_colors, open_at, with_interior,
+};
 
 /// The white above the layer read against a smooth beneath: per pixel its opacity and fit.
 pub struct OpenedWhite {
@@ -11,7 +16,7 @@ pub struct OpenedWhite {
 }
 
 /// The opening's width: wider than the white highlights' cores, narrower than the
-/// beneath's flat tones (5 px at 330, 7 at 660).
+/// beneath's flat tones (5 px at the unit's reference width, 7 at twice it).
 pub fn opening_width(width: usize) -> usize {
     2 * crate::translucency::raster::unit_of(width).ceil() as usize + 3
 }

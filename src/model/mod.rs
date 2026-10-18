@@ -50,11 +50,14 @@ pub type Curve = [DVec2; 4];
 /// SVG's matrix order.
 pub type Affine = [f64; 6];
 
+/// A traced picture as vector objects, under the contract of the [module](self).
 #[derive(Clone, Debug)]
 pub struct Model {
+    /// The traced image's width in pixels.
     pub width: usize,
+    /// The traced image's height in pixels.
     pub height: usize,
-    /// Bottom to top.
+    /// What is drawn, bottom to top.
     pub items: Vec<Item>,
     /// The clips objects and clips refer to, by place in this list.
     pub clips: Vec<Clip>,
@@ -67,19 +70,26 @@ pub struct Model {
     pub clip: Option<usize>,
 }
 
+/// One entry of a stack of items.
 #[derive(Clone, Debug)]
 pub enum Item {
+    /// A drawn object.
     Object(Box<Object>),
-    /// A translucent layer's objects, the layers numbered bottom to top.
+    /// A translucent layer's objects.
     Group {
+        /// The layer's number, the layers counted bottom to top.
         layer: usize,
+        /// The layer's items, bottom to top.
         items: Vec<Item>,
     },
+    /// A definition drawn under a map.
     Instance(Instance),
     /// Instances of one definition drawn together, one object to the bench: their transforms
     /// listed, or made from the first by the structure's few parameters (Graphite's repeat nodes).
     Repeat {
+        /// How the instances' transforms follow from the first's.
         structure: Structure,
+        /// The instances, in drawing order.
         instances: Vec<Instance>,
     },
 }
@@ -89,6 +99,7 @@ pub enum Item {
 pub struct Instance {
     /// The definition by place in [`Model::definitions`].
     pub definition: usize,
+    /// The map from the definition's frame into the image.
     pub transform: Affine,
 }
 
@@ -99,16 +110,32 @@ pub enum Structure {
     /// Each instance's transform as listed.
     List,
     /// Instance `k` is the first moved by `k * step`.
-    Linear { step: DVec2 },
+    Linear {
+        /// The move from one instance to the next.
+        step: DVec2,
+    },
     /// Instance `k` is the first moved by `(k % columns) * a + (k / columns) * b`.
-    Grid { a: DVec2, b: DVec2, columns: usize },
+    Grid {
+        /// The move along a row.
+        a: DVec2,
+        /// The move from one row to the next.
+        b: DVec2,
+        /// The instances in a row.
+        columns: usize,
+    },
     /// Instance `k` is the first turned about `center` by `k * step` radians.
-    Circular { center: DVec2, step: f64 },
+    Circular {
+        /// The point the instances turn about.
+        center: DVec2,
+        /// The turn from one instance to the next, in radians.
+        step: f64,
+    },
 }
 
 impl Structure {
     /// The structure's name and parameters (the steps' coordinates, a grid's columns, a
     /// turn's centre and angle), as the SVG emitter names them.
+    #[must_use]
     pub fn parameters(&self) -> (&'static str, Vec<f64>) {
         match self {
             Structure::List => ("list", Vec::new()),
@@ -142,9 +169,12 @@ impl From<&crate::instancing::Structure> for Structure {
     }
 }
 
+/// A drawn object: what its geometry covers, painted.
 #[derive(Clone, Debug)]
 pub struct Object {
+    /// What the object covers.
     pub geometry: Geometry,
+    /// What the covered pixels are painted with.
     pub paint: Paint,
     /// How much of the paint shows over what lies below, from nothing to all.
     pub opacity: f64,
@@ -154,22 +184,32 @@ pub struct Object {
     pub clip: Option<usize>,
 }
 
+/// What an object covers.
 #[derive(Clone, Debug)]
 pub enum Geometry {
+    /// Closed loops, filled by their rule.
     Fill {
+        /// The loops, each a run of cubics ending where it starts.
         loops: Vec<Vec<Curve>>,
+        /// How the loops' windings fill.
         rule: FillRule,
     },
+    /// A pen along a centerline.
     Stroke(StrokeGeometry),
 }
 
 /// A pen drawn along a centerline.
 #[derive(Clone, Debug)]
 pub struct StrokeGeometry {
+    /// The cubics the pen follows, each starting where the one before ends.
     pub centerline: Vec<Curve>,
+    /// Whether the centerline closes on itself.
     pub closed: bool,
+    /// The pen's width in pixels.
     pub width: f64,
+    /// How the open ends (and each dash) end.
     pub cap: Cap,
+    /// How the corners are joined.
     pub join: Join,
     /// Which joints of the centerline are corners, where the join shows.
     pub corners: Vec<bool>,
@@ -183,14 +223,18 @@ pub struct StrokeGeometry {
 pub enum Paint {
     /// An opaque sRGB-encoded colour.
     Solid(DVec3),
+    /// A gradient in image space.
     Gradient(Gradient),
 }
 
 /// A clip: the coverage of its loops by its rule, inside its own parent clip if any.
 #[derive(Clone, Debug)]
 pub struct Clip {
+    /// Closed loops, as a fill's.
     pub loops: Vec<Vec<Curve>>,
+    /// How the loops' windings cover.
     pub rule: FillRule,
+    /// The clip this one lies inside, by place in [`Model::clips`].
     pub parent: Option<usize>,
 }
 
@@ -199,12 +243,14 @@ pub struct Clip {
 /// price the planner accepts a shape by.
 #[derive(Clone, Debug)]
 pub struct Fidelity {
+    /// Per pixel, the colour distance a render may miss by unnoticed; `None` for none.
     pub tolerance: Option<Arc<Vec<f32>>>,
+    /// The squared colour error a segment is worth.
     pub segment_price: f64,
 }
 
 fn to64(c: &crate::tracer::Cubic) -> Curve {
-    c.map(|p| p.as_dvec2())
+    c.map(glam::Vec2::as_dvec2)
 }
 
 /// The scene's loops in double precision.
@@ -213,7 +259,20 @@ pub(crate) fn loops64(loops: &[Vec<crate::tracer::Cubic>]) -> Vec<Vec<Curve>> {
 }
 
 fn to32(c: &Curve) -> crate::tracer::Cubic {
-    c.map(|p| p.as_vec2())
+    c.map(glam::DVec2::as_vec2)
+}
+
+/// The box of the loops' control points, in single precision as the scene keeps it.
+pub(crate) fn bounds(loops: &[Vec<Curve>]) -> (glam::Vec2, glam::Vec2) {
+    let points = loops.iter().flatten().flatten().map(|p| p.as_vec2());
+    let min = points.clone().fold(glam::Vec2::INFINITY, glam::Vec2::min);
+    let max = points.fold(glam::Vec2::NEG_INFINITY, glam::Vec2::max);
+    (min, max)
+}
+
+/// Loops in the scene's single precision.
+fn loops32(loops: &[Vec<Curve>]) -> Vec<Vec<crate::tracer::Cubic>> {
+    loops.iter().map(|l| l.iter().map(to32).collect()).collect()
 }
 
 impl Paint {
@@ -236,6 +295,7 @@ impl Paint {
 
 impl Geometry {
     /// The segments as usvg counts them: a move, the cubics and a close per loop.
+    #[must_use]
     pub fn segments(&self) -> usize {
         match self {
             Geometry::Fill { loops, .. } => loops
@@ -250,10 +310,7 @@ impl Geometry {
     /// The loops the geometry covers and their rule: a stroke's outline, filled nonzero.
     pub(crate) fn outline(&self) -> (Vec<Vec<crate::tracer::Cubic>>, FillRule) {
         match self {
-            Geometry::Fill { loops, rule } => (
-                loops.iter().map(|l| l.iter().map(to32).collect()).collect(),
-                *rule,
-            ),
+            Geometry::Fill { loops, rule } => (loops32(loops), *rule),
             Geometry::Stroke(s) => (s.stroke().outline(), FillRule::NonZero),
         }
     }
@@ -268,13 +325,16 @@ impl Geometry {
     }
 
     /// The geometry scaled by `s` about the origin, a stroke's width and dashes with it.
+    #[must_use]
     pub fn scaled(&self, s: f64) -> Self {
         let mut g = self.clone();
         g.map(&|p| p * s);
         if let Geometry::Stroke(k) = &mut g {
             k.width *= s;
             if let Some((array, offset)) = &mut k.dashes {
-                array.iter_mut().for_each(|v| *v *= s);
+                for v in array {
+                    *v *= s;
+                }
                 *offset *= s;
             }
         }
@@ -302,13 +362,14 @@ impl StrokeGeometry {
 
 impl Object {
     /// The segments as usvg counts them, and a path gradient's curve counted as one more loop.
+    #[must_use]
     pub fn segments(&self) -> usize {
-        let curve = match &self.paint {
-            Paint::Gradient(g) => match g.ramp().1 {
-                crate::render::Gradient::Path { contour, .. } => contour.len() + 2,
-                _ => 0,
-            },
-            _ => 0,
+        let curve = if let Paint::Gradient(g) = &self.paint
+            && let crate::render::Gradient::Path { contour, .. } = g.ramp().1
+        {
+            contour.len() + 2
+        } else {
+            0
         };
         self.geometry.segments() + curve
     }
@@ -378,6 +439,7 @@ impl Item {
 
 impl Model {
     /// The drawn objects bottom to top, an instance's not included.
+    #[must_use]
     pub fn objects(&self) -> Vec<&Object> {
         let mut out = Vec::new();
         self.items.iter().for_each(|i| i.objects(&mut out));
@@ -386,6 +448,7 @@ impl Model {
 
     /// The objects and their segments, as the bench counts them: every drawn object once, an
     /// instance or a repeat once plus its definition; clips, paints and blurs are attributes.
+    #[must_use]
     pub fn count(&self) -> (usize, usize) {
         fn walk<'a>(items: &'a [Item], objects: &mut Vec<&'a Object>, instances: &mut usize) {
             for item in items {
@@ -407,6 +470,7 @@ impl Model {
 
     /// The objects drawn in stack order, an instance's mapped by its transform, each with
     /// whether it is one of [`Model::objects`] (drawn outside any instance).
+    #[must_use]
     pub fn drawn(&self) -> Vec<(bool, Object)> {
         fn walk(
             model: &Model,
@@ -426,7 +490,9 @@ impl Model {
                     Item::Group { items, .. } => walk(model, items, map, out),
                     Item::Instance(i) => instance(model, i, map, out),
                     Item::Repeat { instances, .. } => {
-                        instances.iter().for_each(|i| instance(model, i, map, out))
+                        for i in instances {
+                            instance(model, i, map, out);
+                        }
                     }
                 }
             }
@@ -450,11 +516,13 @@ impl Model {
 
     /// The model rendered over white with the scene's compositing, and per pixel the object of
     /// [`Model::objects`] that draws most of it, `u32::MAX` for none.
+    #[must_use]
     pub fn render(&self) -> (Vec<Vec3>, Vec<u32>) {
         self.composite([0, 0, self.width, self.height], true)
     }
 
     /// The model rendered over white in the window `[x0, y0, w, h]` of the image, row by row.
+    #[must_use]
     pub fn render_window(&self, window: [usize; 4]) -> Vec<Vec3> {
         self.composite(window, false).0
     }
@@ -465,19 +533,15 @@ impl Model {
         let (x1, y1) = ((x0 + ww).min(w), (y0 + wh).min(h));
         let mut pixels = vec![Vec3::ONE; ww * wh];
         let clip_rasters: Vec<OnceCell<Raster>> =
-            self.clips.iter().map(|_| Default::default()).collect();
+            self.clips.iter().map(|_| OnceCell::new()).collect();
         let clip_at = |c: usize, x: usize, y: usize| -> f32 {
             let mut c = Some(c);
             let mut v = 1.;
             while let Some(k) = c {
                 let clip = &self.clips[k];
                 let r = clip_rasters[k].get_or_init(|| {
-                    let loops: Vec<Vec<crate::tracer::Cubic>> = clip
-                        .loops
-                        .iter()
-                        .map(|l| l.iter().map(to32).collect())
-                        .collect();
-                    crate::scene::coverage_raster(&crate::scene::loops_path(&loops), clip.rule)
+                    let path = crate::scene::loops_path(&loops32(&clip.loops));
+                    crate::scene::coverage_raster(&path, clip.rule)
                 });
                 v *= r.at(y * w + x, w);
                 c = clip.parent;
@@ -534,9 +598,17 @@ fn compose(outer: &[f64; 6], inner: &[f64; 6]) -> [f64; 6] {
 impl Scene {
     /// The scene as a model: its shapes in stack order, each layer's runs as groups, the
     /// layer's marks at the end of its first run.
+    #[must_use]
     pub fn model(&self) -> Model {
-        let mut clips: Vec<Clip> = Vec::new();
-        let mut keys: HashMap<usize, usize> = Default::default();
+        /// The clip of `shape` inside `parent`.
+        fn shape_clip(shape: &Shape, parent: Option<usize>) -> Clip {
+            Clip {
+                loops: loops64(&shape.loops),
+                rule: shape.fill_rule(),
+                parent,
+            }
+        }
+        /// The place of the clip to the shape with `id`, added with its parents where new.
         fn clip_of(
             scene: &Scene,
             id: usize,
@@ -548,31 +620,27 @@ impl Scene {
             }
             let shape = scene.shapes.iter().find(|s| s.id == id)?;
             let parent = shape.clip.and_then(|p| clip_of(scene, p, clips, keys));
-            clips.push(Clip {
-                loops: loops64(&shape.loops),
-                rule: shape.fill_rule(),
-                parent,
-            });
+            clips.push(shape_clip(shape, parent));
             keys.insert(id, clips.len() - 1);
             Some(clips.len() - 1)
         }
+        let mut clips: Vec<Clip> = Vec::new();
+        let mut keys: HashMap<usize, usize> = HashMap::default();
         // A clipped mark shows through its layer's shape, the first of the layer's group: by
         // the shape's id where that names it alone, else by its outline
-        let layer_shape = (self.marks_layer.is_some())
-            .then(|| self.shapes.iter().find(|s| s.layer == self.marks_layer))
-            .flatten();
+        let layer_shape = self
+            .marks_layer
+            .and_then(|_| self.shapes.iter().find(|s| s.layer == self.marks_layer));
         let mut marks: Option<Vec<Item>> = (!self.marks.is_empty()).then(|| {
             let clipped = self.marks.iter().any(|o| o.clip.is_some());
             let clip = layer_shape.filter(|_| clipped).map(|s| {
-                if self.shapes.iter().filter(|q| q.id == s.id).count() == 1 {
-                    return clip_of(self, s.id, &mut clips, &mut keys).expect("in the scene");
+                if self.shapes.iter().filter(|q| q.id == s.id).count() == 1
+                    && let Some(k) = clip_of(self, s.id, &mut clips, &mut keys)
+                {
+                    return k;
                 }
                 let parent = s.clip.and_then(|p| clip_of(self, p, &mut clips, &mut keys));
-                clips.push(Clip {
-                    loops: loops64(&s.loops),
-                    rule: s.fill_rule(),
-                    parent,
-                });
+                clips.push(shape_clip(s, parent));
                 clips.len() - 1
             });
             self.marks
@@ -649,7 +717,8 @@ impl Scene {
             }
         }
         // The marks close their layer's group when no earlier run of it took them
-        if let (Some(n), true) = (layer, marks.is_some())
+        if let Some(n) = layer
+            && marks.is_some()
             && run.as_ref().map(|r| r.0) != Some(n)
         {
             close(&mut run, &mut items, &mut marks);
@@ -678,7 +747,7 @@ impl Scene {
 }
 
 /// Whether a loop covers nothing: no cubic, or every point on one line, as the one cubic of no
-/// length the cleanup or a simplification leaves of a small hole (niabot: 26 to 198 a scene).
+/// length the cleanup or a simplification leaves of a small hole.
 pub(crate) fn covers_nothing(cubics: &[Curve]) -> bool {
     let mut points = cubics.iter().flatten();
     let Some(&a) = points.next() else {
@@ -722,6 +791,7 @@ impl Model {
 mod tests {
     use super::*;
     use crate::{Window, scene::tests::square};
+    use glam::Vec2;
 
     #[test]
     fn loops_of_no_length_or_area_cover_nothing() {
@@ -740,7 +810,6 @@ mod tests {
             p(0., 0.)
         ]]));
     }
-    use glam::Vec2;
 
     /// The model of a scene renders as the scene does, clips and blurs included.
     #[test]

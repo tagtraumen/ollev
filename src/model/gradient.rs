@@ -11,7 +11,9 @@ use super::{Affine, Curve};
 /// (not premultiplied) sRGB-encoded RGBA colour there, each channel in 0..1.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Stop {
+    /// The place along the gradient.
     pub offset: f64,
+    /// The colour, RGBA.
     pub color: [f64; 4],
 }
 
@@ -20,21 +22,36 @@ pub struct Stop {
 #[derive(Clone, Debug, PartialEq)]
 pub enum GradientShape {
     /// `t` is 0 at `start`, 1 at `end`, and constant on the lines across the axis between.
-    Linear { start: DVec2, end: DVec2 },
+    Linear {
+        /// Where `t` is 0.
+        start: DVec2,
+        /// Where `t` is 1.
+        end: DVec2,
+    },
     /// `transform` maps the unit circle onto the circle where `t` is 1. `focus` is where `t` is
     /// 0, in the unit circle's plane and inside it (the origin for a centred gradient); between,
     /// `t` is that of the circle through the point centred `t` of the way from the focus to the
     /// origin, of radius `t` (SVG's `fx` and `fy` under a `gradientTransform`).
-    Radial { transform: Affine, focus: DVec2 },
+    Radial {
+        /// The map from the unit circle's plane into the image.
+        transform: Affine,
+        /// Where `t` is 0, in the unit circle's plane.
+        focus: DVec2,
+    },
     /// `t` is 0 at signed distance `near` from `curve` and 1 at `far`, in pixels. A closed curve
     /// is negative inside (even-odd). An open one is measured on with its end tangents as rays,
     /// and is negative inside the region it bounds with `closure`: the points from where its end
     /// ray leaves the gradient's box, round the box's corners, to where its start ray leaves it.
     Path {
+        /// The cubics distances are measured from, each starting where the one before ends.
         curve: Vec<Curve>,
+        /// Whether the curve closes on itself.
         closed: bool,
+        /// An open curve's closing points, none for a closed one.
         closure: Vec<DVec2>,
+        /// The signed distance where `t` is 0.
         near: f64,
+        /// The signed distance where `t` is 1.
         far: f64,
     },
 }
@@ -57,6 +74,8 @@ impl Gradient {
         (self.from, &self.ramp)
     }
 
+    /// Where the gradient runs.
+    #[must_use]
     pub fn shape(&self) -> GradientShape {
         let d = |p: Vec2| p.as_dvec2();
         match self.ramp {
@@ -96,6 +115,7 @@ impl Gradient {
     /// The stops from the start (offset 0) to the end (offset 1), for a renderer that
     /// interpolates straight colour between neighbours (SVG, Graphite). Where the ramp's alpha
     /// changes it is split so that this matches the model within half an 8-bit level.
+    #[must_use]
     pub fn stops(&self) -> Vec<Stop> {
         self.ramp
             .svg_stops(self.from)
@@ -108,22 +128,26 @@ impl Gradient {
     }
 
     /// Whether every stop is opaque.
+    #[must_use]
     pub fn is_opaque(&self) -> bool {
         self.ramp.is_opaque()
     }
 
     /// The gradient's parameter at `p`, clamped to 0..1.
+    #[must_use]
     pub fn t(&self, p: DVec2) -> f64 {
         self.ramp.t(p.as_vec2()).into()
     }
 
     /// The straight RGBA colour the model paints at parameter `t`.
+    #[must_use]
     pub fn color(&self, t: f64) -> [f64; 4] {
         let (c, a) = self.ramp.rgba(self.from, t as f32);
         [c.x.into(), c.y.into(), c.z.into(), a.into()]
     }
 
     /// The gradient under the similarity `m` (a turn, a uniform scale and a move).
+    #[must_use]
     pub fn mapped(&self, m: &Affine) -> Self {
         let k = (m[0] * m[3] - m[1] * m[2]).abs().sqrt() as f32;
         let linear = glam::Mat2::from_cols_array(&[m[0], m[1], m[2], m[3]].map(|v| v as f32));

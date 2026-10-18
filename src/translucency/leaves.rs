@@ -7,6 +7,7 @@ use std::collections::{BTreeSet, BinaryHeap};
 
 use glam::{DVec2, DVec3, IVec3, Vec2, Vec3};
 
+use super::raster::{forward, neighbours4};
 use super::{NOISE, SLOPE_MIN, percentile};
 
 /// A color that varies linearly over the image: `a + gx x + gy y` at pixel `(x, y)`.
@@ -144,7 +145,7 @@ fn leaf_planar(s: &[f64; 3], n: f64) -> bool {
 /// Most a channel may be off a plane for two regions to be one surface: 3 levels.
 const PLANE_TOLERANCE: f32 = 3. * NOISE;
 /// Pixels of a region sampled for the merge tests, which are percentiles: a strided sample
-/// of a large region decides them as well, and a large sky against each neighbor is costly.
+/// of a large region decides them as well, and a large region against each neighbor is costly.
 const MERGE_SAMPLE: usize = 4000;
 
 /// The segmentation's regions merged greedily while one plane fits the union, so a gradient
@@ -172,21 +173,12 @@ pub fn equation_regions(target: &[Vec3], labels: &[u32], width: usize) -> Vec<u3
     let mut neighbors: Vec<BTreeSet<u32>> = vec![BTreeSet::new(); count];
     let mut pairs: Vec<(u32, u32)> = Vec::new();
     let height = labels.len() / width.max(1);
-    for y in 0..height {
-        for x in 0..width {
-            let i = y * width + x;
-            for j in [
-                (x + 1 < width).then(|| i + 1),
-                (y + 1 < height).then(|| i + width),
-            ]
-            .into_iter()
-            .flatten()
-            {
-                let (a, b) = (labels[i], labels[j]);
-                if a != b && neighbors[a as usize].insert(b) {
-                    neighbors[b as usize].insert(a);
-                    pairs.push((a.min(b), a.max(b)));
-                }
+    for i in 0..width * height {
+        for j in forward(i, width, height) {
+            let (a, b) = (labels[i], labels[j]);
+            if a != b && neighbors[a as usize].insert(b) {
+                neighbors[b as usize].insert(a);
+                pairs.push((a.min(b), a.max(b)));
             }
         }
     }
@@ -328,16 +320,7 @@ pub fn components(
         part[start] = count;
         stack.push(start);
         while let Some(i) = stack.pop() {
-            let (x, y) = (i % width, i / width);
-            for j in [
-                (x > 0).then(|| i - 1),
-                (x + 1 < width).then(|| i + 1),
-                (y > 0).then(|| i - width),
-                (y + 1 < height).then(|| i + width),
-            ]
-            .into_iter()
-            .flatten()
-            {
+            for j in neighbours4(i, width, height) {
                 if part[j] == u32::MAX && together(i, j) {
                     part[j] = count;
                     stack.push(j);
@@ -382,7 +365,7 @@ fn flat_components(target: &[Vec3], width: usize, height: usize) -> Vec<u32> {
     }
     // Flat runs that touch and differ by a level at most in every channel are one color, as
     // 8 bits quantize it: a peeled color continuing out from under a shape comes back as two
-    // neighbors a level apart (triple-02's blue rectangle)
+    // neighbors a level apart
     let flat = |p: u32| size[p as usize] >= FLAT_MIN && interior[p as usize];
     let mut first = vec![usize::MAX; count];
     for (i, &p) in part.iter().enumerate() {
@@ -395,29 +378,13 @@ fn flat_components(target: &[Vec3], width: usize, height: usize) -> Vec<u32> {
         IVec3::new((k >> 16) as i32, (k >> 8 & 255) as i32, (k & 255) as i32)
     };
     let mut group: Vec<u32> = (0..count as u32).collect();
-    fn root(group: &mut [u32], mut p: u32) -> u32 {
-        while group[p as usize] != p {
-            group[p as usize] = group[group[p as usize] as usize];
-            p = group[p as usize];
-        }
-        p
-    }
-    for y in 0..height {
-        for x in 0..width {
-            let i = y * width + x;
-            for j in [
-                (x + 1 < width).then(|| i + 1),
-                (y + 1 < height).then(|| i + width),
-            ]
-            .into_iter()
-            .flatten()
-            {
-                let (a, b) = (part[i], part[j]);
-                if a != b && flat(a) && flat(b) && (color(a) - color(b)).abs().max_element() <= 1 {
-                    let (ra, rb) = (root(&mut group, a), root(&mut group, b));
-                    if ra != rb {
-                        group[ra.max(rb) as usize] = ra.min(rb);
-                    }
+    for i in 0..width * height {
+        for j in forward(i, width, height) {
+            let (a, b) = (part[i], part[j]);
+            if a != b && flat(a) && flat(b) && (color(a) - color(b)).abs().max_element() <= 1 {
+                let (ra, rb) = (root(&mut group, a), root(&mut group, b));
+                if ra != rb {
+                    group[ra.max(rb) as usize] = ra.min(rb);
                 }
             }
         }
@@ -440,6 +407,15 @@ fn flat_components(target: &[Vec3], width: usize, height: usize) -> Vec<u32> {
             }
         })
         .collect()
+}
+
+/// The root of `p` in a union-find forest, halving the path.
+pub(super) fn root(group: &mut [u32], mut p: u32) -> u32 {
+    while group[p as usize] != p {
+        group[p as usize] = group[group[p as usize] as usize];
+        p = group[p as usize];
+    }
+    p
 }
 
 /// A directed pair of leaves that touch: `x` inside, `y` outside.
@@ -471,7 +447,7 @@ const MAX_POINTS: usize = 32;
 /// How far a leaf's core pixels are gathered around a contact point for its color there.
 const LOCAL_RADIUS: i32 = 5;
 /// How far a thin leaf's pixels go to the nearest wide leaf: a stroke of three pixels with
-/// its rims (the glassware's glass pieces have a 3 px stroke each).
+/// its rims.
 const BRIDGE: i32 = 3;
 
 /// The leaves of the region stage and the plane pass: the flat components where there are
@@ -518,7 +494,7 @@ impl Leaves {
         let eq = equation_regions(target, segments, width);
         let flat = flat_components(target, width, height);
         // A flat component takes precedence: on flat art it is exact, where the plane merge mixes
-        // a stroke with the dotted border it crosses (the airmail's stamp ring)
+        // a stroke with the dotted border it crosses
         let base: Vec<(bool, u32)> = (0..width * height)
             .map(|i| {
                 if flat[i] > 0 {
@@ -534,17 +510,9 @@ impl Leaves {
         // Neighbors in the same leaf per pixel, the frame counting as another
         let same: Vec<u8> = (0..width * height)
             .map(|i| {
-                let (x, y) = (i % width, i / width);
-                [
-                    (x > 0).then(|| i - 1),
-                    (x + 1 < width).then(|| i + 1),
-                    (y > 0).then(|| i - width),
-                    (y + 1 < height).then(|| i + width),
-                ]
-                .into_iter()
-                .flatten()
-                .filter(|&j| label[j] == label[i])
-                .count() as u8
+                neighbours4(i, width, height)
+                    .filter(|&j| label[j] == label[i])
+                    .count() as u8
             })
             .collect();
         let core: Vec<bool> = same.iter().map(|&s| s == 4).collect();
@@ -559,7 +527,7 @@ impl Leaves {
         }
         // Each leaf's plane by least squares over its core pixels where it has a dozen: the
         // pixels at its edge are the anti-aliased blend with the neighbor, which tilts a small
-        // leaf's plane (saturn's ring over the globe)
+        // leaf's plane
         let used = |i: usize| core[i] || ncore[label[i] as usize] < 12;
         let mut moments = vec![Moments::default(); n];
         let mut all = vec![DVec2::ZERO; n];
@@ -597,8 +565,8 @@ impl Leaves {
             uncertainty[l] = texture[l] / (moments[l].n.max(1.) as f32).sqrt();
         }
         // Thin: no pixel whose eight neighbors are all core pixels, so at most four pixels across
-        // (an anti-aliased rim, or a stroke of up to three pixels with its rims). Counted this way
-        // rather than by area over perimeter, which miscounts diagonals (the geode's veil strip).
+        // (an anti-aliased rim, or a stroke of up to three pixels with its rims); area over
+        // perimeter would miscount diagonals
         let mut thin = vec![true; n];
         for y in 1..height.saturating_sub(1) {
             for x in 1..width - 1 {
@@ -722,15 +690,9 @@ impl Leaves {
             }
         }
         edges.sort_by_key(|e| e.0);
-        let mut s = 0;
-        while s < edges.len() {
-            let key = edges[s].0;
-            let mut e = s;
-            while e < edges.len() && edges[e].0 == key {
-                e += 1;
-            }
-            let pts: Vec<Vec2> = edges[s..e].iter().map(|e| e.1).collect();
-            s = e;
+        for run in edges.chunk_by(|a, b| a.0 == b.0) {
+            let key = run[0].0;
+            let pts: Vec<Vec2> = run.iter().map(|e| e.1).collect();
             let c = pts.len();
             let mid = pts.iter().copied().sum::<Vec2>() / c as f32;
             // Chunks of the contact along its principal axis

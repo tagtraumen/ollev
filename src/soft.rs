@@ -35,6 +35,11 @@ pub(crate) fn is_band(s: &Shape) -> bool {
         && s.fill.gradient.is_none_or(|g| g.is_opaque())
 }
 
+/// What a shape costs at the acceptance price: its segments, its path and its paint.
+pub(crate) fn price(ctx: &Context, s: &Shape, costs: Costs) -> f64 {
+    s.cost_segments() * ctx.accept_cost() + ctx.accept_path_cost() + costs.of(&s.fill) as f64
+}
+
 /// What the picture does from pixel to pixel over a set of neighbouring pairs: how many, and
 /// their summed colour step.
 #[derive(Default, Clone, Copy)]
@@ -96,7 +101,7 @@ impl Bands {
         let band: Vec<bool> = scene.shapes.iter().map(is_band).collect();
         // From each pixel to its right and lower neighbour: the steps within each band (its
         // noise and its slope), and across each seam between two bands, and how sharp it is
-        let mut seams: HashMap<(usize, usize), (Steps, Steps)> = Default::default();
+        let mut seams: HashMap<(usize, usize), (Steps, Steps)> = HashMap::default();
         let mut inner = vec![Steps::default(); n];
         let t = |i: usize| ctx.target[i];
         for y in 0..h {
@@ -141,10 +146,10 @@ impl Bands {
         // Soft: the picture's step from pixel to pixel across is no more than the bands' step
         // spread over the soft width plus what it steps within them, along a seam that long,
         // and along most of it no step within the anti-aliased reach beyond the slope by twice
-        // the noise (b007-gondola-0108: a window's sharp edge over its glow is no glow band)
+        // the noise (a sharp edge over a glow is no glow band)
         let width = (SOFT_EDGE * unit_of(w)).max(SOFT_EDGE);
-        let mut linked: HashMap<usize, Vec<usize>> = Default::default();
-        let mut seamless: HashSet<(usize, usize)> = Default::default();
+        let mut linked: HashMap<usize, Vec<usize>> = HashMap::default();
+        let mut seamless: HashSet<(usize, usize)> = HashSet::default();
         for (&(a, b), (s, sharp)) in &seams {
             let bands = mean[a].distance(mean[b]) as f64;
             let within = 0.5 * (inner[a].mean() + inner[b].mean());
@@ -197,10 +202,10 @@ impl Bands {
         let (w, h) = (scene.width, scene.height);
         let unit = unit_of(w);
         let base = &scene.shapes[lowest];
-        let mut inside: HashMap<usize, bool> = Default::default();
+        let mut inside: HashMap<usize, bool> = HashMap::default();
         // Within: what of the band lies outside the lowest's outline, its holes filled (bands
-        // nested as rings, each over the hole of the one below, b007-geodes-0365's cavities),
-        // is no more than a unit along its rim
+        // nested as rings, each over the hole of the one below), is no more than a unit along
+        // its rim
         let mut outline: Option<crate::scene::Raster> = None;
         let mut within = |k: usize| {
             *inside.entry(k).or_insert_with(|| {
@@ -260,7 +265,7 @@ impl Bands {
         let mut run: Vec<usize> = run.into_iter().collect();
         run.sort_unstable();
         // Two bands make a run where the picture steps across their seam as it does inside
-        // them (a ramp cut once, b007-geodes-0365's small cavities), not as at a blurred edge
+        // them (a ramp cut once), not as at a blurred edge
         let seamless = run.len() == 2 && self.seamless.contains(&(run[0], run[1]));
         (run.len() >= LEAST_RUN || seamless).then_some(run)
     }
@@ -271,7 +276,7 @@ fn loop_rasters(s: &Shape) -> Vec<crate::scene::Raster> {
     (0..s.loops.len())
         .map(|l| {
             crate::scene::coverage_raster(
-                &crate::scene::loops_path(&s.loops[l..l + 1]),
+                &crate::scene::loops_path(&s.loops[l..=l]),
                 crate::render::FillRule::EvenOdd,
             )
         })
@@ -391,7 +396,7 @@ fn boundaries(scene: &Scene, run: &[usize]) -> Vec<Contour> {
 fn seams(owner: &[u32], width: usize, run: &[usize], window: Window) -> Vec<Contour> {
     use glam::DVec2;
     let of_run = |o: u32| o != NONE && run.binary_search(&(o as usize)).is_ok();
-    let mut points: HashMap<(u32, u32), Vec<DVec2>> = Default::default();
+    let mut points: HashMap<(u32, u32), Vec<DVec2>> = HashMap::default();
     for i in window.pixels(width) {
         let (x, y) = (i % width, i / width);
         let right = (x + 1 < window.x + window.width).then_some(i + 1);
@@ -446,11 +451,12 @@ fn seams(owner: &[u32], width: usize, run: &[usize], window: Window) -> Vec<Cont
             }
             let cubics: Vec<[Vec2; 4]> = crate::translucency::lines::fit_cubics(&chain, 1.0)
                 .into_iter()
-                .map(|c| c.map(|p| p.as_vec2()))
+                .map(|c| c.map(glam::DVec2::as_vec2))
                 .collect();
-            match closed {
-                true => Contour::new(&cubics),
-                false => Contour::open(&cubics, min, max),
+            if closed {
+                Contour::new(&cubics)
+            } else {
+                Contour::open(&cubics, min, max)
             }
         })
         .collect()
@@ -484,12 +490,7 @@ fn replace(ctx: &Context, scene: &mut Scene, owner: &[u32], run: &[usize]) -> bo
         let (x, y) = (i % w, i / w);
         let p = Vec2::new(x as f32 + 0.5, y as f32 + 0.5);
         extent.push(p);
-        let rim = [(x > 0).then(|| i - 1), (x + 1 < w).then(|| i + 1)]
-            .into_iter()
-            .chain([(y > 0).then(|| i - w), (y + 1 < h).then(|| i + w)])
-            .flatten()
-            .any(|j| !of_run(j));
-        if !rim {
+        if crate::context::neighbours(i, w, h).all(of_run) {
             samples.push((p, ctx.target[i]));
         }
     }
@@ -502,9 +503,9 @@ fn replace(ctx: &Context, scene: &mut Scene, owner: &[u32], run: &[usize]) -> bo
     let costs = Costs::at(ctx.accept_cost());
     let center = scene.shapes[lowest].primitive_center();
     let (mut fill, sse) = fit(&samples, &[], solid, center, costs, &extent);
-    // A path gradient along each band boundary the run has (as the prototype found, its
-    // iso-contours start the curve well), against the linear or radial, on error plus price;
-    // the curves compared on at most [`PATH_SAMPLES`] of the samples, the best refitted on all
+    // A path gradient along each band boundary of the run (its iso-contours start the curve
+    // well) against the linear or radial, on error plus price; the curves compared on at most
+    // [`PATH_SAMPLES`] of the samples, the best refitted on all
     let stride = samples.len().div_ceil(PATH_SAMPLES);
     let few: Vec<(Vec2, Vec3)> = samples.iter().step_by(stride).copied().collect();
     let share = few.len() as f32 / samples.len() as f32;
@@ -533,12 +534,9 @@ fn replace(ctx: &Context, scene: &mut Scene, owner: &[u32], run: &[usize]) -> bo
     if fill.gradient.is_none() {
         return false;
     }
-    let price = |s: &Shape| {
-        s.cost_segments() * ctx.accept_cost() + ctx.accept_path_cost() + costs.of(&s.fill) as f64
-    };
     let render = |scene: &Scene| scene.render(window, 0..scene.shapes.len(), [0.; 3]);
     let before = ctx.error(window, &render(scene)) as f64
-        + run.iter().map(|&k| price(&scene.shapes[k])).sum::<f64>();
+        + run.iter().map(|&k| price(ctx, &scene.shapes[k], costs)).sum::<f64>();
     let old = scene.shapes[lowest].clone();
     let outline = run_outline(scene, owner, run);
     let removed: Vec<(usize, Shape)> = run[1..]
@@ -554,7 +552,7 @@ fn replace(ctx: &Context, scene: &mut Scene, owner: &[u32], run: &[usize]) -> bo
     }
     scene.set_fill_at(lowest, fill);
     scene.change();
-    let after = ctx.error(window, &render(scene)) as f64 + price(&scene.shapes[lowest]);
+    let after = ctx.error(window, &render(scene)) as f64 + price(ctx, &scene.shapes[lowest], costs);
     if crate::diagnostics::log() {
         eprintln!(
             "soft: run of {} bands at {min:.0?}..{max:.0?}, {} px, {}: {before:.2} to {after:.2}",
@@ -586,14 +584,12 @@ fn replace(ctx: &Context, scene: &mut Scene, owner: &[u32], run: &[usize]) -> bo
 /// one, within its outline, linked to it by seams the picture shades across (no step within
 /// [`SOFT_EDGE`]) and progressing steadily in colour. The stack is walked from the bottom, so
 /// the largest run that pays is taken. Returns how many runs were replaced.
-pub fn soften_scene(ctx: &Context, scene: &mut Scene) -> usize {
+pub async fn soften_scene(ctx: &Context, scene: &mut Scene) -> usize {
     let mut bands = Bands::of(ctx, scene);
     let mut replaced = 0;
     let mut lowest = 0;
     while lowest < scene.shapes.len() {
-        if crate::progress::poll() {
-            break;
-        }
+        crate::progress::poll().await;
         if !is_band(&scene.shapes[lowest]) {
             lowest += 1;
             continue;
@@ -616,21 +612,7 @@ mod tests {
     use glam::{Vec2, Vec3};
 
     use super::*;
-
-    /// A disc of radius `r` around `c` as four cubics.
-    fn disc(c: Vec2, r: f32) -> Vec<Vec<crate::tracer::Cubic>> {
-        let k = 0.552_284_8 * r;
-        let p = [Vec2::X, Vec2::Y, -Vec2::X, -Vec2::Y].map(|d| c + d * r);
-        let t = [Vec2::Y, -Vec2::X, -Vec2::Y, Vec2::X];
-        vec![
-            (0..4)
-                .map(|i| {
-                    let j = (i + 1) % 4;
-                    [p[i], p[i] + t[i] * k, p[j] - t[j] * k, p[j]]
-                })
-                .collect(),
-        ]
-    }
+    use crate::scene::tests::disc;
 
     /// A radial ramp the trace posterized into four nested discs is drawn as the outer disc
     /// with a gradient, nearer the picture than the discs.
@@ -654,7 +636,7 @@ mod tests {
         }
         let full = Window::full(w, w);
         let before = ctx.error(full, &scene.render(full, 0..scene.shapes.len(), [0.; 3]));
-        let replaced = soften_scene(&ctx, &mut scene);
+        let replaced = crate::progress::finish(soften_scene(&ctx, &mut scene));
         assert_eq!(replaced, 1);
         assert_eq!(scene.shapes.len(), 2);
         assert!(scene.shapes[1].fill.gradient.is_some());
@@ -662,9 +644,8 @@ mod tests {
         assert!(after < before, "{after} {before}");
     }
 
-    /// The same ramp posterized into rings nested over a flat core drawn below them, as
-    /// `b007-geodes-0365`'s cavities: one ring with a gradient replaces them, keeping the hole
-    /// the core shows through.
+    /// The same ramp posterized into rings nested over a flat core drawn below them: one ring
+    /// with a gradient replaces them, keeping the hole the core shows through.
     #[test]
     fn rings_over_a_core_become_one_gradient() {
         let (w, c) = (64usize, Vec2::splat(32.));
@@ -693,7 +674,7 @@ mod tests {
         }
         let full = Window::full(w, w);
         let before = ctx.error(full, &scene.render(full, 0..scene.shapes.len(), [0.; 3]));
-        assert_eq!(soften_scene(&ctx, &mut scene), 1);
+        assert_eq!(crate::progress::finish(soften_scene(&ctx, &mut scene)), 1);
         assert_eq!(scene.shapes.len(), 3);
         let ring = &scene.shapes[2];
         assert!(ring.fill.gradient.is_some());

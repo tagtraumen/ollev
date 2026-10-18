@@ -11,19 +11,27 @@ use resvg::{tiny_skia, usvg};
 
 use crate::emit::Emitter;
 
-/// What the loop found: objects missing at the first encoding, those a finer one helped,
-/// those still missing, and the miss left in units of the segment's price.
+/// What the verify loop found.
 #[derive(Clone, Debug, Default)]
 pub struct Report {
+    /// The objects of [`Model::objects`].
     pub objects: usize,
+    /// Whether the output was rendered and compared (the model has a fidelity and the target
+    /// a renderer).
     pub checked: bool,
+    /// Objects missing by more than a segment's price at the first encoding.
     pub missed: usize,
+    /// Objects kept at a finer encoding.
     pub stepped: usize,
+    /// Objects still missing by more than a segment's price.
     pub left: usize,
+    /// The misses beyond the price summed, in units of the segment's price.
     pub excess: f64,
     /// The largest miss of an object, in units of the segment's price.
     pub worst: f64,
+    /// The renders the loop took.
     pub renders: usize,
+    /// The loop's time.
     pub time: Duration,
 }
 
@@ -48,6 +56,7 @@ impl std::fmt::Display for Report {
 }
 
 /// An SVG rendered by resvg over white at `width` by `height`, as the bench renders it.
+#[must_use]
 pub fn render_svg(svg: &str, width: usize, height: usize) -> Option<Vec<Vec3>> {
     let tree = usvg::Tree::from_str(svg, &usvg::Options::default()).ok()?;
     let mut pixmap = tiny_skia::Pixmap::new(width as u32, height as u32)?;
@@ -84,22 +93,9 @@ struct Budget {
 
 impl Budget {
     fn new(reference: &[Vec3], width: usize, height: usize, fidelity: &Fidelity) -> Self {
-        let n = width * height;
-        let (mut lo, mut hi) = (vec![Vec3::INFINITY; n], vec![Vec3::NEG_INFINITY; n]);
-        for y in 0..height {
-            for x in 0..width {
-                let i = y * width + x;
-                for yy in y.saturating_sub(1)..(y + 2).min(height) {
-                    for xx in x.saturating_sub(1)..(x + 2).min(width) {
-                        let v = reference[yy * width + xx];
-                        lo[i] = lo[i].min(v);
-                        hi[i] = hi[i].max(v);
-                    }
-                }
-            }
-        }
+        let (lo, hi) = crate::lower::ranges(reference, width, height);
         let floor = NOISE as f32;
-        let tolerance = (0..n)
+        let tolerance = (0..width * height)
             .map(|i| {
                 fidelity
                     .tolerance
@@ -129,13 +125,17 @@ impl Budget {
 
 /// The emitted bytes and the loop's report.
 pub struct Output {
+    /// The emitted bytes.
     pub bytes: Vec<u8>,
+    /// Each object's encoding level, in the order of [`Model::objects`].
     pub levels: Vec<u8>,
+    /// What the loop found.
     pub report: Report,
 }
 
 /// Compiles `model` to the emitter's bytes, each object at the coarsest encoding whose render
 /// misses the model's by less than a segment's price, or at the level that missed least.
+#[must_use]
 pub fn compile(model: &Model, emitter: &dyn Emitter) -> Output {
     let start = crate::timing::Clock::now();
     let objects = model.objects();
@@ -171,8 +171,10 @@ pub fn compile(model: &Model, emitter: &dyn Emitter) -> Output {
     let mut best: Vec<(u8, f64)> = (0..objects.len()).map(|k| (0, miss[k])).collect();
     let mut rendered = levels.clone();
     while !trying.is_empty() {
-        trying.iter().for_each(|&k| levels[k] += 1);
-        rendered = levels.clone();
+        for &k in &trying {
+            levels[k] += 1;
+        }
+        rendered.clone_from(&levels);
         let stepped = emitter.encode(model, &levels);
         let Some(emitted) = render(&stepped) else {
             break;

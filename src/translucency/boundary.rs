@@ -2,33 +2,24 @@
 //! the region ([`open_beyond`]) and the region placed by the beneath's continuity
 //! ([`continuity`]).
 
-use crate::HashMap;
+use crate::HashSet;
 
-use super::raster::{ChebTree, Conn, DVec3, Image, SHOW_THROUGH, cheb, dilate};
-
-/// The scale of a scene against 330 px.
-fn scale(img: &Image) -> f64 {
-    super::raster::unit_of(img.width)
-}
+use super::raster::{ChebTree, Conn, DVec3, Image, SHOW_THROUGH, cheb, dilate, unit_of};
 
 /// How far beyond a region its open colours are read: 20 px at 330.
 pub fn reach(img: &Image) -> usize {
-    ((20.0 * scale(img)) as usize).max(1)
+    ((20.0 * unit_of(img.width)) as usize).max(1)
 }
 
 /// The colors seen in the open beyond `reach` of a region, distinct: what a beneath may be
-/// where it is not continuous with the pixel across the boundary (the dress's edge on the
-/// body's silhouette, skin under it and sky beside it).
+/// where it is not continuous with the pixel across the boundary (a layer's edge on a
+/// silhouette, one thing under it and another beside it).
 pub fn open_beyond(img: &Image, region: &[bool], reach: usize) -> Vec<DVec3> {
     let near = dilate(region, img.width, img.height, Conn::Four, reach);
-    let mut seen: HashMap<[u64; 3], ()> = HashMap::default();
+    let mut seen = HashSet::<[u64; 3]>::default();
     let mut out = Vec::new();
     for (p, n) in img.px.iter().zip(&near) {
-        if !n
-            && seen
-                .insert([p.x.to_bits(), p.y.to_bits(), p.z.to_bits()], ())
-                .is_none()
-        {
+        if !n && seen.insert([p.x.to_bits(), p.y.to_bits(), p.z.to_bits()]) {
             out.push(*p);
         }
     }
@@ -46,6 +37,7 @@ pub fn continuity(
     veil: &[bool],
     open: &[DVec3],
 ) -> Vec<bool> {
+    const DIRS: [(isize, isize); 4] = [(1, 0), (-1, 0), (0, 1), (0, -1)];
     let (w, h) = (img.width as isize, img.height as isize);
     let m = (1.0 - k) * c;
     let tol = SHOW_THROUGH / k;
@@ -73,7 +65,6 @@ pub fn continuity(
     let at = |x: isize, y: isize| -> Option<usize> {
         (x >= 0 && y >= 0 && x < w && y < h).then(|| (y * w + x) as usize)
     };
-    const DIRS: [(isize, isize); 4] = [(1, 0), (-1, 0), (0, 1), (0, -1)];
     let mut cur = region.to_vec();
     let mut moved = vec![false; img.len()];
     loop {

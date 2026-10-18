@@ -5,7 +5,7 @@
 use glam::{Vec2, Vec3};
 
 use super::find::{Outline, align};
-use super::{ALIGN, Repeat, Structure, Transform, transformed};
+use super::{ALIGN, Repeat, Structure, Transform, reach, transformed};
 use crate::refine::MARGIN;
 use crate::scene::Layer;
 use crate::translucency::raster::NOISE;
@@ -92,13 +92,7 @@ pub(super) fn stand_in(prototype: &Shape, member: &Shape, t: Transform) -> Shape
 /// `t` moved where the stand-in for the shape at `site` changes the scene least, by halving
 /// steps of a pixel's half in each of its parameters (the rotation if it has one).
 fn refit(site: &Site, prototype: &Shape, member: &Shape, t: Transform) -> (Transform, f64) {
-    let reach = prototype
-        .loops
-        .iter()
-        .flatten()
-        .flatten()
-        .map(|p| p.length())
-        .fold(1., f32::max);
+    let reach = reach(prototype);
     let error = |t: Transform| site.change(&stand_in(prototype, member, t));
     let (mut t, mut best) = (t, error(t));
     // an exact repeat changes nothing
@@ -107,36 +101,17 @@ fn refit(site: &Site, prototype: &Shape, member: &Shape, t: Transform) -> (Trans
     }
     let mut step = ALIGN / 2.;
     for _ in 0..REFIT_ROUNDS {
+        let along = |offset: Vec2| Transform { offset, ..t };
+        let turn = |angle: f32| Transform { angle, ..t };
         let mut moves = vec![
-            Transform {
-                offset: t.offset + Vec2::X * step,
-                ..t
-            },
-            Transform {
-                offset: t.offset - Vec2::X * step,
-                ..t
-            },
-            Transform {
-                offset: t.offset + Vec2::Y * step,
-                ..t
-            },
-            Transform {
-                offset: t.offset - Vec2::Y * step,
-                ..t
-            },
+            along(t.offset + Vec2::X * step),
+            along(t.offset - Vec2::X * step),
+            along(t.offset + Vec2::Y * step),
+            along(t.offset - Vec2::Y * step),
         ];
         if !t.is_translation() {
             let da = step / reach;
-            moves.extend([
-                Transform {
-                    angle: t.angle + da,
-                    ..t
-                },
-                Transform {
-                    angle: t.angle - da,
-                    ..t
-                },
-            ]);
+            moves.extend([turn(t.angle + da), turn(t.angle - da)]);
         }
         for m in moves {
             let e = error(m);
@@ -188,11 +163,11 @@ pub(super) fn aligned(scene: &Scene, cluster: &[Outline]) -> Option<Repeat> {
 
 /// The cluster's shapes snapped to the member most others align to, those whose snap pays; a
 /// repeat of the prototype if two or more remain.
-pub(super) fn snap(ctx: &Context, scene: &mut Scene, cluster: Vec<Outline>) -> Option<Repeat> {
-    let lead = medoid(&cluster)?;
+pub(super) fn snap(ctx: &Context, scene: &mut Scene, cluster: &[Outline]) -> Option<Repeat> {
+    let lead = medoid(cluster)?;
     let prototype = transformed(scene.get(lead.id), Transform::translation(-lead.centroid));
     let mut members = Vec::new();
-    for outline in &cluster {
+    for outline in cluster {
         if outline.id == lead.id {
             members.push((outline.id, Transform::translation(lead.centroid)));
             continue;

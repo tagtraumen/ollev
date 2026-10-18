@@ -4,7 +4,7 @@
 #[derive(Clone, Copy, Debug)]
 pub struct Options {
     /// The families are proposed, gated and decided whole after the opaque trace of the first
-    /// level (see [`super::accepted_families`], [`super::decide_whole`]); the levels beneath run without.
+    /// level (see [`super::accepted_families`], [`super::decide_whole`]), not beneath.
     pub acceptance: bool,
     /// The detail slider: whether a shape, a stroke or a mark is drawn is decided by the
     /// residual beyond this multiple of the picture's uncertainty that it removes (see

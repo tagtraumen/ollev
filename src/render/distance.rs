@@ -1,7 +1,6 @@
-//! The curve of a path gradient: a chain of cubic Béziers, closed or open, and the signed
-//! distance from it by a polyline the chain is flattened to once. A closed chain is negative
-//! inside (even-odd). An open one goes on along its end tangents, and is negative on the side
-//! closed by its rays to a box and the box walked clockwise from its end back to its start.
+//! The curve of a path gradient: a chain of cubic Béziers and the signed distance from its
+//! flattened polyline, negative inside a closed chain (even-odd), and for an open one on the
+//! side its end rays and a box walked clockwise close.
 
 use glam::Vec2;
 
@@ -48,34 +47,26 @@ impl Contour {
         let (start, end) = (line[0], line[line.len() - 1]);
         let tangent = |a: Vec2, b: Vec2| (b - a).normalize_or(Vec2::X);
         let (first, last) = (&cubics[0], &cubics[cubics.len() - 1]);
-        let t0 = if first[1] != first[0] {
-            tangent(first[1], first[0])
-        } else {
+        let t0 = if first[1] == first[0] {
             tangent(first[3], first[0])
-        };
-        let t1 = if last[2] != last[3] {
-            tangent(last[2], last[3])
         } else {
+            tangent(first[1], first[0])
+        };
+        let t1 = if last[2] == last[3] {
             tangent(last[0], last[3])
+        } else {
+            tangent(last[2], last[3])
         };
         let (lo, hi) = (min.min(start.min(end)) - 1., max.max(start.max(end)) + 1.);
         // Where a ray from inside the box leaves it, and the place of that along the boundary,
         // clockwise from the top left corner
+        let reach = |p: f32, d: f32, lo: f32, hi: f32| match d {
+            d if d > 0. => (hi - p) / d,
+            d if d < 0. => (lo - p) / d,
+            _ => f32::INFINITY,
+        };
         let exit = |p: Vec2, d: Vec2| {
-            let tx = if d.x > 0. {
-                (hi.x - p.x) / d.x
-            } else if d.x < 0. {
-                (lo.x - p.x) / d.x
-            } else {
-                f32::INFINITY
-            };
-            let ty = if d.y > 0. {
-                (hi.y - p.y) / d.y
-            } else if d.y < 0. {
-                (lo.y - p.y) / d.y
-            } else {
-                f32::INFINITY
-            };
+            let (tx, ty) = (reach(p.x, d.x, lo.x, hi.x), reach(p.y, d.y, lo.y, hi.y));
             (p + d * tx.min(ty)).clamp(lo, hi)
         };
         let (w, h) = (hi.x - lo.x, hi.y - lo.y);
@@ -130,16 +121,14 @@ impl Contour {
         } else {
             cubics[cubics.len() - 1][3]
         };
-        let length: f32 = cubics
-            .iter()
-            .map(|c| c[0].distance(c[1]) + c[1].distance(c[2]) + c[2].distance(c[3]))
-            .sum();
+        let hull = |c: &[Vec2; 4]| c[0].distance(c[1]) + c[1].distance(c[2]) + c[2].distance(c[3]);
+        let length: f32 = cubics.iter().map(hull).sum();
         // As many points per cubic as its share of the length at the chord, within the room
         let room = (MAX_POINTS - 1) as f32;
         let mut polyline = [Vec2::ZERO; MAX_POINTS];
         let mut n = 0;
         for c in cubics {
-            let l = c[0].distance(c[1]) + c[1].distance(c[2]) + c[2].distance(c[3]);
+            let l = hull(c);
             // Enough steps for the sagitta, within its share of the room
             let bend = (c[0] - 2. * c[1] + c[2])
                 .length()
@@ -229,10 +218,7 @@ impl Contour {
 
     /// Moves the chain by `offset`.
     pub fn translate(&mut self, offset: Vec2) {
-        let (c, p) = (3 * self.cubics as usize + 1, self.points as usize);
-        self.control[..c].iter_mut().for_each(|q| *q += offset);
-        self.polyline[..p].iter_mut().for_each(|q| *q += offset);
-        self.closure.iter_mut().for_each(|q| *q += offset);
+        self.map(|q| q + offset);
     }
 
     /// Maps every point of the chain by `f`, a similarity, which scales distances by its

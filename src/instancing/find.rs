@@ -80,12 +80,11 @@ impl Outline {
         if self.samples.len() != o.samples.len() {
             return false;
         }
-        let ratio = |p: f32, s: f32| p / s;
-        let r = ratio(self.perimeter, self.size);
+        let r = self.perimeter / self.size;
         let slack = r
             * (std::f32::consts::TAU * ALIGN / self.perimeter
                 + self.perimeter * ALIGN / (2. * self.size * self.size));
-        (ratio(o.perimeter, o.size) - r).abs() <= slack
+        (o.perimeter / o.size - r).abs() <= slack
     }
 }
 
@@ -249,13 +248,12 @@ pub(super) fn clusters(scene: &Scene, taken: &crate::HashSet<usize>) -> Vec<Vec<
                 _ => {}
             }
         }
-        match moved.or(turned) {
-            Some(k) => groups[k].push(outline),
-            None => {
-                by_cell.entry(c).or_default().push(groups.len());
-                leaders.push(shape);
-                groups.push(vec![outline]);
-            }
+        if let Some(k) = moved.or(turned) {
+            groups[k].push(outline);
+        } else {
+            by_cell.entry(c).or_default().push(groups.len());
+            leaders.push(shape);
+            groups.push(vec![outline]);
         }
     }
     groups.retain(|g| g.len() >= 2);
@@ -300,7 +298,7 @@ fn procrustes(p: &[Vec2], q: &[Vec2]) -> (f32, f32, Vec2) {
     (angle, scale, offset)
 }
 
-fn signed_area(points: &[Vec2]) -> f32 {
+pub(super) fn signed_area(points: &[Vec2]) -> f32 {
     let n = points.len();
     (0..n)
         .map(|i| points[i].perp_dot(points[(i + 1) % n]))
@@ -406,10 +404,7 @@ mod tests {
         let corners = [(-1., -1.), (1., -1.), (1., 1.), (-1., 1.)]
             .map(|(x, y)| c + Vec2::from_angle(angle).rotate(Vec2::new(x, y) * h));
         let l = (0..4)
-            .map(|k| {
-                let (a, b) = (corners[k], corners[(k + 1) % 4]);
-                [a, a.lerp(b, 1. / 3.), a.lerp(b, 2. / 3.), b]
-            })
+            .map(|k| crate::stroke::line(corners[k], corners[(k + 1) % 4]))
             .collect();
         Shape::new(vec![l], glam::Vec3::ONE)
     }

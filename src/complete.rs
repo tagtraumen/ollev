@@ -32,17 +32,9 @@ pub fn complete(
     shape: &mut Shape,
     what: Completion,
 ) -> f32 {
-    let origin = place.window.origin();
-    let free = place.free(ctx);
     let window = place.window;
-    let is_free = |p: Vec2| {
-        let (x, y) = (p.x.floor() - window.x as f32, p.y.floor() - window.y as f32);
-        x >= 0.
-            && y >= 0.
-            && (x as usize) < window.width
-            && (y as usize) < window.height
-            && free[y as usize * window.width + x as usize]
-    };
+    let origin = window.origin();
+    let is_free = place.free_at(ctx);
     let total = |error: f32, shape: &Shape| error as f64 + shape.cost_segments() * ctx.segment_cost;
 
     let mut error = cost.value(&shape.path(origin));
@@ -51,17 +43,7 @@ pub fn complete(
     // A bridge across every hidden stretch, whether or not it saves segments: a hidden stretch
     // left as traced follows an edge of whatever hid it and drifts once free
     if loops != shape.loops {
-        let mut bridged = Shape {
-            clip: shape.clip,
-            id: shape.id,
-            smooth: shape.smooth,
-            antialiased: shape.antialiased,
-            node: shape.node,
-            layer: shape.layer,
-            blur: shape.blur,
-            ..Shape::new(loops, shape.fill)
-        }
-        .with_corners(shape.corners.clone());
+        let mut bridged = shape.successor(loops).with_corners(shape.corners.clone());
         let bridged_error = fit(cost, &mut bridged, origin, ctx.pull);
         proposals.push((bridged_error, bridged));
     }
@@ -104,7 +86,6 @@ pub fn complete(
         |s: &Shape| s.min.x >= -fw && s.min.y >= -fh && s.max.x <= 2. * fw && s.max.y <= 2. * fh;
     // A proposal stays in the window (but where that meets the frame), since nothing judges it
     // past it: a primitive fitted to the stretch that shows would draw there unmeasured
-    // (fieldwagon's dome, a circle fitted above the band reaching through the bed to the ground)
     let (x0, y0) = (window.x as f32, window.y as f32);
     let (x1, y1) = (x0 + window.width as f32, y0 + window.height as f32);
     let judged = |s: &Shape| {
@@ -326,15 +307,8 @@ fn with_primitive(shape: &Shape, outer: usize, primitive: &Primitive) -> Shape {
     let mut loops = shape.loops.clone();
     loops[outer] = primitive.cubics();
     Shape {
-        clip: shape.clip,
-        id: shape.id,
         primitive: Some((outer, *primitive)),
-        smooth: shape.smooth,
-        antialiased: shape.antialiased,
-        node: shape.node,
-        layer: shape.layer,
-        blur: shape.blur,
-        ..Shape::new(loops, shape.fill)
+        ..shape.successor(loops)
     }
 }
 

@@ -49,11 +49,11 @@ pub(super) fn stroke_of(shape: &Shape) -> Option<Stroke> {
         return None;
     }
     Some(Stroke {
-        centerline: vec![[a, a.lerp(b, 1. / 3.), a.lerp(b, 2. / 3.), b]],
+        centerline: vec![line(a, b)],
         closed: false,
         width: 2. * short,
         cap,
-        join: crate::stroke::Join::Miter,
+        join: Join::Miter,
         corners: vec![false],
         dashes: None,
     })
@@ -70,7 +70,7 @@ pub(super) fn dashed_stroke(members: &[(&Stroke, bool)], closed: bool) -> Option
         let from = samples.len();
         let mut own: Vec<Vec2> = Vec::new();
         for c in &stroke.centerline {
-            let length = (c[1] - c[0]).length() + (c[2] - c[1]).length() + (c[3] - c[2]).length();
+            let length = hull_length(c);
             let steps = (length.ceil() as usize).max(1);
             for i in 0..steps {
                 own.push(eval(c, i as f32 / steps as f32));
@@ -153,7 +153,7 @@ pub(super) fn fit_centerline(
         samples.to_vec()
     };
     let centerline = refit(
-        crate::tracer::fit::fit_at_corners(&chain, &[], closed, &params),
+        &crate::tracer::fit::fit_at_corners(&chain, &[], closed, &params),
         &chain,
     );
     (!centerline.is_empty()).then_some(centerline)
@@ -165,7 +165,7 @@ pub(super) fn arc_table(stroke: &Stroke) -> Vec<(f32, Vec2)> {
     let mut along: Vec<(f32, Vec2)> = Vec::new();
     let mut s = 0f32;
     for c in &stroke.centerline {
-        let length = (c[1] - c[0]).length() + (c[2] - c[1]).length() + (c[3] - c[2]).length();
+        let length = hull_length(c);
         let steps = (length.ceil() as usize).max(1);
         let mut from = c[0];
         along.push((s, from));
@@ -199,9 +199,7 @@ pub(super) fn extend_to_spans(stroke: &mut Stroke, spans: &mut [(f32, f32)], tot
         (spans[spans.len() - 1].1 - total).max(0.),
     );
     if lead > 0. || trail > 0. {
-        let m = stroke.centerline.len();
-        stroke.centerline[0] = extend_cubic(&stroke.centerline[0], lead, 0.);
-        stroke.centerline[m - 1] = extend_cubic(&stroke.centerline[m - 1], 0., trail);
+        stroke.extend_ends(lead, trail);
         for span in spans.iter_mut() {
             span.0 += lead;
             span.1 += lead;
@@ -239,12 +237,10 @@ pub(super) fn whole_end_dashes(stroke: &mut Stroke) {
     let lead = within(dashes.offset).map_or(0., |(into, len)| short(len - into, len));
     let trail = within(dashes.offset + total).map_or(0., |(into, len)| short(into, len));
     if lead > 0. || trail > 0. {
-        let m = stroke.centerline.len();
-        stroke.centerline[0] = extend_cubic(&stroke.centerline[0], lead, 0.);
-        stroke.centerline[m - 1] = extend_cubic(&stroke.centerline[m - 1], 0., trail);
+        stroke.extend_ends(lead, trail);
         stroke.dashes = Some(Dashes {
             offset: (dashes.offset - lead).rem_euclid(period),
-            ..dashes.clone()
+            ..dashes
         });
     }
     if stroke.cap == Cap::Round {
@@ -253,9 +249,8 @@ pub(super) fn whole_end_dashes(stroke: &mut Stroke) {
 }
 
 /// Runs a round-capped stroke on past a dot (a dash under [`DOT_LENGTH`]) lying within an
-/// anti-aliasing step of an end, so no renderer's arc length or rounding puts it past the end
-/// (hullpatch's rows, lacebobbins' zigzag); a step at most: stretched farther, the end cubics
-/// move the dots (sweep-04), and a cubic added would price theater's two-dot chain out.
+/// anti-aliasing step of an end, so no renderer's arc length or rounding puts it past the end;
+/// a step at most, since stretched farther the end cubics move the dots.
 fn clear_end_dots(stroke: &mut Stroke) {
     let Some(dashes) = stroke.dashes.clone() else {
         return;
@@ -281,9 +276,7 @@ fn clear_end_dots(stroke: &mut Stroke) {
     let lead = dots.first().map_or(0., |&s| (margin - s).max(0.));
     let trail = dots.last().map_or(0., |&s| (margin - (total - s)).max(0.));
     if lead > 0. || trail > 0. {
-        let m = stroke.centerline.len();
-        stroke.centerline[0] = extend_cubic(&stroke.centerline[0], lead, 0.);
-        stroke.centerline[m - 1] = extend_cubic(&stroke.centerline[m - 1], 0., trail);
+        stroke.extend_ends(lead, trail);
         stroke.dashes = Some(Dashes {
             offset: (dashes.offset - lead).rem_euclid(period),
             ..dashes
@@ -300,15 +293,7 @@ pub(super) fn pattern_of_spans(spans: &mut [(f32, f32)], closed: bool, total: f3
             span.1 += total;
         }
     }
-    let lengths: Vec<f32> = spans.iter().map(|(a, b)| b - a).collect();
-    let gaps: Vec<f32> = (0..spans.len())
-        .filter(|&k| closed || k + 1 < spans.len())
-        .map(|k| {
-            let next = spans[(k + 1) % spans.len()].0;
-            let gap = next - spans[k].1;
-            if gap < 0. { gap + total } else { gap }
-        })
-        .collect();
+    let (lengths, gaps) = lengths_and_gaps(spans, closed, total);
     pattern(&lengths, &gaps, spans[0].0)
 }
 
@@ -320,11 +305,10 @@ pub(super) fn tune_pattern(
     stroke: &mut Stroke,
     origin: Vec2,
 ) -> f32 {
-    let Some(dashes) = stroke.dashes.clone() else {
-        return cost.value(&stroke.path(origin));
-    };
     let mut best = cost.value(&stroke.path(origin));
-    let mut current = dashes;
+    let Some(mut current) = stroke.dashes.clone() else {
+        return best;
+    };
     let n = current.array.len();
     let ends = stroke.arc_lengths();
     let period: f32 = current.array.iter().sum();
@@ -450,19 +434,15 @@ pub(super) fn pattern(lengths: &[f32], gaps: &[f32], start: f32) -> Dashes {
     };
     let array = (1..=MAX_PERIOD.min(n / 2).max(1))
         .find(|&p| fits(p))
-        .map(sequence)
-        .unwrap_or_else(|| {
-            let mut out = Vec::new();
-            for (k, &length) in lengths.iter().enumerate() {
-                out.push(length);
-                out.push(
-                    gaps.get(k)
-                        .copied()
-                        .unwrap_or(gaps.last().copied().unwrap_or(0.)),
-                );
-            }
-            out
-        });
+        .map_or_else(
+            || {
+                let last = gaps.last().copied().unwrap_or(0.);
+                (lengths.iter().enumerate())
+                    .flat_map(|(k, &length)| [length, gaps.get(k).copied().unwrap_or(last)])
+                    .collect()
+            },
+            sequence,
+        );
     // The centerline starts at the first dash's start, `start` along it
     let period: f32 = array.iter().sum();
     let offset = if period > 0. {

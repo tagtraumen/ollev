@@ -8,8 +8,8 @@ use crate::tracer::fit::eval;
 
 use crate::refine::{MARGIN, Place, composite_error};
 use crate::stroke::{
-    CENTERLINE_TOLERANCE, Cap, Dashes, KINK, MAX_WIDTH, Stroke, WIDTH_QUANTUM, WIDTH_SLACK,
-    extend_cubic, fit, refit, tangent,
+    CENTERLINE_TOLERANCE, Cap, Dashes, Join, KINK, MAX_WIDTH, Stroke, WIDTH_QUANTUM, WIDTH_SLACK,
+    fit, hull_length, line, refit, tangent,
 };
 use crate::{Context, Scene, Shape, Window};
 
@@ -34,17 +34,40 @@ const MIN_DOTS: usize = 3;
 const DOT_LENGTH: f32 = 0.5;
 
 /// How far a dotted stroke's centerline runs on past its end dots as fitted, so a dot is no
-/// dash on an end, which the pattern does not draw (lacebobbins' last): where the half-pixel
-/// dashes dots were drawn with reached; stretched farther, the end cubics move the dots.
+/// dash on an end, which the pattern may not draw: where the half-pixel dashes dots were drawn
+/// with reached; stretched farther, the end cubics move the dots.
 const DOT_MARGIN: f32 = DOT_LENGTH / 2.;
+/// How far apart two leaves' colours may lie and be one paint: the contrast a pattern's dashes
+/// must have against their gaps ([`profile`]'s), in units of the noise.
+const ALIKE_COLOR: f32 = 3. * crate::translucency::NOISE;
 
 /// The shortest dash drawn under `cap`: none under a round cap, which draws it as a dot.
 fn shortest(cap: Cap) -> f32 {
     if cap == Cap::Round { 0. } else { DOT_LENGTH }
 }
-/// How far apart two leaves' colours may lie and be one paint: the contrast a pattern's dashes
-/// must have against their gaps ([`profile`]'s), in units of the noise.
-const ALIKE_COLOR: f32 = 3. * crate::translucency::NOISE;
+
+/// The median of each channel of `colors`.
+fn median_color(colors: &mut [glam::Vec3]) -> glam::Vec3 {
+    let mut channel = |k: usize| {
+        colors.sort_by(|a, b| a[k].total_cmp(&b[k]));
+        colors[colors.len() / 2][k]
+    };
+    glam::Vec3::new(channel(0), channel(1), channel(2))
+}
+
+/// The dash lengths at `spans` of arc length along a centerline of length `total`, and the gaps
+/// after each (around a closed one, after the last too).
+fn lengths_and_gaps(spans: &[(f32, f32)], closed: bool, total: f32) -> (Vec<f32>, Vec<f32>) {
+    let lengths = spans.iter().map(|(a, b)| b - a).collect();
+    let gaps = (0..spans.len())
+        .filter(|&k| closed || k + 1 < spans.len())
+        .map(|k| {
+            let gap = spans[(k + 1) % spans.len()].0 - spans[k].1;
+            if gap < 0. { gap + total } else { gap }
+        })
+        .collect();
+    (lengths, gaps)
+}
 
 /// An end of a dash: which dash, and which of its two ends.
 type End = (usize, usize);
@@ -119,21 +142,18 @@ pub fn group(ctx: &Context, scene: &mut Scene) {
     // A short stroke may be a dash or a dot: the chains of dashes take theirs first, the
     // dots chain among the rest, so no two chains share a member, and all are planned on
     // the scene as it is
-    let mut planned: Vec<(Vec<usize>, Stroke, &str)> = Vec::new();
-    if dashes.len() >= MIN_DASHES {
-        for (positions, dashed) in dash_chains(&dashes) {
-            planned.push((positions, dashed, "dashes"));
-        }
-    }
+    let mut planned: Vec<(Vec<usize>, Stroke, &str)> = (dash_chains(&dashes).into_iter())
+        .map(|(positions, dashed)| (positions, dashed, "dashes"))
+        .collect();
     let mut taken = vec![false; scene.shapes.len()];
-    for (positions, _, _) in &planned {
-        for &p in positions {
-            taken[p] = true;
-        }
+    for &p in planned.iter().flat_map(|(positions, _, _)| positions) {
+        taken[p] = true;
     }
-    for (positions, dotted) in dot_chains(scene, &taken) {
-        planned.push((positions, dotted, "dots"));
-    }
+    let dots = dot_chains(scene, &taken);
+    planned.extend(
+        dots.into_iter()
+            .map(|(positions, dotted)| (positions, dotted, "dots")),
+    );
     let mut replacements: Vec<(Vec<usize>, usize, Shape)> = Vec::new();
     for (positions, dashed, kind) in planned {
         if let Some((slot, shape)) = try_chain(ctx, scene, &positions, dashed, kind) {
@@ -195,8 +215,10 @@ fn onward(c: &[Vec2; 4], by: f32) -> Vec2 {
 
 /// The longest stretch along a stroke of length `total` where the pattern's dashes (`drawn`,
 /// arc length spans) and those seen (`members`, the chain's or the image's) disagree, since a
-/// dashed stroke must draw each dash and gap where it is (the ticked line of `b006-subwaymap-24`).
+/// dashed stroke must draw each dash and gap where it is.
 fn off_phase(drawn: &[(f32, f32)], members: &[(f32, f32)], total: f32, closed: bool) -> f32 {
+    // Sampled every half pixel along the stroke, the longest run of disagreement
+    const STEP: f32 = 0.5;
     if total <= 0. {
         return 0.;
     }
@@ -207,16 +229,14 @@ fn off_phase(drawn: &[(f32, f32)], members: &[(f32, f32)], total: f32, closed: b
             (a <= s && s <= b) || (closed && b > total && s + total <= b)
         })
     };
-    // Sampled every half pixel along the stroke, the longest run of disagreement
-    const STEP: f32 = 0.5;
     let (mut run, mut longest) = (0f32, 0f32);
     let mut s = 0.;
     while s <= total {
-        if on(s, drawn) != on(s, members) {
+        if on(s, drawn) == on(s, members) {
+            run = 0.;
+        } else {
             run += STEP;
             longest = longest.max(run);
-        } else {
-            run = 0.;
         }
         s += STEP;
     }
@@ -241,8 +261,8 @@ fn overlap(a: &Shape, b: &Shape) -> bool {
 }
 
 /// The position (in the scene as planned on) a chain's stroke goes in below: where its highest
-/// member was, or lower, so every shape a member overlaps keeps its side of it (as the crossing
-/// dashed lines of `b003-crossing-01`). None where no place keeps every side.
+/// member was, or lower, so every shape a member overlaps keeps its side of it (as where two
+/// dashed lines cross). None where no place keeps every side.
 fn chain_slot(scene: &Scene, positions: &[usize]) -> Option<usize> {
     let highest = *positions.iter().max()?;
     // The stroke goes in above `lo` (the highest shape below a member it overlaps) and at
@@ -303,14 +323,7 @@ fn fitted(
         })
         .collect();
     let total = ends[ends.len() - 1];
-    let lengths: Vec<f32> = spans.iter().map(|(a, b)| b - a).collect();
-    let gaps: Vec<f32> = (0..spans.len())
-        .filter(|&k| dashed.closed || k + 1 < spans.len())
-        .map(|k| {
-            let gap = spans[(k + 1) % spans.len()].0 - spans[k].1;
-            if gap < 0. { gap + total } else { gap }
-        })
-        .collect();
+    let (lengths, gaps) = lengths_and_gaps(&spans, dashed.closed, total);
     // Two readings of the pattern, each settled on the error: the members' (their medians
     // where alike, see [`pattern`]), and the period and phase of the image's own profile
     // along the fitted centerline, which stay in step over a long chain
@@ -343,8 +356,8 @@ fn fitted(
         let e = tune_pattern(&cost, &mut trial, origin) as f64
             + trial.segments() as f64 * ctx.segment_cost;
         // Each dash and gap drawn where seen, compared by their paint with the caps' reach, so a
-        // dot (a dash of no length) lies where its member does (dice's pips); then the ends made
-        // whole, which moves the arc lengths
+        // dot (a dash of no length) lies where its member does; then the ends made whole, which
+        // moves the arc lengths
         let ends = trial.arc_lengths();
         let painted = |spans: &[(f32, f32)]| -> Vec<(f32, f32)> {
             spans.iter().map(|&(a, b)| (a - reach, b + reach)).collect()
@@ -483,28 +496,13 @@ fn try_chain(
     kind: &str,
 ) -> Option<(usize, Shape)> {
     let slot = chain_slot(scene, positions)?;
-    let shape = {
-        // The members' median color
-        let mut channels: Vec<Vec<f32>> = vec![Vec::new(); 3];
-        for &p in positions {
-            let c = scene.shapes[p].fill.color;
-            for (k, v) in [c.x, c.y, c.z].into_iter().enumerate() {
-                channels[k].push(v);
-            }
-        }
-        let median = |v: &mut Vec<f32>| {
-            v.sort_by(f32::total_cmp);
-            v[v.len() / 2]
-        };
-        let color = glam::Vec3::new(
-            median(&mut channels[0]),
-            median(&mut channels[1]),
-            median(&mut channels[2]),
-        );
-        let mut shape = dashed.shape(crate::Fill::solid(color));
-        shape.smooth = true;
-        shape
-    };
+    // in the members' median color
+    let mut colors: Vec<glam::Vec3> = positions
+        .iter()
+        .map(|&p| scene.shapes[p].fill.color)
+        .collect();
+    let mut shape = dashed.shape(crate::Fill::solid(median_color(&mut colors)));
+    shape.smooth = true;
     let window = Window::around(shape.min, shape.max, MARGIN, ctx.width, ctx.height);
     if window.is_empty() {
         return None;

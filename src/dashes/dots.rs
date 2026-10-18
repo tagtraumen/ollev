@@ -19,6 +19,8 @@ pub(super) struct Dot {
 /// whose two diameters are alike by the width's slack; longer, it is a dash.
 pub(super) fn dot_of(shape: &Shape) -> Option<(Vec2, f32, f32)> {
     use crate::tracer::primitives::Primitive;
+    // An outline is sampled as the primitive fit samples outlines
+    const SAMPLES: usize = 8;
     if shape.fill.gradient.is_some() {
         return None;
     }
@@ -63,24 +65,21 @@ pub(super) fn dot_of(shape: &Shape) -> Option<(Vec2, f32, f32)> {
         let (width, extent) = (2. * a.min(b), 2. * a.max(b));
         alike(width, extent).then_some((center, width, extent))
     };
-    let (center, width, extent) = match shape.primitive {
-        Some((_, primitive)) => disc(primitive)?,
-        None => {
-            if shape.loops.len() != 1 {
-                return None;
-            }
-            // Sampled as the primitive fit samples outlines
-            const SAMPLES: usize = 8;
-            let all: Vec<Vec2> = shape.loops[0]
-                .iter()
-                .flat_map(|c| (0..SAMPLES).map(move |i| eval(c, i as f32 / SAMPLES as f32)))
-                .collect();
-            disc(crate::tracer::primitives::fit_primitive(
-                &all,
-                &all,
-                crate::complete::PRIMITIVE_TOLERANCE,
-            )?)?
+    let (center, width, extent) = if let Some((_, primitive)) = shape.primitive {
+        disc(primitive)?
+    } else {
+        if shape.loops.len() != 1 {
+            return None;
         }
+        let all: Vec<Vec2> = shape.loops[0]
+            .iter()
+            .flat_map(|c| (0..SAMPLES).map(move |i| eval(c, i as f32 / SAMPLES as f32)))
+            .collect();
+        disc(crate::tracer::primitives::fit_primitive(
+            &all,
+            &all,
+            crate::complete::PRIMITIVE_TOLERANCE,
+        )?)?
     };
     (width > 0. && extent <= MAX_WIDTH).then_some((center, width, extent))
 }
@@ -298,8 +297,7 @@ pub(super) fn dotted_stroke(dots: &[&Dot], closed: bool) -> Option<Stroke> {
     // Held tighter than the skeleton's pixel: a dot's center is fitted to its whole outline,
     // and a curve a pixel off it leaves a crescent of the dot's width on either side
     let centerline = fit_centerline(&samples, closed, WIDTH_QUANTUM / 4.)?;
-    let median = |v: Vec<f32>| {
-        let mut v = v;
+    let median = |mut v: Vec<f32>| {
         v.sort_by(f32::total_cmp);
         v[v.len() / 2]
     };
@@ -311,7 +309,7 @@ pub(super) fn dotted_stroke(dots: &[&Dot], closed: bool) -> Option<Stroke> {
         closed,
         width,
         cap: Cap::Round,
-        join: crate::stroke::Join::Round,
+        join: Join::Round,
         corners: vec![false; m],
         dashes: None,
     };

@@ -45,17 +45,33 @@ impl Win {
 /// centre's distance, plus a half, clipped), each segment visiting only its own box.
 pub(super) fn coverage(paths: &[Vec<DVec2>], width: f64, win: Win) -> Vec<f64> {
     let mut d = vec![f64::INFINITY; win.len()];
-    let r = width / 2.0 + 1.0;
-    let ww = win.w();
+    near_segments(paths, width / 2.0 + 1.0, win, true, |k, c, q, _| {
+        d[k] = d[k].min(c.distance(q));
+    });
+    d.into_iter()
+        .map(|d| (width / 2.0 - d + 0.5).clamp(0.0, 1.0))
+        .collect()
+}
+
+/// Visits, segment by segment of the polylines (a lone point as a segment of no length where
+/// `points` is set), the window pixels of the segment's box grown by `reach`: the pixel's index
+/// in the window, its centre, the segment's point nearest it and the segment's direction.
+fn near_segments(
+    paths: &[Vec<DVec2>],
+    reach: f64,
+    win: Win,
+    points: bool,
+    mut visit: impl FnMut(usize, DVec2, DVec2, DVec2),
+) {
     for p in paths {
-        let segs: Vec<(DVec2, DVec2)> = if p.len() == 1 {
+        let segs: Vec<(DVec2, DVec2)> = if points && p.len() == 1 {
             vec![(p[0], p[0])]
         } else {
             p.windows(2).map(|s| (s[0], s[1])).collect()
         };
         for (a, b) in segs {
-            let lo = a.min(b) - DVec2::splat(r);
-            let hi = a.max(b) + DVec2::splat(r);
+            let lo = a.min(b) - DVec2::splat(reach);
+            let hi = a.max(b) + DVec2::splat(reach);
             let xa = (lo.x.floor().max(win.x0 as f64) as usize).min(win.x1);
             let xb = (hi.x.ceil().max(0.0) as usize).clamp(win.x0, win.x1);
             let ya = (lo.y.floor().max(win.y0 as f64) as usize).min(win.y1);
@@ -63,17 +79,13 @@ pub(super) fn coverage(paths: &[Vec<DVec2>], width: f64, win: Win) -> Vec<f64> {
             let ab = b - a;
             for y in ya..yb {
                 for x in xa..xb {
-                    let q = DVec2::new(x as f64 + 0.5, y as f64 + 0.5);
-                    let t = ((q - a).dot(ab) / ab.length_squared().max(1e-12)).clamp(0.0, 1.0);
-                    let k = (y - win.y0) * ww + x - win.x0;
-                    d[k] = d[k].min((q - (a + t * ab)).length());
+                    let c = DVec2::new(x as f64 + 0.5, y as f64 + 0.5);
+                    let t = ((c - a).dot(ab) / ab.length_squared().max(1e-12)).clamp(0.0, 1.0);
+                    visit((y - win.y0) * win.w() + x - win.x0, c, a + t * ab, ab);
                 }
             }
         }
     }
-    d.into_iter()
-        .map(|d| (width / 2.0 - d + 0.5).clamp(0.0, 1.0))
-        .collect()
 }
 
 /// The colour and opacity of a stroke over the composite from its coverage, as the
@@ -240,14 +252,14 @@ pub(super) fn normals(p: &[DVec2]) -> Vec<DVec2> {
 
 /// The widest line the detector finds: twice its far radius ([`colour_lines_at`]) less the
 /// anti-aliasing reach, at least a pixel. A wider stroke is a tone correction, not a line.
-pub fn widest_line(u: f64) -> f64 {
+pub(super) fn widest_line(u: f64) -> f64 {
     (2.0 * (2.0 * u - REACH as f64)).max(1.0)
 }
 
-/// The width of the target's line along `paths`, read in colour (so a pale hem counts): per
+/// The width of the target's line along `paths`, read in colour (so a pale line counts): per
 /// point, the profile's distance from the mix of its two ends, its central peak's width at
 /// half height; the median over points peaking above the noise, None where none does.
-pub fn line_width(img: &Image, paths: &[Vec<DVec2>], u: f64) -> Option<f64> {
+pub(super) fn line_width(img: &Image, paths: &[Vec<DVec2>], u: f64) -> Option<f64> {
     let reach = 2.0 * u + REACH as f64;
     let steps = (2.0 * reach / 0.5).round() as usize;
     let mut found = Vec::new();
@@ -331,33 +343,14 @@ pub(super) fn target_width(
     let r = top / 2.0 + REACH as f64 + 0.5;
     // per window pixel within the widest stroke's reach, the nearest point of the centreline
     // and its segment's direction, each segment visiting only its own box (as `coverage`)
-    let reach = top / 2.0 + 1.0;
     let ww = win.w();
     let mut near = vec![(f64::INFINITY, DVec2::ZERO, DVec2::ZERO); win.len()];
-    for p in flat {
-        for s in p.windows(2) {
-            let (a, b) = (s[0], s[1]);
-            let lo = a.min(b) - DVec2::splat(reach);
-            let hi = a.max(b) + DVec2::splat(reach);
-            let xa = (lo.x.floor().max(win.x0 as f64) as usize).min(win.x1);
-            let xb = (hi.x.ceil().max(0.0) as usize).clamp(win.x0, win.x1);
-            let ya = (lo.y.floor().max(win.y0 as f64) as usize).min(win.y1);
-            let yb = (hi.y.ceil().max(0.0) as usize).clamp(win.y0, win.y1);
-            let ab = b - a;
-            for y in ya..yb {
-                for x in xa..xb {
-                    let c = DVec2::new(x as f64 + 0.5, y as f64 + 0.5);
-                    let t = ((c - a).dot(ab) / ab.length_squared().max(1e-12)).clamp(0.0, 1.0);
-                    let q = a + t * ab;
-                    let k = (y - win.y0) * ww + x - win.x0;
-                    let d = c.distance(q);
-                    if d < near[k].0 {
-                        near[k] = (d, q, ab);
-                    }
-                }
-            }
+    near_segments(flat, top / 2.0 + 1.0, win, false, |k, c, q, ab| {
+        let d = c.distance(q);
+        if d < near[k].0 {
+            near[k] = (d, q, ab);
         }
-    }
+    });
     let ground: Vec<DVec3> = (0..win.len())
         .map(|i| {
             let (d, q, ab) = near[i];
@@ -410,7 +403,7 @@ pub(super) fn target_width(
     let best = fits.iter().copied().max_by(|a, b| a.0.total_cmp(&b.0))?;
     // an artist's line is thin and opaque, and below the anti-aliasing scale a thinner, more
     // opaque line lays down the same paint: of the widths within the noise of the best, the
-    // thinnest (only the thin one matches at the truth's 4x)
+    // thinnest (only the thin one matches at a finer scale)
     let tolerance = best.2 as f64 * 3.0 * NOISE * NOISE;
     fits.iter()
         .filter(|f| f.0 >= best.0 - tolerance)
@@ -451,27 +444,25 @@ pub(super) fn fit(
         let Some((width, own)) = target_width(img, comp, field, opt.edge, &flat, &tried) else {
             continue;
         };
-        {
-            let mut f = Fit {
-                paths: paths.clone(),
-                flat: flat.clone(),
-                width,
-                colour: DVec3::ZERO,
-                opacity: 0.0,
-                plain: 0.0,
-                edge: 0.0,
-                smooth,
-                price,
-                row: None,
-                own,
-            };
-            if paint(img, comp, field, opt, &mut f).is_none() {
-                continue;
-            }
-            let net = |f: &Fit| f.plain + f.edge - f.price;
-            if best.as_ref().is_none_or(|b| net(&f) > net(b)) {
-                best = Some(f);
-            }
+        let mut f = Fit {
+            paths,
+            flat,
+            width,
+            colour: DVec3::ZERO,
+            opacity: 0.0,
+            plain: 0.0,
+            edge: 0.0,
+            smooth,
+            price,
+            row: None,
+            own,
+        };
+        if paint(img, comp, field, opt, &mut f).is_none() {
+            continue;
+        }
+        let net = |f: &Fit| f.plain + f.edge - f.price;
+        if best.as_ref().is_none_or(|b| net(&f) > net(b)) {
+            best = Some(f);
         }
     }
     best
@@ -560,7 +551,7 @@ pub(super) fn stroke_candidates(
     }
     if parts.len() > 1 {
         // the members linked across their gaps are a dash row too where they are collinear
-        // pieces (the shoe's stitches, linked by the continuation test)
+        // pieces (linked by the continuation test)
         let mut spans = Vec::new();
         let mut s0 = 0.0;
         for (k, p) in parts.iter().enumerate() {

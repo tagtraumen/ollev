@@ -12,6 +12,7 @@ pub struct Clock(
 );
 
 impl Clock {
+    /// The clock's reading now.
     pub fn now() -> Self {
         #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
         return Self(std::time::Instant::now());
@@ -28,26 +29,35 @@ impl Clock {
     }
 }
 
+/// Named stages with their total time and number of calls, in the order they first ran.
 #[derive(Default)]
 pub struct Timings {
     stages: Vec<(&'static str, Duration, usize)>,
 }
 
 impl Timings {
-    /// Runs `f` as part of `stage`, adding its time to the stage's total; asks the host
-    /// whether to go on first (see [`crate::progress`]).
+    /// Runs `f` as part of `stage`, adding its time to the stage's total; a checkpoint first
+    /// (see [`crate::progress`]).
     #[track_caller]
-    pub fn time<T>(&mut self, stage: &'static str, f: impl FnOnce() -> T) -> T {
-        crate::progress::poll();
-        if !enabled() {
-            return f();
+    pub fn time<T>(
+        &mut self,
+        stage: &'static str,
+        f: impl AsyncFnOnce() -> T,
+    ) -> impl Future<Output = T> {
+        let ask = crate::progress::poll();
+        async move {
+            ask.await;
+            if !enabled() {
+                return f().await;
+            }
+            let start = Clock::now();
+            let value = f().await;
+            self.add(stage, start.elapsed());
+            value
         }
-        let start = Clock::now();
-        let value = f();
-        self.add(stage, start.elapsed());
-        value
     }
 
+    /// Adds a call of `duration` to `stage`.
     pub fn add(&mut self, stage: &'static str, duration: Duration) {
         match self.stages.iter_mut().find(|(name, _, _)| *name == stage) {
             Some((_, total, calls)) => {

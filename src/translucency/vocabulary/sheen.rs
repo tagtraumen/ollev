@@ -1,8 +1,12 @@
 //! The white over the layer as blurred lenses clipped to it.
 
-use super::*;
+use glam::{DVec2, DVec3};
 
-// ----------------------------------------------------------------------------- sheen
+use super::paint::gain_of;
+use super::{
+    Bezier, FIT_TOL, Image, Lens, Mark, NOISE, Options, Win, fit_cubics, flatten,
+    gaussian_filter, hysteresis, line_chains, map1, normals, unit_of,
+};
 
 /// The opacity of a white over the composite that brings it to the image per pixel:
 /// o = (1 - t) d + t, t by least squares over the channels, in [0, 1], 0 off the region.
@@ -131,24 +135,36 @@ pub(super) fn white_fit(
         den += v.length_squared();
     }
     let a = (num / den.max(1e-12)).clamp(0.0, 1.0);
-    let alpha: Vec<f64> = g
-        .iter()
-        .map(|gi| if *gi > 0.01 { a * gi } else { 0.0 })
-        .collect();
+    let alpha = white_alpha(g, a);
     (a, gain_of(img, comp, win, &alpha, &|_| DVec3::ONE, tol))
+}
+
+/// The alpha of a white at opacity `a` over a lens's alpha `g`, nothing where `g` is faint.
+fn white_alpha(g: &[f64], a: f64) -> Vec<f64> {
+    g.iter()
+        .map(|gi| if *gi > 0.01 { a * gi } else { 0.0 })
+        .collect()
+}
+
+impl Lens {
+    /// The lens as the keeping rule sees it, at `gain`.
+    fn mark(&self, gain: f64) -> Mark<'_> {
+        Mark {
+            cubics: &self.outline,
+            gain,
+        }
+    }
 }
 
 /// The white as blurred white lenses along the bright ridges of the white each pixel needs
 /// over the composite, clipped to the layer (`clip`, its coverage per pixel), each with a
-/// width, blur and opacity fitted; those `keeps` keeps are drawn, largest savings first.
-#[allow(clippy::too_many_arguments)]
-pub fn lenses(
+/// width, blur and opacity fitted; those `opt` keeps are drawn, largest savings first.
+pub async fn lenses(
     img: &Image,
     comp: &mut [DVec3],
     region: &[bool],
     clip: &dyn Fn(usize) -> f64,
     above: Option<&crate::translucency::Above>,
-    keeps: &dyn Fn(&Mark) -> bool,
     opt: &Options,
 ) -> Vec<Lens> {
     let (w, h) = (img.width, img.height);
@@ -176,18 +192,8 @@ pub fn lenses(
         }
         let (win, g) = lens_alpha(&l.outline, l.sigma, clip, w, h);
         let (a, _) = white_fit(img, comp, win, &g, opt.tol());
-        let alpha: Vec<f64> = g
-            .iter()
-            .map(|gi| if *gi > 0.01 { a * gi } else { 0.0 })
-            .collect();
-        opt.edge_credit(img, comp, win, &alpha, DVec3::ONE)
+        opt.edge_credit(img, comp, win, &white_alpha(&g, a), DVec3::ONE)
     };
-    fn mark(l: &Lens, gain: f64) -> Mark<'_> {
-        Mark {
-            cubics: &l.outline,
-            gain,
-        }
-    }
     let tgt = white_target(img, comp, region);
     let (st, centre) = bright_ridges(&tgt, w, h, 2.0 * u);
     let weak: Vec<bool> = (0..st.len())
@@ -196,9 +202,7 @@ pub fn lenses(
     let lines = hysteresis(&weak, &st, 6.0 * NOISE, w, h);
     let mut cands = Vec::new();
     for pts in line_chains(&lines, w, h, 4.0) {
-        if crate::progress::poll() {
-            break;
-        }
+        crate::progress::poll().await;
         if pts.len() < 2 {
             continue;
         }
@@ -222,7 +226,7 @@ pub fn lenses(
             }
         }
         if let Some(b) = best
-            && keeps(&mark(&b, b.gain + credit(comp, &b)))
+            && opt.keeps(&b.mark(b.gain + credit(comp, &b)))
         {
             cands.push(b);
         }
@@ -230,13 +234,11 @@ pub fn lenses(
     cands.sort_by(|a, b| b.gain.total_cmp(&a.gain));
     let mut out = Vec::new();
     for mut l in cands {
-        if crate::progress::poll() {
-            break;
-        }
+        crate::progress::poll().await;
         let (win, g) = lens_alpha(&l.outline, l.sigma, clip, w, h);
         let (a, gain) = white_fit(img, comp, win, &g, opt.tol());
         let gain = alpha_gain(win, &g, a).unwrap_or(gain);
-        if a <= 0.0 || !keeps(&mark(&l, gain + credit(comp, &l))) {
+        if a <= 0.0 || !opt.keeps(&l.mark(gain + credit(comp, &l))) {
             continue;
         }
         for (i, &gi) in g.iter().enumerate() {

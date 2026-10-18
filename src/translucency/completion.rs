@@ -5,7 +5,9 @@
 use crate::HashMap;
 use std::collections::VecDeque;
 
-use super::raster::{Conn, DVec3, SHOW_THROUGH, deep_in, dilate, length_px};
+use super::raster::{
+    Conn, DVec3, SHOW_THROUGH, deep_in, dilate, label as label_of, length_px, neighbours4,
+};
 
 pub type V2 = [f64; 2];
 /// A crack between two pieces: its midpoint and its two pixels (the lower label's first).
@@ -16,23 +18,33 @@ type RawEnd = ((u32, u32), V2, V2, usize, usize, u32);
 /// One side of a crack: the corner, the direction past it and the two pixels it runs between.
 type Side = (V2, V2, [(i64, i64); 2]);
 
-fn sub(a: V2, b: V2) -> V2 {
+pub(super) fn sub(a: V2, b: V2) -> V2 {
     [a[0] - b[0], a[1] - b[1]]
 }
-fn add(a: V2, b: V2) -> V2 {
+pub(super) fn add(a: V2, b: V2) -> V2 {
     [a[0] + b[0], a[1] + b[1]]
 }
-fn mul(a: V2, s: f64) -> V2 {
+pub(super) fn mul(a: V2, s: f64) -> V2 {
     [a[0] * s, a[1] * s]
 }
-fn dot(a: V2, b: V2) -> f64 {
+pub(super) fn dot(a: V2, b: V2) -> f64 {
     a[0] * b[0] + a[1] * b[1]
 }
-fn cross(a: V2, b: V2) -> f64 {
+pub(super) fn cross(a: V2, b: V2) -> f64 {
     a[0] * b[1] - a[1] * b[0]
 }
-fn norm(a: V2) -> f64 {
+pub(super) fn norm(a: V2) -> f64 {
     dot(a, a).sqrt()
+}
+
+/// The index of pixel `(x, y)`, none off the frame.
+fn at(x: i64, y: i64, w: usize, h: usize) -> Option<usize> {
+    (x >= 0 && y >= 0 && (x as usize) < w && (y as usize) < h).then(|| y as usize * w + x as usize)
+}
+
+/// The four neighbours of `(x, y)`.
+fn four(x: i64, y: i64) -> [(i64, i64); 4] {
+    [(x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)]
 }
 
 /// A boundary between two pieces where it meets a hole.
@@ -64,41 +76,10 @@ fn step(a: DVec3, b: DVec3) -> f64 {
     (a - b).abs().max_element()
 }
 
-/// 4-connected components of the hole.
-fn components(hole: &[bool], w: usize, h: usize) -> (Vec<u32>, usize) {
-    let mut comp = vec![u32::MAX; w * h];
-    let mut n = 0;
-    let mut stack = Vec::new();
-    for s in 0..w * h {
-        if !hole[s] || comp[s] != u32::MAX {
-            continue;
-        }
-        comp[s] = n;
-        stack.push(s);
-        while let Some(i) = stack.pop() {
-            let (x, y) = (i % w, i / w);
-            let mut go = |j: usize| {
-                if hole[j] && comp[j] == u32::MAX {
-                    comp[j] = n;
-                    stack.push(j);
-                }
-            };
-            if x > 0 {
-                go(i - 1);
-            }
-            if x + 1 < w {
-                go(i + 1);
-            }
-            if y > 0 {
-                go(i - w);
-            }
-            if y + 1 < h {
-                go(i + w);
-            }
-        }
-        n += 1;
-    }
-    (comp, n as usize)
+/// The 4-connected components of `mask` numbered from 0 in raster order, `u32::MAX` off it.
+pub(super) fn components(mask: &[bool], w: usize, h: usize) -> (Vec<u32>, usize) {
+    let (label, n) = label_of(mask, w, h, Conn::Four);
+    (label.into_iter().map(|l| l.wrapping_sub(1)).collect(), n)
 }
 
 /// The contour ends at the holes: every crack between two pieces outside the holes whose
@@ -112,11 +93,7 @@ pub fn contour_ends(
     h: usize,
 ) -> (Vec<End>, usize) {
     let (comp, holes) = components(hole, w, h);
-    let at = |x: i64, y: i64| -> Option<usize> {
-        (x >= 0 && y >= 0 && (x as usize) < w && (y as usize) < h)
-            .then(|| y as usize * w + x as usize)
-    };
-    let in_hole = |x: i64, y: i64| at(x, y).filter(|&i| hole[i]);
+    let in_hole = |x: i64, y: i64| at(x, y, w, h).filter(|&i| hole[i]);
     // every crack between two pieces outside the hole, by its pair: its midpoint and the two
     // pixels (the first of the pair's lower label)
     let mut cracks: HashMap<(u32, u32), Vec<Crack>> = HashMap::default();
@@ -252,11 +229,7 @@ pub fn contour_ends(
 /// a right angle or collinear within tolerance, the colours matching crosswise), joined by
 /// the tangent cubic staying in the holes, best first: the curves and the barrier they draw.
 pub fn pair_ends(ends: &[End], hole: &[bool], w: usize, h: usize) -> (Vec<[V2; 4]>, Vec<bool>) {
-    let at = |x: i64, y: i64| -> Option<usize> {
-        (x >= 0 && y >= 0 && (x as usize) < w && (y as usize) < h)
-            .then(|| y as usize * w + x as usize)
-    };
-    let in_hole = |x: i64, y: i64| at(x, y).filter(|&i| hole[i]);
+    let in_hole = |x: i64, y: i64| at(x, y, w, h).filter(|&i| hole[i]);
     let near_hole = |q: V2| -> bool {
         let (x, y) = (q[0].floor() as i64, q[1].floor() as i64);
         (-1..=1).any(|dy| (-1..=1).any(|dx| in_hole(x + dx, y + dy).is_some()))
@@ -329,7 +302,7 @@ pub fn pair_ends(ends: &[End], hole: &[bool], w: usize, h: usize) -> (Vec<[V2; 4
             }
             // The pairs are taken by the curve's bending energy (Euler's elastica: arc length plus
             // the squared curvature, weighed by the reach squared to share a unit), shortest and
-            // straightest first, so a near pair across a strand wins over a far one across the hair
+            // straightest first, so a near pair across a thin part wins over a far one
             let mut length = 0.0;
             let mut bending = 0.0;
             let mut last: Option<V2> = None;
@@ -371,8 +344,8 @@ pub fn pair_ends(ends: &[End], hole: &[bool], w: usize, h: usize) -> (Vec<[V2; 4
             } else {
                 // the curve may run along the hole's rim just outside it: the barrier is then the
                 // hole pixels beside it, or the curve cuts nothing
-                for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
-                    if let Some(m) = in_hole(x + dx, y + dy) {
+                for (u, v) in four(x, y) {
+                    if let Some(m) = in_hole(u, v) {
                         barrier[m] = true;
                     }
                 }
@@ -398,10 +371,6 @@ pub fn complete_holes_with_blend(
     let hole = &hole_all[..];
     let (ends, holes) = contour_ends(img, label, hole, w, h);
     let (curves, barrier) = pair_ends(&ends, hole, w, h);
-    let at = |x: i64, y: i64| -> Option<usize> {
-        (x >= 0 && y >= 0 && (x as usize) < w && (y as usize) < h)
-            .then(|| y as usize * w + x as usize)
-    };
     let reach = length_px(w, 4.0) as f64;
     let mut report = Report {
         holes,
@@ -436,11 +405,7 @@ pub fn complete_holes_with_blend(
         if !hole[i] || barrier[i] {
             continue;
         }
-        let (x, y) = ((i % w) as i64, (i / w) as i64);
-        if let Some(s) = [(x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)]
-            .iter()
-            .filter_map(|&(a, b)| at(a, b))
-            .find(|&j| !hole[j])
+        if let Some(s) = neighbours4(i, w, h).find(|&j| !hole[j])
         {
             out[i] = piece_colour(s);
             src[i] = label[s];
@@ -449,12 +414,8 @@ pub fn complete_holes_with_blend(
         }
     }
     while let Some(i) = queue.pop_front() {
-        let (x, y) = ((i % w) as i64, (i / w) as i64);
-        for (a, b) in [(x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)] {
-            if let Some(j) = at(a, b)
-                && !done[j]
-                && !barrier[j]
-            {
+        for j in neighbours4(i, w, h) {
+            if !done[j] && !barrier[j] {
                 out[j] = out[i];
                 src[j] = src[i];
                 done[j] = true;
@@ -469,11 +430,7 @@ pub fn complete_holes_with_blend(
             if done[i] {
                 continue;
             }
-            let (x, y) = ((i % w) as i64, (i / w) as i64);
-            if let Some(j) = [(x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)]
-                .iter()
-                .filter_map(|&(a, b)| at(a, b))
-                .find(|&j| done[j])
+            if let Some(j) = neighbours4(i, w, h).find(|&j| done[j])
             {
                 out[i] = out[j];
                 src[i] = src[j];
@@ -487,7 +444,7 @@ pub fn complete_holes_with_blend(
     }
     // each thick part flat, in the colour of the piece whose wave reached most of it, without
     // the streaks where waves meet; a thick part a barrier crosses keeps the wave, as the
-    // contours on its sides say what lies under it (glassware's stand rod)
+    // contours on its sides say what lies under it
     let thin = thin_part(hole_core, w, h);
     let thick: Vec<bool> = (0..w * h).map(|i| hole_core[i] && !thin[i]).collect();
     let (part, parts) = components(&thick, w, h);
@@ -529,11 +486,11 @@ pub fn complete_holes_with_blend(
 }
 
 /// The widest a line is, in units: half the side of the square whose opening keeps a hole's
-/// thick part (a strand of hair, glassware's 3 px outlines: up to six units across).
+/// thick part (up to six units across).
 pub const THIN: f64 = 3.0;
 
 /// The thin parts of `hole`: what an opening by a square of half side [`THIN`] units takes
-/// off. The rest is its thick part (the hair's mass).
+/// off. The rest is its thick part.
 pub fn thin_part(hole: &[bool], w: usize, h: usize) -> Vec<bool> {
     let r = length_px(w, THIN);
     let thick = dilate(&deep_in(hole, w, h, r), w, h, Conn::Eight, r);

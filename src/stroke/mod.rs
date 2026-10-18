@@ -98,6 +98,8 @@ pub(crate) const CENTERLINE_TOLERANCE: f32 = 1.;
 const SIMPLIFY_TOLERANCES: [f32; 3] = [2., 4., 8.];
 /// Least turn at a joint of the centerline that is a corner: a visible kink.
 pub(crate) const KINK: f32 = 20f32.to_radians();
+/// Steps each cubic is flattened in for arc lengths.
+const ARC_STEPS: usize = 16;
 
 impl Stroke {
     /// The stroke's cost in segments: the centerline's, one for the width, and one per dash
@@ -113,13 +115,12 @@ impl Stroke {
 
     /// The centerline's length up to each cubic's end, and in all, by flattening.
     pub(crate) fn arc_lengths(&self) -> Vec<f32> {
-        const STEPS: usize = 16;
         let mut total = 0f32;
         let mut ends = Vec::with_capacity(self.centerline.len());
         for c in &self.centerline {
             let mut from = c[0];
-            for i in 1..=STEPS {
-                let to = eval(c, i as f32 / STEPS as f32);
+            for i in 1..=ARC_STEPS {
+                let to = eval(c, i as f32 / ARC_STEPS as f32);
                 total += from.distance(to);
                 from = to;
             }
@@ -130,7 +131,6 @@ impl Stroke {
 
     /// The cubic and parameter at arc length `s` along the centerline.
     fn locate(&self, s: f32, ends: &[f32]) -> (usize, f32) {
-        const STEPS: usize = 16;
         let total = ends[ends.len() - 1];
         if s >= total {
             return (ends.len() - 1, 1.);
@@ -142,8 +142,8 @@ impl Stroke {
         let want = (s - start).max(0.);
         let mut walked = 0f32;
         let mut from = c[0];
-        for i in 1..=STEPS {
-            let t = i as f32 / STEPS as f32;
+        for i in 1..=ARC_STEPS {
+            let t = i as f32 / ARC_STEPS as f32;
             let to = eval(c, t);
             let step = from.distance(to);
             if walked + step >= want {
@@ -152,7 +152,7 @@ impl Stroke {
                 } else {
                     0.
                 };
-                return (k, ((i - 1) as f32 + within) / STEPS as f32);
+                return (k, ((i - 1) as f32 + within) / ARC_STEPS as f32);
             }
             walked += step;
             from = to;
@@ -225,26 +225,27 @@ impl Stroke {
     /// dash's own, the samples carrying the centerline's cubic and parameter they lie at,
     /// so the fit reaches the centerline's control points through them.
     fn geometry(&self, steps: Option<&[usize]>) -> (Vec<Sample>, Vec<Piece>) {
-        if self.dashes.is_none() {
-            return (self.flattened_with(steps), self.pieces_with(steps));
+        if self.dashes.is_some() {
+            return self.geometry_of(&self.dash_mappings());
         }
-        self.geometry_of(&self.dash_mappings())
+        let samples = self.flattened_with(steps);
+        let pieces = self.strip(&samples);
+        (samples, pieces)
     }
 
     /// The arc length along the centerline at parameter `t` of cubic `k`.
     pub(crate) fn arc_at(&self, k: usize, t: f32, ends: &[f32]) -> f32 {
-        const STEPS: usize = 16;
         let start = if k == 0 { 0. } else { ends[k - 1] };
         let c = &self.centerline[k];
         let mut walked = 0f32;
         let mut from = c[0];
-        let whole = (t * STEPS as f32).floor() as usize;
-        for i in 1..=whole.min(STEPS) {
-            let to = eval(c, i as f32 / STEPS as f32);
+        let whole = (t * ARC_STEPS as f32).floor() as usize;
+        for i in 1..=whole.min(ARC_STEPS) {
+            let to = eval(c, i as f32 / ARC_STEPS as f32);
             walked += from.distance(to);
             from = to;
         }
-        if whole < STEPS {
+        if whole < ARC_STEPS {
             walked += from.distance(eval(c, t));
         }
         start + walked
@@ -282,9 +283,9 @@ impl Stroke {
         let mut samples: Vec<Sample> = Vec::new();
         let mut pieces: Vec<Piece> = Vec::new();
         for mapping in mappings {
-            let dash = self.dash_at(mapping);
+            let (dash_samples, dash_pieces) = self.dash_at(mapping).geometry(None);
             let base = samples.len();
-            for sample in dash.flattened_with(None) {
+            for sample in dash_samples {
                 let (k, t0, t1) = mapping[sample.cubic.min(mapping.len() - 1)];
                 samples.push(Sample {
                     cubic: k,
@@ -292,7 +293,7 @@ impl Stroke {
                     ..sample
                 });
             }
-            for mut piece in dash.pieces_with(None) {
+            for mut piece in dash_pieces {
                 for source in &mut piece.sources {
                     source.0 += base;
                 }
@@ -341,31 +342,18 @@ impl Stroke {
     /// does not fold where the centerline bends tighter than half the width, since there it
     /// runs through the centerline point and its winding sums the two segments' quads.
     pub fn outline(&self) -> Vec<Vec<Cubic>> {
-        self.pieces()
-            .into_iter()
+        self.geometry(None)
+            .1
+            .iter()
             .map(|piece| polygon(&piece.points))
             .collect()
     }
 
     /// The shape this stroke paints, with `fill`.
-    pub fn shape(&self, fill: crate::Fill) -> Shape {
+    pub fn shape(&self, fill: Fill) -> Shape {
         let mut shape = Shape::new(self.outline(), fill);
         shape.stroke = Some(self.clone());
         shape
-    }
-
-    /// The pieces of the outline (see [`Stroke::outline`]), each point with the sample of the
-    /// centerline it comes from and its offset from it, which scales with the width.
-    fn pieces(&self) -> Vec<Piece> {
-        self.pieces_with(None)
-    }
-
-    fn pieces_with(&self, steps: Option<&[usize]>) -> Vec<Piece> {
-        if self.dashes.is_some() {
-            // Each dash is a stroke of its own along the centerline
-            return self.geometry(steps).1;
-        }
-        self.strip(&self.flattened_with(steps))
     }
 
     /// The outline over the flattened `samples` as one polygon (a closed stroke: two loops
@@ -503,38 +491,14 @@ impl Stroke {
     /// The outline as the rasterizer's path, moved by `-origin`: line cubics with their
     /// handles on the thirds.
     pub(crate) fn path(&self, origin: Vec2) -> Path {
-        self.path_of(origin, self.pieces_with(None))
-    }
-
-    /// The path of given pieces of the outline.
-    fn path_of(&self, origin: Vec2, pieces: Vec<Piece>) -> Path {
-        Path {
-            subpaths: pieces
-                .iter()
-                .map(|piece| Subpath {
-                    points: polygon(&piece.points)
-                        .iter()
-                        .flat_map(|c| [c[0], c[1], c[2]])
-                        .map(|p| p - origin)
-                        .collect(),
-                })
-                .collect(),
-            color: [0., 0., 0., 1.],
-            gradient: None,
-            fill_rule: FillRule::NonZero,
-            blur: 0.,
-        }
+        path_of(origin, &self.geometry(None).1)
     }
 
     /// How many steps each cubic is flattened in: by its length, at [`FLATTEN`] per step.
     fn steps(&self) -> Vec<usize> {
         self.centerline
             .iter()
-            .map(|c| {
-                let length =
-                    (c[1] - c[0]).length() + (c[2] - c[1]).length() + (c[3] - c[2]).length();
-                ((length / FLATTEN).ceil() as usize).clamp(1, MAX_FLATTEN_STEPS)
-            })
+            .map(|c| ((hull_length(c) / FLATTEN).ceil() as usize).clamp(1, MAX_FLATTEN_STEPS))
             .collect()
     }
 
@@ -616,6 +580,26 @@ impl Stroke {
     }
 }
 
+/// The outline's `pieces` as the rasterizer's path, moved by `-origin`.
+fn path_of(origin: Vec2, pieces: &[Piece]) -> Path {
+    Path {
+        subpaths: pieces
+            .iter()
+            .map(|piece| Subpath {
+                points: polygon(&piece.points)
+                    .iter()
+                    .flat_map(|c| [c[0], c[1], c[2]])
+                    .map(|p| p - origin)
+                    .collect(),
+            })
+            .collect(),
+        color: [0., 0., 0., 1.],
+        gradient: None,
+        fill_rule: FillRule::NonZero,
+        blur: 0.,
+    }
+}
+
 #[cfg(test)]
 mod strip_tests {
     use super::*;
@@ -624,7 +608,6 @@ mod strip_tests {
     /// half its width of the centerline, as a dense sampling counts it, pixel by pixel.
     #[test]
     fn the_strip_covers_the_stroke() {
-        let line = |a: Vec2, b: Vec2| -> Cubic { [a, a.lerp(b, 1. / 3.), a.lerp(b, 2. / 3.), b] };
         let points = [
             Vec2::new(10., 10.),
             Vec2::new(60., 14.),
@@ -643,10 +626,7 @@ mod strip_tests {
             join: Join::Round,
             dashes: None,
         };
-        let raster = stroke
-            .shape(crate::Fill::solid(Vec3::ZERO))
-            .raster()
-            .clone();
+        let raster = stroke.shape(Fill::solid(Vec3::ZERO)).raster().clone();
         let distance = |p: Vec2| {
             points
                 .windows(2)
@@ -720,7 +700,7 @@ mod strip_tests {
                 dashes: None,
             };
             let covered: f32 = stroke
-                .shape(crate::Fill::solid(Vec3::ZERO))
+                .shape(Fill::solid(Vec3::ZERO))
                 .raster()
                 .values
                 .iter()

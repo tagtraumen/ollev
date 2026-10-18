@@ -25,15 +25,13 @@ pub struct Path {
     pub blur: f32,
 }
 
-/// The most stops a gradient holds between its two ends. The corpus's rainbow ramp has six
-/// (`b004-stop-count-04`, eight stops in all); the room above that is for ramps a fit splits
+/// The most stops a gradient holds between its two ends, with room for ramps a fit splits
 /// finer than they were drawn.
 pub const MAX_STOPS: usize = 10;
 
-/// The stops of a gradient between its two ends: offsets along it in `0..=1`, nondecreasing
-/// (two at one offset are a hard step), each with its straight RGBA colour. The gradient paints
-/// the piecewise linear ramp, in premultiplied colour, through its start colour at 0 (opaque:
-/// the path's own opacity scales the whole ramp), these, and its end colour at 1.
+/// The stops between a gradient's ends: nondecreasing offsets in `0..=1` (two at one offset
+/// a hard step), each with a straight RGBA colour. The ramp runs in premultiplied colour from
+/// the opaque start colour at 0 through these to the end colour at 1.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Stops {
     len: u8,
@@ -130,11 +128,9 @@ pub enum Gradient {
         to: [f32; 4],
         stops: Stops,
     },
-    /// The path's color at the focal point `center + focus`, `to` on the circle of `radius`
-    /// around `center`; between, on the circles that shrink from that one onto the focal point
-    /// (SVG's `fx`, `fy`). The focus lies inside the circle. `transform` maps the gradient's
-    /// plane onto the image about `center` (SVG's `gradientTransform`): an ellipse's axes, the
-    /// identity for a circle; the focus is in the gradient's plane.
+    /// The path's color at the focal point `center + focus` (SVG's `fx`, `fy`, inside the circle),
+    /// `to` on the circle of `radius`; `transform` maps the gradient's plane, where the focus
+    /// lies, onto the image about `center` (SVG's `gradientTransform`, an ellipse's axes).
     Radial {
         center: Vec2,
         focus: Vec2,
@@ -202,22 +198,27 @@ impl Gradient {
         self.to()[3] == 1. && self.stops().is_opaque()
     }
 
+    /// Knot `k` of the ramp from `from`: the start, the stops, then the end, as (offset,
+    /// straight colour, alpha).
+    #[inline]
+    fn knot(&self, from: Vec3, k: usize) -> (f32, Vec3, f32) {
+        let stops = self.stops();
+        let (o, [r, g, b, a]) = if k == 0 {
+            (0., [from.x, from.y, from.z, 1.])
+        } else if k == stops.len() + 1 {
+            (1., self.to())
+        } else {
+            stops.get(k - 1)
+        };
+        (o, Vec3::new(r, g, b), a)
+    }
+
     /// The ramp from `from` (opaque) at 0 through the stops to the end colour at 1, at `t`,
     /// interpolated in premultiplied colour; a piece of one alpha interpolates straight colour,
     /// which is the same.
     pub fn ramp(&self, from: Vec3, t: f32) -> RampPoint {
-        let stops = self.stops();
-        let n = stops.len() + 2;
-        let knot = |k: usize| -> (f32, Vec3, f32) {
-            let (o, [r, g, b, a]) = if k == 0 {
-                (0., [from.x, from.y, from.z, 1.])
-            } else if k == n - 1 {
-                (1., self.to())
-            } else {
-                stops.get(k - 1)
-            };
-            (o, Vec3::new(r, g, b), a)
-        };
+        let n = self.stops().len() + 2;
+        let knot = |k| self.knot(from, k);
         // The last piece starting at or before t
         let mut k = 0;
         while k + 2 < n && knot(k + 1).0 <= t {
@@ -233,9 +234,7 @@ impl Gradient {
         let per = |d: Vec3| if width > 1e-9 { d / width } else { Vec3::ZERO };
         let (p0, p1) = (c0 * a0, c1 * a1);
         let alpha = a0 + (a1 - a0) * u;
-        let color = if a0 == a1 {
-            c0.lerp(c1, u)
-        } else if alpha > 0. {
+        let color = if a0 != a1 && alpha > 0. {
             p0.lerp(p1, u) / alpha
         } else {
             c0.lerp(c1, u)
@@ -260,24 +259,12 @@ impl Gradient {
         }
     }
 
-    /// The stops (offset, straight colour, alpha) with which a renderer interpolating straight
-    /// colour (SVG's, resvg's, Graphite's) draws this premultiplied ramp: a transparent knot
-    /// takes its neighbours' colours, two stops where they differ, and a piece whose alpha and
-    /// colour both change is split until it is within half a level of 8 bits.
+    /// The stops (offset, straight colour, alpha) that draw this premultiplied ramp in a renderer
+    /// interpolating straight colour: a transparent knot takes its neighbours' colours, and a
+    /// piece changing alpha and colour is split to within half a level of 8 bits.
     pub fn svg_stops(&self, from: Vec3) -> Vec<(f32, Vec3, f32)> {
         let n = self.stops().len() + 2;
-        let knots: Vec<(f32, Vec3, f32)> = (0..n)
-            .map(|k| {
-                let (o, [r, g, b, a]) = if k == 0 {
-                    (0., [from.x, from.y, from.z, 1.])
-                } else if k == n - 1 {
-                    (1., self.to())
-                } else {
-                    self.stops().get(k - 1)
-                };
-                (o, Vec3::new(r, g, b), a)
-            })
-            .collect();
+        let knots: Vec<(f32, Vec3, f32)> = (0..n).map(|k| self.knot(from, k)).collect();
         let mut out = Vec::new();
         for k in 0..n {
             let (o, c, a) = knots[k];
@@ -336,10 +323,9 @@ impl Gradient {
         self.unclamped(p).clamp(0., 1.)
     }
 
-    /// The derivative of `t` at `p` with respect to the geometry, laid out as a gradient of the
-    /// same kind (its `to` and stops zero), zero where `t` is clamped. A radial focus, and a
-    /// radial gradient with its focus off the center, are differentiated numerically, its
-    /// transform included; a path gradient's curve is not.
+    /// The derivative of `t` at `p` by the geometry, as a gradient of the same kind (`to` and
+    /// stops zero), zero where `t` is clamped. A radial focus is differentiated numerically, and
+    /// so is the rest of a radial gradient with one; a path gradient's curve is not.
     pub fn d_t(&self, p: Vec2) -> Gradient {
         let t = self.unclamped(p);
         let inside = t > 0. && t < 1.;
@@ -492,10 +478,9 @@ impl Gradient {
         }
     }
 
-    /// The SVG element defining the gradient as `g{id}`, in user space, starting from `from`,
-    /// each color written by `color`: a stop per end and one per stop between, a radial
-    /// gradient's focus as `fx` and `fy` where it is off the center. A ramp with alpha is
-    /// written as [`Gradient::svg_stops`] gives it.
+    /// The SVG element defining the gradient as `g{id}` in user space, starting from `from`,
+    /// each color written by `color`; a ramp with alpha written as [`Gradient::svg_stops`]
+    /// gives it, an off-center focus as `fx` and `fy`.
     #[cfg(feature = "svg")]
     pub fn svg(&self, id: usize, from: [f32; 3], color: impl Fn([f32; 3]) -> String) -> String {
         let mut stops = String::new();
@@ -570,7 +555,7 @@ impl Gradient {
             Gradient::Linear { start, end, .. } => {
                 [&mut start.x, &mut start.y, &mut end.x, &mut end.y]
                     .into_iter()
-                    .for_each(&mut f)
+                    .for_each(&mut f);
             }
             Gradient::Radial {
                 center,
@@ -665,6 +650,30 @@ impl Path {
         let t = gradient.t(p);
         let (color, alpha) = gradient.rgba(from, t);
         (color, alpha, t)
+    }
+
+    /// Zero gradients laid out like the subpaths' points.
+    pub(crate) fn zero_points(&self) -> Vec<Vec<Vec2>> {
+        let zeros = |s: &Subpath| vec![Vec2::ZERO; s.points.len()];
+        self.subpaths.iter().map(zeros).collect()
+    }
+
+    /// The gradient by the subpaths' points of `d_flat`, given by the points of `polys`, the
+    /// path flattened.
+    pub(crate) fn points_gradient(
+        &self,
+        polys: &[Vec<FlatPoint>],
+        d_flat: &[Vec<Vec2>],
+    ) -> Vec<Vec<Vec2>> {
+        let mut d_points = self.zero_points();
+        for ((poly, d_poly), d_subpath) in polys.iter().zip(d_flat).zip(&mut d_points) {
+            for (point, d_point) in poly.iter().zip(d_poly) {
+                for (&src, &weight) in point.src.iter().zip(&point.weights) {
+                    d_subpath[src as usize] += weight * *d_point;
+                }
+            }
+        }
+        d_points
     }
 }
 

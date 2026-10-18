@@ -2,6 +2,8 @@
 //! colour c a material's colours b are seen as `o = k b + (1 - k) c`, one homothety, fitted by
 //! one-to-one matching of density-resampled clouds alternated with least squares for k.
 
+use std::fmt::Write;
+
 use crate::HashMap;
 
 use super::inner::pin_grid;
@@ -131,6 +133,12 @@ fn mean(x: &[DVec3]) -> DVec3 {
     x.iter().copied().sum::<DVec3>() / x.len().max(1) as f64
 }
 
+/// The mean of `x` weighted by `w`.
+fn weighted_mean(x: &[DVec3], w: &[f64]) -> DVec3 {
+    let total: f64 = w.iter().sum();
+    x.iter().zip(w).map(|(x, w)| *x * *w).sum::<DVec3>() / total.max(1e-12)
+}
+
 /// The least squares relation over matched pairs `(o, b)`, one k for the three channels:
 /// `k = cov(o, b) / var(b)` summed over channels, `m = mean(o) - k mean(b)`; k clamped
 /// inside (0, 1) by a step of the grid's scale.
@@ -254,13 +262,7 @@ impl Clouds {
                     - weighted_percentile(inside, w_in, ch, 5.0)
             })
             .fold(0.0, f64::max);
-        let total: f64 = w_out.iter().sum();
-        let bmean = outside
-            .iter()
-            .zip(w_out)
-            .map(|(b, w)| *b * *w)
-            .sum::<DVec3>()
-            / total.max(1e-12);
+        let bmean = weighted_mean(outside, w_out);
         Clouds { spread, bmean }
     }
 }
@@ -272,7 +274,7 @@ pub fn is_layer(f: &Fit, clouds: &Clouds) -> bool {
 }
 
 /// Whether a fit is a relation the pin could take: k in [`pin_grid`]'s range, c in gamut loosely
-/// (the veil pushes niabot's up to 14 levels past 255), the inside cloud spread by more than the
+/// (a white over the layer pushes it past), the inside cloud spread by more than the
 /// show-through (or k stays open), and the material moved past it (seen bare is no evidence).
 pub fn in_range(f: &Fit, clouds: &Clouds) -> bool {
     let g = pin_grid();
@@ -353,7 +355,7 @@ pub struct Gate {
 
 impl Gate {
     /// Whether some inside cluster is the image of some outside material: one pair is enough,
-    /// as on niabot full 330 where the skin's image alone carries the dress.
+    /// as one material's image can carry a whole layer.
     pub fn passes(&self) -> bool {
         !self.passing.is_empty()
     }
@@ -375,7 +377,8 @@ impl Gate {
         );
         if self.pairs.is_empty() {
             if let Some((cl, mat, px, f)) = &self.closest_in_range {
-                s += &format!(
+                let _ = write!(
+                    s,
                     "; none passes, closest in range cl{cl} ({px:.0} px) on m{mat}: {}",
                     lv(f)
                 );
@@ -383,7 +386,8 @@ impl Gate {
                 s += "; none passes, no fit in range";
             }
             if let Some((cl, mat, px, f)) = &self.closest {
-                s += &format!(
+                let _ = write!(
+                    s,
                     "; closest at any k cl{cl} ({px:.0} px) on m{mat}: {}",
                     lv(f)
                 );
@@ -396,7 +400,8 @@ impl Gate {
                 .iter()
                 .map(|(n, f)| format!("{n}: {}", lv(f)))
                 .collect();
-            s += &format!(
+            let _ = write!(
+                s,
                 "\n    cl{} ({:.0} px) on m{}{}: 48: {}{}{}{}",
                 p.cluster,
                 p.px,
@@ -413,8 +418,10 @@ impl Gate {
             );
         }
         if let Some(r) = &self.relation {
-            s += &format!(
-                "\n    relation k {:.3} c {:?} res {:.1}: {} materials, {:.0} px, pairs {:?}, drift {:.1} levels, k {:.2} to {:.2}{}",
+            let _ = write!(
+                s,
+                "\n    relation k {:.3} c {:?} res {:.1}: {} materials, {:.0} px, pairs {:?}, drift \
+                 {:.1} levels, k {:.2} to {:.2}{}",
                 r.k,
                 (r.c() * 255.0).round().to_array(),
                 r.residual * 255.0,
@@ -446,7 +453,7 @@ fn apart(a: &Pair, b: &Pair) -> f64 {
 
 /// The clusters that carry a region: its materials (at least `min_material_px` pixels),
 /// largest first, until they hold half its pixels. A small cluster beside them is no
-/// evidence: on cartoon_bunny (no layer) a few colours of small clusters fit by chance.
+/// evidence: a few colours of small clusters fit by chance.
 pub fn carrying(inside: &Palette) -> Vec<usize> {
     let mut out = Vec::new();
     let mut held = 0.0;
@@ -521,6 +528,8 @@ pub fn may_pass(inside: &Palette) -> bool {
 /// pairs refitted ([`refine`]) and grouped. A `ring` adds each material as the ring sees it
 /// ([`Ring::part`]): a layer may cover only the part of a varying material next to it.
 pub fn gate(inside: &Palette, outside: &Palette, ring: Option<&Ring>) -> Gate {
+    // per outside material its readings: whole, and as the ring sees it
+    type Reading = (usize, bool, Vec<DVec3>, Vec<f64>, Vec<DVec3>, DVec3);
     let mut g = Gate::default();
     let side = |p: &Palette, ci: usize| {
         let cl = &p.clusters[ci];
@@ -529,16 +538,13 @@ pub fn gate(inside: &Palette, outside: &Palette, ring: Option<&Ring>) -> Gate {
             p.weights[cl.start..cl.end].to_vec(),
         )
     };
-    // per outside material its readings: whole, and as the ring sees it
-    type Reading = (usize, bool, Vec<DVec3>, Vec<f64>, Vec<DVec3>, DVec3);
     let mut outs: Vec<Reading> = Vec::new();
     for (mat, ci) in outside.materials().enumerate() {
         let whole = side(outside, ci);
         let part = ring.and_then(|r| r.part(&whole.0));
         for (in_ring, (x, w)) in std::iter::once((false, whole)).chain(part.map(|p| (true, p))) {
             let b = sample(&x, &w, SAMPLES);
-            let total: f64 = w.iter().sum();
-            let mean = x.iter().zip(&w).map(|(x, w)| *x * *w).sum::<DVec3>() / total.max(1e-12);
+            let mean = weighted_mean(&x, &w);
             outs.push((mat, in_ring, x, w, b, mean));
         }
     }
@@ -602,17 +608,13 @@ pub fn gate(inside: &Palette, outside: &Palette, ring: Option<&Ring>) -> Gate {
     }
     // Two flat clusters over two outside materials fix k, though one alone leaves it open:
     // o1 - o2 = k (b1 - b2), the same k in every channel, m from either. Two materials under
-    // one relation is a layer, not one material's shading (b006-glassware-10's flat glass).
+    // one relation is a layer, not one material's shading.
     let flats: Vec<(usize, DVec3, f64)> = carrying(inside)
         .into_iter()
         .filter_map(|ci| {
             let (x, w) = side(inside, ci);
             let spread = Clouds::of(&x, &w, &x[..1], &w[..1]).spread;
-            (spread <= SHOW_THROUGH).then(|| {
-                let total: f64 = w.iter().sum();
-                let mean = x.iter().zip(&w).map(|(x, w)| *x * *w).sum::<DVec3>() / total.max(1e-12);
-                (ci, mean, inside.clusters[ci].px)
-            })
+            (spread <= SHOW_THROUGH).then(|| (ci, weighted_mean(&x, &w), inside.clusters[ci].px))
         })
         .collect();
     // The flat pairs are read against the materials the ring sees beside the region where a
@@ -796,9 +798,22 @@ mod tests {
         fn next(&mut self) -> f64 {
             self.0 = self
                 .0
-                .wrapping_mul(6364136223846793005)
-                .wrapping_add(1442695040888963407);
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
             (self.0 >> 11) as f64 / (1u64 << 53) as f64
+        }
+    }
+
+    /// Heap's algorithm: `f` on every permutation of `p[..k]`.
+    fn heap(k: usize, p: &mut Vec<usize>, f: &mut dyn FnMut(&[usize])) {
+        if k == 1 {
+            f(p);
+            return;
+        }
+        for i in 0..k {
+            heap(k - 1, p, f);
+            let j = if k.is_multiple_of(2) { i } else { 0 };
+            p.swap(j, k - 1);
         }
     }
 
@@ -821,17 +836,6 @@ mod tests {
             };
             let mut perm: Vec<usize> = (0..n).collect();
             let mut least = f64::INFINITY;
-            fn heap(k: usize, p: &mut Vec<usize>, f: &mut dyn FnMut(&[usize])) {
-                if k == 1 {
-                    f(p);
-                    return;
-                }
-                for i in 0..k {
-                    heap(k - 1, p, f);
-                    let j = if k % 2 == 0 { i } else { 0 };
-                    p.swap(j, k - 1);
-                }
-            }
             heap(n, &mut perm, &mut |p| least = least.min(total(p)));
             assert!((total(&a) - least).abs() < 1e-12);
         }

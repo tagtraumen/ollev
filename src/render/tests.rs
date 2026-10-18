@@ -35,7 +35,7 @@ fn test_scene(fill_rule: FillRule) -> Scene {
             (15.70001, 21.6),
             (3.2, 21.59999),
         ]
-        .map(|(x, y)| Vec2::new(x, y)),
+        .map(Vec2::from),
     );
     Scene {
         width: 24,
@@ -77,7 +77,7 @@ fn test_scene(fill_rule: FillRule) -> Scene {
             Path {
                 subpaths: vec![Subpath::polygon(
                     &[(12.2, 1.3), (22.6, 4.1), (20.3, 15.8), (11.4, 12.7)]
-                        .map(|(x, y)| Vec2::new(x, y)),
+                        .map(Vec2::from),
                 )],
                 color: [0.9, 0.8, 0.1, 0.8],
                 gradient: Some(Gradient::Radial {
@@ -156,7 +156,7 @@ fn check(fill_rule: FillRule) {
         if let Some(mut g) = grad.paths[p].gradient {
             for c in 0..4 {
                 compare(format!("path {p} gradient to {c}"), g.to()[c], &|s, e| {
-                    gradient_of(s, p).to_mut()[c] += e
+                    gradient_of(s, p).to_mut()[c] += e;
                 });
             }
             let mut analytic = Vec::new();
@@ -177,10 +177,10 @@ fn check(fill_rule: FillRule) {
             for i in 0..subpath.points.len() {
                 let g = grad.paths[p].subpaths[sp][i];
                 compare(format!("path {p} point {i} x"), g.x, &|s, e| {
-                    s.paths[p].subpaths[sp].points[i].x += e
+                    s.paths[p].subpaths[sp].points[i].x += e;
                 });
                 compare(format!("path {p} point {i} y"), g.y, &|s, e| {
-                    s.paths[p].subpaths[sp].points[i].y += e
+                    s.paths[p].subpaths[sp].points[i].y += e;
                 });
             }
         }
@@ -201,7 +201,7 @@ fn gradients_even_odd() {
 #[test]
 fn pixel_aligned_square_has_exact_coverage() {
     let square =
-        Subpath::polygon(&[(2., 2.), (6., 2.), (6., 6.), (2., 6.)].map(|(x, y)| Vec2::new(x, y)));
+        Subpath::polygon(&[(2., 2.), (6., 2.), (6., 6.), (2., 6.)].map(Vec2::from));
     let scene = Scene {
         width: 8,
         height: 8,
@@ -238,7 +238,7 @@ fn gradients_stay_bounded_for_edges_straddling_pixel_boundaries() {
             (12. - tilt, 12. - tilt),
             (4. + tilt, 12. + tilt),
         ]
-        .map(|(x, y)| Vec2::new(x, y)),
+        .map(Vec2::from),
     );
     let scene = Scene {
         width: 16,

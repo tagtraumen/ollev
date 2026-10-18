@@ -51,13 +51,18 @@ pub(super) enum Variant {
 
 impl Variant {
     /// The fill shape `k` is drawn with, none where it is left out.
-    pub(super) fn fill(&self, scene: &crate::Scene, k: usize) -> Option<crate::Fill> {
-        match *self {
-            Variant::Drop(d) if d == k => None,
-            Variant::Paint(p, f) if p == k => Some(f),
-            _ => Some(scene.shapes[k].fill),
+    pub(super) fn fill<'a>(&'a self, scene: &'a crate::Scene, k: usize) -> Option<&'a crate::Fill> {
+        match self {
+            Variant::Drop(d) if *d == k => None,
+            Variant::Paint(p, f) if *p == k => Some(f),
+            _ => Some(&scene.shapes[k].fill),
         }
     }
+}
+
+/// The image index of pixel `j` of `window`, in an image `width` wide.
+pub(super) fn image_index(window: crate::Window, j: usize, width: usize) -> usize {
+    (window.y + j / window.width) * width + window.x + j % window.width
 }
 
 /// Composites `shape` (the scene's shape `k`, for its clip, if it is one) at `fill` over a
@@ -67,7 +72,7 @@ pub(super) fn composite_into(
     window: crate::Window,
     shape: &crate::Shape,
     k: Option<usize>,
-    fill: crate::Fill,
+    fill: &crate::Fill,
     colour: &mut [DVec3],
     through: &mut [DVec3],
 ) {
@@ -108,7 +113,7 @@ pub(super) fn composite_into(
 pub(super) fn composite(
     scene: &crate::Scene,
     window: crate::Window,
-    variant: Variant,
+    variant: &Variant,
     insert: Option<(usize, &[crate::Shape])>,
 ) -> Vec<DVec3> {
     let n = window.width * window.height;
@@ -116,7 +121,7 @@ pub(super) fn composite(
     let put = |colour: &mut Vec<DVec3>, through: &mut Vec<DVec3>| {
         if let Some((_, shapes)) = insert {
             for s in shapes {
-                composite_into(scene, window, s, None, s.fill, colour, through);
+                composite_into(scene, window, s, None, &s.fill, colour, through);
             }
         }
     };
@@ -124,17 +129,7 @@ pub(super) fn composite(
         if insert.is_some_and(|(p, _)| p == k) {
             put(&mut colour, &mut through);
         }
-        if let Some(f) = variant.fill(scene, k) {
-            composite_into(
-                scene,
-                window,
-                &scene.shapes[k],
-                Some(k),
-                f,
-                &mut colour,
-                &mut through,
-            );
-        }
+        composite_shape(scene, window, variant, k, &mut colour, &mut through);
     }
     if insert.is_some_and(|(p, _)| p >= scene.shapes.len()) {
         put(&mut colour, &mut through);
@@ -142,47 +137,48 @@ pub(super) fn composite(
     colour
 }
 
+/// Composites the scene's shape `k` as `variant` draws it, see [`composite_into`].
+fn composite_shape(
+    scene: &crate::Scene,
+    window: crate::Window,
+    variant: &Variant,
+    k: usize,
+    colour: &mut [DVec3],
+    through: &mut [DVec3],
+) {
+    if let Some(f) = variant.fill(scene, k) {
+        composite_into(scene, window, &scene.shapes[k], Some(k), f, colour, through);
+    }
+}
+
 impl Site {
     pub(super) fn new(scene: &crate::Scene, window: crate::Window, position: usize) -> Self {
-        Self::under(scene, window, position, Variant::Same)
+        Self::under(scene, window, position, &Variant::Same)
     }
 
     pub(super) fn under(
         scene: &crate::Scene,
         window: crate::Window,
         position: usize,
-        variant: Variant,
+        variant: &Variant,
     ) -> Self {
         let n = window.width * window.height;
-        let below = match variant {
-            Variant::Same => scene
+        let below = if let Variant::Same = variant {
+            scene
                 .render(window, 0..position, [1.0; 3])
                 .iter()
                 .map(|v| v.as_dvec3())
-                .collect(),
-            _ => {
-                let (mut c, mut t) = (vec![DVec3::ONE; n], vec![DVec3::ZERO; n]);
-                for k in 0..position {
-                    if let Some(f) = variant.fill(scene, k) {
-                        composite_into(scene, window, &scene.shapes[k], Some(k), f, &mut c, &mut t);
-                    }
-                }
-                c
+                .collect()
+        } else {
+            let (mut c, mut t) = (vec![DVec3::ONE; n], vec![DVec3::ZERO; n]);
+            for k in 0..position {
+                composite_shape(scene, window, variant, k, &mut c, &mut t);
             }
+            c
         };
         let (mut colour, mut through) = (vec![DVec3::ZERO; n], vec![DVec3::ONE; n]);
         for k in position..scene.shapes.len() {
-            if let Some(f) = variant.fill(scene, k) {
-                composite_into(
-                    scene,
-                    window,
-                    &scene.shapes[k],
-                    Some(k),
-                    f,
-                    &mut colour,
-                    &mut through,
-                );
-            }
+            composite_shape(scene, window, variant, k, &mut colour, &mut through);
         }
         Site {
             window,
@@ -193,7 +189,7 @@ impl Site {
     }
 
     pub(super) fn at(&self, j: usize, width: usize) -> usize {
-        (self.window.y + j / self.window.width) * width + self.window.x + j % self.window.width
+        image_index(self.window, j, width)
     }
 
     /// The composite at window pixel `j` with `paint` drawn over what is below at alpha `a`.
@@ -288,8 +284,8 @@ impl Site {
 }
 
 /// The places in the stack a candidate over `window` is tried at: on top, and below each of
-/// the topmost [`MAX_POSITIONS`] shapes reaching into it (so the thighs' contour can go below
-/// the trace's dark wedge and the translucent skirt over it).
+/// the topmost [`MAX_POSITIONS`] shapes reaching into it (so a line can go below a shape that
+/// stood in for it and a translucent layer over it).
 pub(super) fn positions(scene: &crate::Scene, window: crate::Window) -> Vec<usize> {
     let top = scene.shapes.len();
     let mut out = vec![top];
@@ -351,16 +347,16 @@ pub(super) fn insert_at(scene: &mut crate::Scene, position: usize, shapes: Vec<c
 }
 
 pub(super) fn to_cubic(b: &Bezier) -> crate::tracer::Cubic {
-    b.map(|q| q.as_vec2())
+    b.map(DVec2::as_vec2)
 }
 
 /// The shapes a stroke candidate can be drawn as, with their centreline cubics and price
 /// beyond a mark's: the fitted paths, a stroked path each; and for a dash row one dashed
-/// stroke through its gaps (a shoe's stitches are one simple edge), a segment for the pattern.
+/// stroke through its gaps (a row of stitches is one simple edge), a segment for the pattern.
 pub(super) fn forms(
     ctx: &crate::Context,
     f: &Fit,
-    paint: crate::Fill,
+    paint: &crate::Fill,
 ) -> Vec<(Vec<crate::Shape>, Vec<Bezier>, f64)> {
     use crate::stroke::{Cap, Dashes, Join, Stroke};
     let stroke = |centerline: Vec<crate::tracer::Cubic>, dashes: Option<Dashes>| {
@@ -373,7 +369,7 @@ pub(super) fn forms(
             corners: Vec::new(),
             dashes,
         }
-        .shape(paint);
+        .shape(*paint);
         s.smooth = true;
         s
     };
@@ -448,7 +444,7 @@ pub(super) struct Choice {
     /// its price beyond a mark's, taken off `gain` already
     pub(super) extra: f64,
     pub(super) width: f64,
-    pub(super) kind: crate::translucency::vocabulary::MarkKind,
+    pub(super) kind: MarkKind,
     pub(super) shapes: Vec<crate::Shape>,
     pub(super) cubics: Vec<Bezier>,
     pub(super) position: usize,
@@ -456,13 +452,9 @@ pub(super) struct Choice {
 
 impl Choice {
     /// Whether the planner's one keep rule for marks (`plan::keep_mark`) keeps it.
-    pub(super) fn kept(
-        &self,
-        keep: crate::translucency::vocabulary::Keep,
-        segment_cost: f64,
-    ) -> bool {
+    pub(super) fn kept(&self, keep: Keep, segment_cost: f64) -> bool {
         keep(
-            &crate::translucency::vocabulary::Mark {
+            &Mark {
                 cubics: &self.cubics,
                 gain: self.gain,
             },
@@ -480,7 +472,7 @@ pub(super) fn try_stroke(
     field: &EdgeField,
     lambda: f64,
     f: &Fit,
-    variant: Variant,
+    variant: &Variant,
 ) -> Option<Choice> {
     let (w, h) = (img.width, img.height);
     let paint = crate::Fill {
@@ -490,7 +482,7 @@ pub(super) fn try_stroke(
     };
     let sides = side_colour(img, &f.flat, f.width);
     let mut best: Option<Choice> = None;
-    let all = forms(ctx, f, paint);
+    let all = forms(ctx, f, &paint);
     let mut consider = |shapes: &[crate::Shape],
                         cubics: &[Bezier],
                         extra: f64,
@@ -505,7 +497,7 @@ pub(super) fn try_stroke(
                 gain,
                 extra,
                 width,
-                kind: crate::translucency::vocabulary::MarkKind::Line,
+                kind: MarkKind::Line,
                 shapes: shapes
                     .iter()
                     .cloned()
@@ -575,16 +567,16 @@ pub(super) fn joint_saving(
     field: &EdgeField,
     lambda: f64,
     window: crate::Window,
-    variant: Variant,
+    variant: &Variant,
     insert: (usize, &[crate::Shape]),
 ) -> (f64, f64) {
-    let before = composite(scene, window, Variant::Same, None);
+    let before = composite(scene, window, &Variant::Same, None);
     // shapes put over the whole scene as it is are composited over `before` alone
     let after = if matches!(variant, Variant::Same) && insert.0 >= scene.shapes.len() {
         let mut after = before.clone();
         let mut through = vec![DVec3::ZERO; after.len()];
         for s in insert.1 {
-            composite_into(scene, window, s, None, s.fill, &mut after, &mut through);
+            composite_into(scene, window, s, None, &s.fill, &mut after, &mut through);
         }
         after
     } else {
@@ -592,7 +584,7 @@ pub(super) fn joint_saving(
     };
     let (mut plain, mut edge) = (0.0, 0.0);
     for (j, (b, a)) in before.iter().zip(&after).enumerate() {
-        let p = (window.y + j / window.width) * img.width + window.x + j % window.width;
+        let p = image_index(window, j, img.width);
         let o = img.px[p];
         let saved = field.residual(p, *b - o) - field.residual(p, *a - o);
         plain += saved;
@@ -644,14 +636,14 @@ pub(super) fn joint_move(
             composite(
                 scene,
                 window,
-                Variant::Paint(k, fill),
+                &Variant::Paint(k, fill),
                 Some((line.position, &line.shapes)),
             )
         };
         let (zero, one) = (at(0.0), at(1.0));
         let (mut num, mut den) = (DVec3::ZERO, DVec3::ZERO);
         for (j, (a, b)) in zero.iter().zip(&one).enumerate() {
-            let p = (window.y + j / window.width) * img.width + window.x + j % window.width;
+            let p = image_index(window, j, img.width);
             let wt = field.weight(p, lambda) as f64;
             let slope = *b - *a;
             num += wt * slope * (img.px[p] - *a);
@@ -674,7 +666,7 @@ pub(super) fn joint_move(
             .iter()
             .enumerate()
             .filter(|(_, c)| **c >= 0.5)
-            .map(|(j, _)| (window.y + j / window.width) * img.width + window.x + j % window.width)
+            .map(|(j, _)| image_index(window, j, img.width))
             .collect();
         if let (_, Some(CutFill::Linear { from, to, .. })) = area_fills(img, &under) {
             let d = to - from;
@@ -689,7 +681,7 @@ pub(super) fn joint_move(
             let (mut s00, mut s01, mut s11) = (DVec3::ZERO, DVec3::ZERO, DVec3::ZERO);
             let (mut b0, mut b1) = (DVec3::ZERO, DVec3::ZERO);
             for (j, (a, b)) in zero.iter().zip(&one).enumerate() {
-                let p = (window.y + j / window.width) * img.width + window.x + j % window.width;
+                let p = image_index(window, j, img.width);
                 let wt = field.weight(p, lambda) as f64;
                 let slope = *b - *a;
                 let (u, v) = (slope * (1.0 - t(j)), slope * t(j));
@@ -722,7 +714,7 @@ pub(super) fn joint_move(
     }
     let mut best: Option<(Choice, Variant)> = None;
     for v in variants {
-        let Some(mut ch) = try_stroke(ctx, scene, img, field, lambda, f, v) else {
+        let Some(mut ch) = try_stroke(ctx, scene, img, field, lambda, f, &v) else {
             continue;
         };
         let window = union_window(scene, &ch.shapes, k);
@@ -732,7 +724,7 @@ pub(super) fn joint_move(
             field,
             lambda,
             window,
-            v,
+            &v,
             (ch.position, &ch.shapes),
         );
         let saved = match v {

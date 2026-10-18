@@ -1,8 +1,12 @@
 //! Links between chain ends across gaps.
 
-use super::*;
+use glam::DVec2;
 
-// ----------------------------------------------------------------------------- links
+use super::{
+    Bezier, Chain, FIT_TOL, JUNCTION_GAP, Kind, WIDTH_QUANTUM, WIDTH_SLACK, along_circle,
+    bezier_ls, chord_params, curvature, dot, end_tangents, errors, fit, hyp, kink, max_of, newton,
+};
+use crate::translucency::raster::linspace;
 
 pub(super) fn widths_alike(a: &Chain, b: &Chain) -> bool {
     if a.kind == Kind::Ridge && b.kind == Kind::Ridge {
@@ -70,7 +74,7 @@ pub(super) fn one_cubic(p: &[DVec2], tol: f64) -> (Bezier, f64) {
 
 /// The link test by a joint fit: the parts' pixels near the gap lie on one cubic within the
 /// fit tolerance that bends at most twice the parts' worst (ends can differ in angle yet join
-/// smoothly, as niabot's knuckle into the forearm). The cost prefers the smoother join.
+/// smoothly). The cost prefers the smoother join.
 pub fn link_test_joint(a: &Chain, ea: usize, b: &Chain, eb: usize) -> Option<f64> {
     const REACH_MULT: f64 = 2.0;
     if !widths_alike(a, b) {

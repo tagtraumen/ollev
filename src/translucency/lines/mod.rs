@@ -1,14 +1,10 @@
-//! Continuation of lines as evidence of a translucent layer: a line beneath (an arm's
-//! contour, grout) that runs on under a layer keeps its geometry while each side's color b
-//! becomes `k b + m`, so two linked parts of one smooth line pin the relation.
+//! Continuation of lines as evidence of a translucent layer: a line beneath that runs on
+//! under a layer keeps its geometry while each side's color b becomes `k b + m`, so two
+//! linked parts of one smooth line pin the relation.
 
 use glam::{DVec2, DVec3};
 
-use super::raster::{
-    ChebTree, Conn, Image, NOISE, arange, cheb, di_zenzo, dilate, label, length_px, line_pixels_at,
-    linspace, map1, median, median_rows, np_sum, radians, rows_mean, skeletonize, sum_all3,
-    unit_of,
-};
+use super::raster::{ChebTree, Image, NOISE, radians};
 
 mod chains;
 mod edge_map;
@@ -23,8 +19,8 @@ pub use links::*;
 pub use witnesses::*;
 
 /// Gradients at the raster's own anti-aliasing scale at 330. The detector's lengths are in
-/// pixels at 330 and scale by [`super::raster::unit_of`] (so hair strands at 1052 do not
-/// become lines); its thresholds in levels stay.
+/// pixels at 330 and scale by [`super::raster::unit_of`] (so a thin strand at a high
+/// resolution does not become a line); its thresholds in levels stay.
 pub const EDGE_SIGMA: f64 = 1.0;
 /// A chain is fitted to within a pixel: the subpixel edge positions are good to a few
 /// tenths, a pixel leaves room for the anti-aliasing's own wobble.
@@ -48,7 +44,7 @@ pub const TOL: f64 = 3.0 * NOISE;
 pub const CORNER_REACH: usize = 3;
 
 /// The ridge test's reaches: 1 and 2 px at 330, in the image's unit.
-fn ridge_radii(u: f64) -> Vec<isize> {
+pub(crate) fn ridge_radii(u: f64) -> Vec<isize> {
     let mut r: Vec<isize> = [1.0, 2.0]
         .iter()
         .map(|v| ((v * u).round() as isize).max(1))
@@ -65,8 +61,6 @@ pub fn kink() -> f64 {
 /// A cubic's four control points.
 pub type Bezier = [DVec2; 4];
 
-// ----------------------------------------------------------------------------- one side
-
 /// The pixel a sample point falls on, rounded half to even and kept in the frame.
 pub fn pixel_of(img: &Image, q: DVec2) -> usize {
     let x = (q.x.round_ties_even() as i64).clamp(0, img.width as i64 - 1) as usize;
@@ -74,9 +68,9 @@ pub fn pixel_of(img: &Image, q: DVec2) -> usize {
     y * img.width + x
 }
 
-/// The region proposal's seeds: a line running on into a layer drawn along it (a body's
-/// contour into the dress) changes one side only and cannot pin k, but its changed inside
-/// samples, unlike every outside one within the tolerance, lie under the layer.
+/// The region proposal's seeds: a line running on into a layer drawn along it changes one
+/// side only and cannot pin k, but its changed inside samples, unlike every outside one
+/// within the tolerance, lie under the layer.
 pub struct OneSide {
     pub seeds: Vec<bool>,
     pub chains: Vec<Chain>,
@@ -90,14 +84,14 @@ pub fn one_side_seeds(img: &Image) -> OneSide {
     let links = all_links(&chains);
     let w = line_witnesses(img, &chains, &links);
     let mut seeds = vec![false; img.len()];
-    for i in (0..w.len()).filter(|&i| w[i].why == Some("one side")) {
-        let outside: Vec<DVec3> = w[i]
+    for wi in w.iter().filter(|wi| wi.why == Some("one side")) {
+        let outside: Vec<DVec3> = wi
             .outside
             .iter()
             .map(|q| img.px[pixel_of(img, *q)])
             .collect();
         let tree = ChebTree::new(&outside);
-        for q in &w[i].inside {
+        for q in &wi.inside {
             let p = pixel_of(img, *q);
             if tree.nearest_dist(img.px[p]) > TOL {
                 seeds[p] = true;

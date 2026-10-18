@@ -16,10 +16,9 @@ pub fn outside_image(c: DVec3, k: f64, m: DVec3) -> f64 {
     (lo - c).max(c - hi).max(DVec3::ZERO).max_element()
 }
 
-/// The raster peeled by the inner layers (the white by its opacity per pixel, a tint by its
-/// relation) and then by the layer's relation, inside the region; the raster elsewhere. Not
-/// clamped: a peel outside the unit cube is a color the layer cannot have been over. For the
-/// lab's panes.
+/// For the lab: the raster peeled inside the region by the inner layers (the white by its
+/// opacity, a tint by its relation), then by the layer's relation; not clamped, as a peel
+/// outside the unit cube is a color the layer cannot have been over.
 #[cfg(feature = "diagnostics")]
 pub fn peel(img: &Image, region: &[bool], fit: &InnerFit) -> Vec<DVec3> {
     (0..img.len())

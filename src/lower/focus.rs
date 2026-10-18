@@ -13,7 +13,7 @@ use crate::model::{Clip, Curve, Geometry, Gradient, Object, Paint};
 const BANDS: [usize; 5] = [8, 16, 32, 64, 128];
 
 /// The share of the radius a cubic's handles reach along a quarter circle.
-const KAPPA: f64 = 0.552_284_749_830_793_4;
+pub(super) const KAPPA: f64 = 0.552_284_749_830_793_4;
 
 pub(super) fn lower(l: &mut Lowering, o: &Object) -> Option<Vec<Object>> {
     let Paint::Gradient(g) = &o.paint else {

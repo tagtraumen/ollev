@@ -1,6 +1,6 @@
 //! The edge term: squared error pays for an edge only by the pixels it covers, so errors near a
-//! target edge (Di Zenzo steps and thin lines, grown by the anti-aliasing reach) weigh more, as
-//! on niabot's hems or the rice terraces' contours. Weights scale by the image's unit.
+//! target edge (Di Zenzo steps and thin lines, grown by the anti-aliasing reach) weigh more.
+//! Weights scale by the image's unit.
 
 use glam::{DVec2, Vec3};
 
@@ -83,8 +83,8 @@ pub fn edges_and_lines(img: &Image) -> Vec<bool> {
 fn edges_and_lines_of(img: &Image) -> Vec<bool> {
     let mut edges = edges_of(img, SIGMA);
     let lines = line_centres(img, unit_of(img.width));
-    for i in 0..edges.len() {
-        edges[i] |= lines[i];
+    for (e, l) in edges.iter_mut().zip(lines) {
+        *e |= l;
     }
     edges
 }

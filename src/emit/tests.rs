@@ -1,20 +1,9 @@
 use crate::model::{Fidelity, Object};
+use crate::scene::tests::{disc, square};
 use crate::{Fill, Scene, Shape};
 use glam::{Vec2, Vec3};
 
 use super::*;
-
-fn square(a: Vec2, b: Vec2) -> Vec<Vec<[Vec2; 4]>> {
-    let corners = [a, Vec2::new(b.x, a.y), b, Vec2::new(a.x, b.y)];
-    vec![
-        (0..4)
-            .map(|k| {
-                let (p, q) = (corners[k], corners[(k + 1) % 4]);
-                [p, p.lerp(q, 1. / 3.), p.lerp(q, 2. / 3.), q]
-            })
-            .collect(),
-    ]
-}
 
 /// A layer's shapes and marks are written as its group: without the group's two tags, the
 /// SVG is the one written with no layer.
@@ -56,8 +45,8 @@ fn a_layer_is_written_as_its_group() {
         .collect();
     let mut b: Vec<&str> = flat.lines().collect();
     assert_eq!(a.len(), b.len());
-    a.sort();
-    b.sort();
+    a.sort_unstable();
+    b.sort_unstable();
     assert_eq!(a, b);
     assert!(!flat.contains("<g "));
 }
@@ -178,22 +167,26 @@ fn a_repeat_is_one_group_of_uses() {
     assert_eq!(out.report.left, 0, "{}", out.report);
 }
 
+/// The PSNR of `svg` rendered by resvg against the model's render `truth`.
+fn psnr(svg: &str, truth: &[Vec3], width: usize, height: usize) -> f32 {
+    let drawn = verify::render_svg(svg, width, height).unwrap();
+    let sse: f32 = (0..width * height)
+        .map(|i| (drawn[i] - truth[i]).length_squared() / 3.)
+        .sum();
+    10. * ((width * height) as f32 / sse).log10()
+}
+
+/// The circle a path gradient runs along in the tests below.
+fn circle() -> crate::render::distance::Contour {
+    crate::render::distance::Contour::new(&disc(Vec2::splat(24.), 10.)[0]).unwrap()
+}
+
 /// A circle's path gradient, drawn as 32 exact bands, renders as the model does to within the
 /// banding; the blurred levels are coarser and smaller.
 #[test]
 fn a_path_gradient_draws_as_bands() {
-    let (c, r) = (Vec2::splat(24.), 10f32);
-    let k = 0.552_284_8 * r;
-    let p = [Vec2::X, Vec2::Y, -Vec2::X, -Vec2::Y].map(|d| c + d * r);
-    let t = [Vec2::Y, -Vec2::X, -Vec2::Y, Vec2::X];
-    let circle: Vec<[Vec2; 4]> = (0..4)
-        .map(|i| {
-            let j = (i + 1) % 4;
-            [p[i], p[i] + t[i] * k, p[j] - t[j] * k, p[j]]
-        })
-        .collect();
     let gradient = crate::render::Gradient::Path {
-        contour: crate::render::distance::Contour::new(&circle).unwrap(),
+        contour: circle(),
         near: -8.,
         far: 12.,
         to: [0.1, 0.2, 0.6, 1.],
@@ -210,46 +203,31 @@ fn a_path_gradient_draws_as_bands() {
     ));
     let model = scene.model();
     let (truth, _) = model.render();
-    let psnr = |level: u8| {
+    let at = |level: u8| {
         let svg = svg::encode(&model, &[0, level]);
-        let drawn = verify::render_svg(&svg, 48, 48).unwrap();
-        let sse: f32 = (0..48 * 48)
-            .map(|i| (drawn[i] - truth[i]).length_squared() / 3.)
-            .sum();
-        (10. * (48. * 48. / sse).log10(), svg.len())
+        (psnr(&svg, &truth, 48, 48), svg.len())
     };
-    let (exact, big) = psnr(3);
-    let (coarse, small) = psnr(1);
+    let (exact, big) = at(3);
+    let (coarse, small) = at(1);
     assert!(exact > 45., "{exact}");
     assert!(coarse < exact && small < big, "{coarse} {small} {big}");
 }
 
-/// Glows fading to transparent over a two-colour ground, an elliptical one with a translucent stop
-/// of another colour and a path gradient's, render in SVG as the model does.
+/// Glows fading to transparent over a two-colour ground, an elliptical one with a translucent
+/// stop of another colour and a path gradient's, render in SVG as the model does.
 #[test]
 fn glows_with_transparent_stops() {
-    let (c, r) = (Vec2::splat(24.), 10f32);
-    let k = 0.552_284_8 * r;
-    let p = [Vec2::X, Vec2::Y, -Vec2::X, -Vec2::Y].map(|d| c + d * r);
-    let t = [Vec2::Y, -Vec2::X, -Vec2::Y, Vec2::X];
-    let circle: Vec<[Vec2; 4]> = (0..4)
-        .map(|i| {
-            let j = (i + 1) % 4;
-            [p[i], p[i] + t[i] * k, p[j] - t[j] * k, p[j]]
-        })
-        .collect();
     let stops = crate::render::Stops::new(&[(0.5, [0.9, 0.4, 0.2, 0.6])]);
     let radial = crate::render::Gradient::Radial {
-        center: c,
+        center: Vec2::splat(24.),
         focus: Vec2::ZERO,
         radius: 20.,
-        transform: glam::Mat2::from_angle(0.5)
-            * glam::Mat2::from_diagonal(glam::Vec2::new(1., 0.6)),
+        transform: glam::Mat2::from_angle(0.5) * glam::Mat2::from_diagonal(Vec2::new(1., 0.6)),
         to: [0.9, 0.4, 0.2, 0.],
         stops,
     };
     let path = crate::render::Gradient::Path {
-        contour: crate::render::distance::Contour::new(&circle).unwrap(),
+        contour: circle(),
         near: -8.,
         far: 12.,
         to: [0.9, 0.4, 0.2, 0.],
@@ -270,13 +248,8 @@ fn glows_with_transparent_stops() {
             },
         ));
         let model = scene.model();
-        let (truth, _) = model.render();
         let svg = svg::encode(&model, &[0, 0, 3]);
-        let drawn = verify::render_svg(&svg, 48, 48).unwrap();
-        let sse: f32 = (0..48 * 48)
-            .map(|i| (drawn[i] - truth[i]).length_squared() / 3.)
-            .sum();
-        let psnr = 10. * (48. * 48. / sse).log10();
+        let psnr = psnr(&svg, &model.render().0, 48, 48);
         assert!(psnr > 40., "{psnr}\n{svg}");
     }
 }
@@ -316,13 +289,8 @@ fn dashes_of_no_length_are_round_dots() {
     assert_eq!(shape.loops.len(), 5);
     scene.push(shape);
     let model = scene.model();
-    let (truth, _) = model.render();
     let svg = svg::encode(&model, &[0, 0]);
     assert!(svg.contains("stroke-dasharray=\"0.00 8.00\""), "{svg}");
-    let drawn = verify::render_svg(&svg, 48, 32).unwrap();
-    let sse: f32 = (0..48 * 32)
-        .map(|i| (drawn[i] - truth[i]).length_squared() / 3.)
-        .sum();
-    let psnr = 10. * (48. * 32. / sse).log10();
+    let psnr = psnr(&svg, &model.render().0, 48, 32);
     assert!(psnr > 35., "{psnr}\n{svg}");
 }

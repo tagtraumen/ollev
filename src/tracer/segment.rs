@@ -78,7 +78,6 @@ impl Moments {
         let (gx, gy) = self.gradient();
         (self.flat_sse() - (gx * scx + gy * scy).element_sum()).max(0.)
     }
-
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -93,12 +92,9 @@ pub struct SegmentParams {
     /// A merge by contrast is refused when no color model fits the merged region within this RMS
     /// error, which stops soft edges from chaining two different colors together.
     pub max_fit_error: f64,
-    /// Asked now and then while regions merge; `true` stops merging, the caller having given
-    /// up on the result (a host cancelling the trace).
-    pub cancelled: fn() -> bool,
 }
 
-/// Regions merged between two asks of [`SegmentParams::cancelled`], about a millisecond.
+/// Regions merged between two checkpoints (see [`crate::progress`]), about a millisecond.
 const MERGES_PER_POLL: usize = 1024;
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -126,7 +122,6 @@ enum Criterion {
 struct Region {
     moments: Moments,
     energy: f64,
-    gradient: bool,
     /// Neighbor region and the length of the shared boundary.
     neighbors: HashMap<u32, Boundary>,
     version: u32,
@@ -137,11 +132,9 @@ struct Region {
 
 impl Region {
     fn new(moments: Moments, params: &SegmentParams) -> Self {
-        let (energy, gradient) = energy(&moments, params, false);
         Self {
+            energy: energy(&moments, params),
             moments,
-            energy,
-            gradient,
             neighbors: HashMap::default(),
             version: 0,
             misfits: Vec::new(),
@@ -149,18 +142,15 @@ impl Region {
     }
 }
 
-fn energy(m: &Moments, params: &SegmentParams, gradients: bool) -> (f64, bool) {
+/// The fit error of the cheaper colour model, flat or affine (a gradient at its price).
+fn energy(m: &Moments, params: &SegmentParams) -> f64 {
     let flat = m.flat_sse();
     // Fewer than a handful of pixels cannot support a meaningful gradient
-    if !gradients || m.n < 6. {
-        return (flat, false);
+    if m.n < 6. {
+        return flat;
     }
     let affine = m.affine_sse() + params.gradient_cost;
-    if affine < flat {
-        (affine, true)
-    } else {
-        (flat, false)
-    }
+    if affine < flat { affine } else { flat }
 }
 
 struct Candidate {
@@ -189,6 +179,16 @@ impl Ord for Candidate {
     }
 }
 
+/// The root of `i` in the union-find forest `parent`, halving the paths walked.
+fn find(parent: &mut [u32], mut i: u32) -> u32 {
+    while parent[i as usize] != i {
+        let grandparent = parent[parent[i as usize] as usize];
+        parent[i as usize] = grandparent;
+        i = grandparent;
+    }
+    i
+}
+
 pub struct Segmentation {
     /// Region index per pixel, row-major.
     pub labels: Vec<u32>,
@@ -200,14 +200,6 @@ pub struct Segmentation {
 pub fn equal_color_regions(rgb: &[u8], width: usize, height: usize) -> (Vec<u32>, usize) {
     let color = |i: usize| &rgb[3 * i..3 * i + 3];
     let mut parent: Vec<u32> = (0..(width * height) as u32).collect();
-    let find = |parent: &mut Vec<u32>, mut i: u32| {
-        while parent[i as usize] != i {
-            let grandparent = parent[parent[i as usize] as usize];
-            parent[i as usize] = grandparent;
-            i = grandparent;
-        }
-        i
-    };
     for y in 0..height {
         for x in 0..width {
             let i = y * width + x;
@@ -241,7 +233,7 @@ pub fn equal_color_regions(rgb: &[u8], width: usize, height: usize) -> (Vec<u32>
 /// Greedy region merging that minimizes the fit error of every region plus the boundary cost (a
 /// discrete Mumford-Shah energy), from the regions of `seeds` (a label per pixel, `count`
 /// regions), which the merging would form anyway, like [`equal_color_regions`].
-pub fn segment_seeded(
+pub async fn segment_seeded(
     colors: &[DVec3],
     width: usize,
     height: usize,
@@ -294,25 +286,12 @@ pub fn segment_seeded(
     let mut parent: Vec<u32> = (0..regions.len() as u32).collect();
 
     // Geometry comes from local contrast alone, so a smooth ramp becomes one region however far
-    // apart its end colors are. Color models are fitted afterwards, and a final energy pass removes
-    // what is too small to be worth its boundary.
-    for (i, region) in regions.iter_mut().enumerate() {
-        if parent[i] == i as u32 {
-            (region.energy, region.gradient) = energy(&region.moments, params, true);
-        }
-    }
-    merge(&mut regions, &mut parent, params, Criterion::Contrast);
-    merge(&mut regions, &mut parent, params, Criterion::Energy);
+    // apart its end colors are; a final energy pass removes what is too small to be worth its
+    // boundary
+    merge(&mut regions, &mut parent, params, Criterion::Contrast).await;
+    merge(&mut regions, &mut parent, params, Criterion::Energy).await;
 
     // Compact the surviving regions into consecutive labels
-    let find = |parent: &mut Vec<u32>, mut i: u32| {
-        while parent[i as usize] != i {
-            let grandparent = parent[parent[i as usize] as usize];
-            parent[i as usize] = grandparent;
-            i = grandparent;
-        }
-        i
-    };
     let mut compact = HashMap::default();
     let labels = seeds
         .iter()
@@ -325,7 +304,12 @@ pub fn segment_seeded(
     Segmentation { labels }
 }
 
-fn merge(regions: &mut [Region], parent: &mut [u32], params: &SegmentParams, criterion: Criterion) {
+async fn merge(
+    regions: &mut [Region],
+    parent: &mut [u32],
+    params: &SegmentParams,
+    criterion: Criterion,
+) {
     // Candidates with a cost below zero are merged, cheapest first
     let merge_cost = |regions: &[Region], a: u32, b: u32| {
         let (ra, rb) = (&regions[a as usize], &regions[b as usize]);
@@ -335,7 +319,7 @@ fn merge(regions: &mut [Region], parent: &mut [u32], params: &SegmentParams, cri
                 boundary.contrast / boundary.len as f64 - params.contrast * params.contrast
             }
             Criterion::Energy => {
-                let merged = energy(&ra.moments.add(&rb.moments), params, true).0;
+                let merged = energy(&ra.moments.add(&rb.moments), params);
                 merged - ra.energy - rb.energy - params.boundary_cost * boundary.len as f64
             }
         }
@@ -396,8 +380,8 @@ fn merge(regions: &mut [Region], parent: &mut [u32], params: &SegmentParams, cri
     let mut popped = 0usize;
     while let Some(c) = heap.pop() {
         popped += 1;
-        if popped.is_multiple_of(MERGES_PER_POLL) && (params.cancelled)() {
-            break;
+        if popped.is_multiple_of(MERGES_PER_POLL) {
+            crate::progress::poll().await;
         }
         if heap.len() > 2 * compacted + 1024 {
             heap.retain(|c| is_current(regions, parent, c));
@@ -437,11 +421,9 @@ fn merge(regions: &mut [Region], parent: &mut [u32], params: &SegmentParams, cri
         let moments = regions[keep as usize]
             .moments
             .add(&regions[gone as usize].moments);
-        let (energy, gradient) = energy(&moments, params, true);
         let kept = &mut regions[keep as usize];
+        kept.energy = energy(&moments, params);
         kept.moments = moments;
-        kept.energy = energy;
-        kept.gradient = gradient;
         kept.version += 1;
         parent[gone as usize] = keep;
 

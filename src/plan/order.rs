@@ -1,22 +1,23 @@
 //! The draw order: a shape occluded by an earlier sibling goes below it.
 
 use super::*;
+use crate::tracer::fit::eval;
 
 /// Pixels around an outline sample within which the other shape has to lie for the sample to
 /// be on their shared boundary.
-pub(super) const JUNCTION_REACH: i32 = 1;
+const JUNCTION_REACH: i32 = 1;
 /// Mean distance in pixels within which a shape's outline, bridged smoothly across the stretch
 /// it shares with a sibling, still follows that stretch: the shape owns the boundary.
-pub(super) const OWNS: f64 = 1.;
+const OWNS: f64 = 1.;
 /// Mean distance by which a shape's bridge has to miss the shared stretch more than the
 /// sibling's for the stretch to be a notch cut into the shape (a square on a circle of radius
 /// 10 cuts a chord missed by 2 px).
-pub(super) const NOTCH_DEPTH: f64 = 1.;
+const NOTCH_DEPTH: f64 = 1.;
 /// And by what factor it has to miss more.
-pub(super) const NOTCH_RATIO: f64 = 2.;
+const NOTCH_RATIO: f64 = 2.;
 /// Pixels along a sibling's outline on either side of a junction over which its turning is
 /// measured, to tell it running smoothly through from having a corner there.
-pub(super) const SMOOTH_REACH: f32 = 2.;
+const SMOOTH_REACH: f32 = 2.;
 
 /// For each planned shape, the earlier sibling that occludes it, if any: of two siblings
 /// sharing a boundary, the one whose outline bridged across it still follows it owns it, and
@@ -28,7 +29,6 @@ pub(super) fn occluders(
     width: usize,
     height: usize,
 ) -> Vec<Option<usize>> {
-    use crate::tracer::fit::eval;
     const SAMPLES: usize = 8;
     let near = |p: Vec2, other: u32| {
         let (cx, cy) = (p.x.floor() as i32, p.y.floor() as i32);
@@ -161,8 +161,7 @@ pub(super) fn occluders(
             };
             // The sibling either has a shared stretch of its own, or its outline runs through
             // both ends of ours and misses by nothing, unless its outline read between samples
-            // (a coarse fit shares no whole cubic) shows it does not own ours (the fox's ear,
-            // four cubics around its inner ear)
+            // (a coarse fit shares no whole cubic) shows it does not own ours
             let theirs = match miss(plan[s].node, plan[k].node, false) {
                 Some((theirs, _)) => theirs,
                 None if ends.iter().all(|&p| smooth_through(plan[s].node, p)) => {
@@ -192,9 +191,8 @@ pub(super) fn occluders(
 
 /// The loop with each cubic split where the outline enters or leaves the pixels `inside`,
 /// between two of its samples, so a stretch an outline shares is whole cubics however coarse
-/// its fit (the fox's ear, four cubics around the inner ear's notch).
+/// its fit.
 fn split_where(cubics: &[Cubic], inside: &impl Fn(Vec2) -> bool) -> Vec<Cubic> {
-    use crate::tracer::fit::eval;
     const SAMPLES: usize = 16;
     let mut out = Vec::with_capacity(cubics.len());
     for c in cubics {

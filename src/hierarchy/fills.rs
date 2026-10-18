@@ -35,7 +35,7 @@ impl LinearFill {
 
 /// At most this many of a node's pixels go into fitting its ramp, a few per bin along a 256 px
 /// axis: the plan only asks whether a node is one ramp; its error is taken over all pixels.
-pub(super) const RAMP_SAMPLES: usize = 1024;
+const RAMP_SAMPLES: usize = 1024;
 
 /// A color varying along an axis through stops, which a linear gradient with stops paints, in
 /// the colors of the statistics, with the squared error of each leaf of the node it was fitted
@@ -68,10 +68,8 @@ impl RampFill {
         linear: &LinearFill,
         stop_cost: f64,
     ) -> Option<Self> {
-        let n = &hierarchy.nodes[node as usize];
-        let (min, max) = (n.min.as_dvec2() + 0.5, n.max.as_dvec2() - 0.5);
         let along = |p: DVec2| (p - linear.origin).dot(linear.axis);
-        let corners = [min, max, DVec2::new(min.x, max.y), DVec2::new(max.x, min.y)];
+        let corners = corners(hierarchy, node);
         let q0 = corners.iter().map(|&c| along(c)).fold(f64::MAX, f64::min);
         let q1 = corners.iter().map(|&c| along(c)).fold(f64::MIN, f64::max);
         if q1 - q0 < 1. {
@@ -95,24 +93,19 @@ impl RampFill {
         Some(Self::tabled(hierarchy, node, from, gradient))
     }
 
-    /// The radial gradient about the centre of `radial` as SVG paints one, its colour linear in
-    /// the radius, stretched into the ellipse that fits the pixels of `node` best (see
-    /// [`crate::fill::stretch`]): an oval lit from its middle, which the circle shades as two
-    /// (`b004-radial-05`), or a disc lit off its centre (`b004-radial-03`). Two colours only:
-    /// stops between them fit the flat regions a leaf merges (`b004-alpha-ramp-04`).
+    /// The radial gradient about the centre of `radial`, linear in the radius and stretched into
+    /// the ellipse that fits the pixels of `node` best (see [`crate::fill::stretch`]). Two
+    /// colours only: stops between them would fit the flat regions a leaf merges.
     pub fn fit_radial(
         hierarchy: &Hierarchy,
         node: u32,
         radial: &RadialFill,
         segment_cost: f64,
     ) -> Option<Self> {
-        let n = &hierarchy.nodes[node as usize];
         let center = radial.center.as_vec2();
-        let (min, max) = (n.min.as_vec2() + 0.5, n.max.as_vec2() - 0.5);
-        let corners = [min, max, Vec2::new(min.x, max.y), Vec2::new(max.x, min.y)];
-        let radius = corners
+        let radius = corners(hierarchy, node)
             .iter()
-            .map(|c| c.distance(center))
+            .map(|c| c.as_vec2().distance(center))
             .fold(0f32, f32::max);
         let samples = ramp_samples(hierarchy, hierarchy.pixels(node));
         let (radius, angle, squash) = crate::fill::stretch(&samples, center, radius);
@@ -127,8 +120,7 @@ impl RampFill {
         let (from, gradient) = crate::fill::ramp(&samples, &two, f32::INFINITY)?;
         let ramp = Self::tabled(hierarchy, node, from, gradient);
         // Shading read on the leaves' interiors, clear of the rims that mix their neighbours'
-        // colours (b007-rughook-0252's grid lines in its frame's leaf), and no leaf the picture
-        // steps across within a unit's length (b007-foldingfan-0560's pale wedges)
+        // colours, and no leaf the picture steps across within a unit's length
         let unit = crate::translucency::raster::unit_of(hierarchy.width()) as u32;
         let paint = crate::fill::cost_segments(&crate::Fill {
             color: from,
@@ -217,7 +209,7 @@ impl RampFill {
 
     /// The pieces of the ramp as linear fills, each with the range of the parameter it holds
     /// over: constant before the start and after the end.
-    pub(super) fn pieces(&self) -> Vec<(f64, f64, LinearFill)> {
+    fn pieces(&self) -> Vec<(f64, f64, LinearFill)> {
         let Gradient::Linear { start, end, .. } = self.gradient else {
             return Vec::new();
         };
@@ -261,7 +253,7 @@ impl RampFill {
 
     /// The squared error of the pixels of `leaf` around the ramp: in closed form where the
     /// leaf lies within one piece of it, pixel by pixel where it crosses a stop.
-    pub(super) fn leaf_error(
+    fn leaf_error(
         &self,
         hierarchy: &Hierarchy,
         leaf: u32,
@@ -271,15 +263,13 @@ impl RampFill {
             let (start, end) = (start.as_dvec2(), end.as_dvec2());
             let d = end - start;
             let t = |p: DVec2| (p - start).dot(d) / d.length_squared();
-            let n = &hierarchy.nodes[leaf as usize];
-            let (min, max) = (n.min.as_dvec2() + 0.5, n.max.as_dvec2() - 0.5);
-            let ts = [min, max, DVec2::new(min.x, max.y), DVec2::new(max.x, min.y)].map(t);
+            let ts = corners(hierarchy, leaf).map(t);
             let (t0, t1) = (
                 ts.iter().copied().fold(f64::MAX, f64::min),
                 ts.iter().copied().fold(f64::MIN, f64::max),
             );
             if let Some((_, _, fill)) = pieces.iter().find(|&&(a, b, _)| a <= t0 && t1 <= b) {
-                return n.stats.sse_about_linear(fill);
+                return hierarchy.nodes[leaf as usize].stats.sse_about_linear(fill);
             }
         }
         let width = hierarchy.width();
@@ -310,6 +300,13 @@ impl RampFill {
             .map(|&leaf| self.leaf_error(hierarchy, leaf, &pieces))
             .sum()
     }
+}
+
+/// The pixel centres at the corners of the bounding box of `node`.
+fn corners(hierarchy: &Hierarchy, node: u32) -> [DVec2; 4] {
+    let n = &hierarchy.nodes[node as usize];
+    let (min, max) = (n.min.as_dvec2() + 0.5, n.max.as_dvec2() - 0.5);
+    [min, max, DVec2::new(min.x, max.y), DVec2::new(max.x, min.y)]
 }
 
 /// At most [`RAMP_SAMPLES`] of `pixels`, strided across the width's residues so the samples
@@ -362,6 +359,6 @@ pub(super) fn solve4(mut m: [[f64; 4]; 4], mut rhs: [DVec3; 4]) -> Option<[DVec3
     Some(x)
 }
 
-pub(super) fn gcd(a: usize, b: usize) -> usize {
+fn gcd(a: usize, b: usize) -> usize {
     if b == 0 { a } else { gcd(b, a % b) }
 }

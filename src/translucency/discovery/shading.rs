@@ -1,6 +1,11 @@
 //! Shading layers: shadows and highlights as black and white layers.
 
-use super::*;
+use glam::{IVec3, Vec3};
+
+use super::{Graph, Support, best_cut, bin};
+use crate::translucency::leaves::{Leaves, Pair, Plane, Point};
+use crate::translucency::{NOISE, SHOW_THROUGH, SLOPE_MIN, percentile};
+use crate::{HashMap, HashSet};
 
 /// A shadow `o = s b` per channel (black at opacity `1 - s`) or a highlight
 /// `1 - o = s (1 - b)` (white): in the space `t = b`, or `t = 1 - b`, both are `t_o = s t_b`.
@@ -24,6 +29,15 @@ impl Shade {
             Shade::Shadow => Vec3::ZERO,
             Shade::Highlight => Vec3::ONE,
         }
+    }
+
+    /// The shade a layer of color `c` at `k` is, to the noise its color is known to (a level
+    /// of the image is `1 / (1 - k)` levels of it).
+    pub fn of(c: Vec3, k: f32) -> Option<Shade> {
+        let margin = NOISE / (1. - k);
+        [Shade::Shadow, Shade::Highlight]
+            .into_iter()
+            .find(|kind| (c - kind.color()).abs().max_element() <= margin)
     }
 }
 
@@ -156,8 +170,8 @@ pub fn shading_pass(lv: &Leaves) -> Vec<Layer> {
         }
     }
     raw.sort_by(|a, b| b.2.total_cmp(&a.2));
-    // Merged within a Hough step only: layers with close scales (the jellyfish's three
-    // bells) would refit to a mean that fits none
+    // Merged within a Hough step only: layers with close scales would refit to a mean that
+    // fits none
     let mut merged: Vec<(Shade, Vec3)> = Vec::new();
     for (kind, s, _) in raw {
         if !merged
@@ -170,8 +184,7 @@ pub fn shading_pass(lv: &Leaves) -> Vec<Layer> {
     let mut out: Vec<(Layer, Vec<u32>)> = Vec::new();
     for &(kind, s0) in merged.iter().take(SHADE_TOP) {
         let mut s = s0;
-        let keep = |p: &crate::translucency::leaves::Pair,
-                    q: &crate::translucency::leaves::Point| {
+        let keep = |p: &Pair, q: &Point| {
             lv.interior[p.x as usize] && (q.o - q.b).abs().max_element() > 2. * NOISE
         };
         for _ in 0..2 {
@@ -252,18 +265,18 @@ pub fn shading_pass(lv: &Leaves) -> Vec<Layer> {
     }
     out.sort_by(|a, b| b.0.score.total_cmp(&a.0.score));
     // The same layer found from two cells: one kind, close scales and shared leaves
-    let mut final_: Vec<(Layer, Vec<u32>)> = Vec::new();
+    let mut kept: Vec<(Layer, Vec<u32>)> = Vec::new();
     for (layer, under) in out {
-        if final_.iter().any(|(l2, u2)| {
+        if kept.iter().any(|(l2, u2)| {
             l2.kind == layer.kind
                 && (layer.s - l2.s).abs().max_element() <= 0.04
                 && under.iter().any(|x| u2.contains(x))
         }) {
             continue;
         }
-        final_.push((layer, under));
+        kept.push((layer, under));
     }
-    final_.into_iter().map(|(l, _)| l).collect()
+    kept.into_iter().map(|(l, _)| l).collect()
 }
 
 /// One group of leaves under a shading relation as a layer, if the backgrounds show through:

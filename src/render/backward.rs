@@ -38,11 +38,7 @@ impl SceneGrad {
             .paths
             .iter()
             .map(|path| PathGrad {
-                subpaths: path
-                    .subpaths
-                    .iter()
-                    .map(|s| vec![Vec2::ZERO; s.points.len()])
-                    .collect(),
+                subpaths: path.zero_points(),
                 color: [0.; 4],
                 gradient: path.gradient.map(|g| g.zeroed()),
             })
@@ -202,15 +198,8 @@ pub fn backward(scene: &Scene, tape: &Tape, d_image: &[Vec3]) -> SceneGrad {
             path_grad.gradient = Some(g);
         }
 
-        let d_points = rasterize_backward(polys, winding, &d_winding);
-        for ((poly, d_poly), d_subpath) in polys.iter().zip(&d_points).zip(&mut path_grad.subpaths)
-        {
-            for (point, d_point) in poly.iter().zip(d_poly) {
-                for (&src, &weight) in point.src.iter().zip(&point.weights) {
-                    d_subpath[src as usize] += weight * *d_point;
-                }
-            }
-        }
+        let d_flat = rasterize_backward(polys, winding, &d_winding);
+        path_grad.subpaths = path.points_gradient(polys, &d_flat);
     }
 
     grad
