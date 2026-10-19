@@ -111,10 +111,11 @@ impl Tracing {
             }
             _ => (rgb, w, h, 1.),
         };
+        let auto = || crate::tracer::auto_detail(&rgb, tw, th) * Detail::AUTO_SHARE;
         let detail = match options.detail {
-            Detail::Auto => crate::tracer::auto_detail(&rgb, tw, th),
+            Detail::Auto => auto(),
             Detail::Absolute(d) => d,
-            Detail::Scaled(f) => crate::tracer::auto_detail(&rgb, tw, th) * f,
+            Detail::Scaled(f) => auto() * f,
         };
         let plan = crate::plan::Options {
             stages: options.stages,

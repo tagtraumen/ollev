@@ -58,8 +58,9 @@ let model = loop {
 
 - `tolerance`: the detail slider, as a multiple of the picture's own uncertainty; lower keeps
   more detail.
-- `detail`: the price of a segment, read from how busy the picture is (`Detail::Auto`),
-  scaled (`Detail::Scaled`) or given (`Detail::Absolute`).
+- `detail`: the price of a segment, read from how busy the picture is (`Detail::Auto`, at
+  `Detail::AUTO_SHARE` of the level read, a coarse and quick trace), scaled
+  (`Detail::Scaled`, 2 for the level read itself) or given (`Detail::Absolute`).
 - `matte` and `keep_transparency`: what transparent pixels are composited over, and whether
   the model is clipped to the picture's opaque part.
 - `max_pixels`: a larger picture is traced at the size that holds this many pixels and its
@@ -68,8 +69,8 @@ let model = loop {
   gradients, blurs, radial focus, clips, dashes, transparent gradient stops) is rewritten in
   the ones it has.
 - `stages`: the pipeline's stages (`Stages`: translucency, strokes, primitives, effects,
-  instancing, path gradients), all on by default; one switched off is skipped, so the trace
-  is faster.
+  instancing, path gradients); by default (`Stages::DEFAULT`) the quick ones, primitives and
+  instancing, run and the others are skipped, `Stages::ALL` runs every one.
 
 The model's coordinates are pixels of the traced image, its colours sRGB-encoded with
 straight alpha; the `model` module documents the contract.

@@ -33,20 +33,28 @@ pub struct Image<'a> {
     pub height: usize,
 }
 
-/// How much detail a trace keeps: the price of a segment, scaled by a level.
+/// How much detail a trace keeps: the price of a segment, scaled by a level (a segment costs
+/// the inverse square of the level, so a higher level keeps more detail).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Detail {
-    /// The level the picture's busyness asks for: 1 for flat art, up to 3 for busy pictures.
+    /// The level the picture's busyness reads (1 for flat art, up to 3 for busy pictures) times
+    /// [`Detail::AUTO_SHARE`], a coarse and quick trace.
     Auto,
     /// This level.
     Absolute(f64),
-    /// The automatic level times this factor (a host's detail slider).
+    /// The automatic level times this factor (a host's detail slider): `Scaled(1.)` is
+    /// [`Detail::Auto`], `Scaled(2.)` the level the busyness reads itself.
     Scaled(f64),
 }
 
-/// The stages of the pipeline a trace runs, all by default. A stage switched off is skipped,
-/// its work not done, so the trace is faster; what it would have drawn is drawn by the stages
-/// that stay (the plain shapes in the end).
+impl Detail {
+    /// The share of the level the busyness reads that [`Detail::Auto`] keeps.
+    pub const AUTO_SHARE: f64 = 0.5;
+}
+
+/// The stages of the pipeline a trace runs ([`Stages::DEFAULT`] by default). A stage switched
+/// off is skipped, its work not done, so the trace is faster; what it would have drawn is drawn
+/// by the stages that stay (the plain shapes in the end).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Stages {
     /// Translucent layers: the families and the discovery proposing a layer over what it
@@ -83,11 +91,21 @@ impl Stages {
         instancing: true,
         path_gradients: true,
     };
+
+    /// The stages a trace runs by default, the quick ones: primitives and instancing.
+    pub const DEFAULT: Self = Self {
+        translucency: false,
+        strokes: false,
+        primitives: true,
+        effects: false,
+        instancing: true,
+        path_gradients: false,
+    };
 }
 
 impl Default for Stages {
     fn default() -> Self {
-        Self::ALL
+        Self::DEFAULT
     }
 }
 
@@ -127,7 +145,7 @@ impl Default for TraceOptions {
             keep_transparency: false,
             max_pixels: None,
             host: Capabilities::ALL,
-            stages: Stages::ALL,
+            stages: Stages::DEFAULT,
             #[cfg(feature = "diagnostics")]
             diagnostics: Diagnostics::default(),
         }
