@@ -2,8 +2,6 @@
 //! match the picture. The objective counts only the residual beyond it ([`excess`]); it adds the
 //! noise, half an anti-aliased or blurred edge's step, and texture's grain, in quadrature.
 
-use glam::Vec3;
-
 use crate::edges::SIGMA;
 use crate::translucency::raster::{Image, NOISE, di_zenzo, length_px};
 
@@ -37,15 +35,15 @@ pub struct Channel {
 }
 
 impl Channel {
-    /// The channel of an image given as the context's target (RGB in `0..=1`).
-    pub fn of_target(target: &[Vec3], width: usize) -> Self {
-        let img = Image::from_target(target, width);
-        Self::of_image(&img)
+    #[cfg(test)]
+    pub fn of_image(img: &Image) -> Self {
+        crate::progress::finish(async {
+            Self::of_parts(edge_part(img).await, grain(img).await)
+        })
     }
 
-    pub fn of_image(img: &Image) -> Self {
-        let edge = edge_part(img);
-        let texture = grain_of(img);
+    /// The channel of an edge part and a texture part.
+    fn of_parts(edge: Vec<f32>, texture: Vec<f32>) -> Self {
         let total = edge
             .iter()
             .zip(&texture)
@@ -61,9 +59,16 @@ impl Channel {
 
 /// The texture's part of the channel: how far grain and a JPEG's quantization may move each
 /// pixel, as a colour distance.
+#[cfg(feature = "diagnostics")]
 pub fn grain_of(img: &Image) -> Vec<f32> {
+    crate::progress::finish(grain(img))
+}
+
+/// [`grain_of`], a checkpoint between its passes.
+async fn grain(img: &Image) -> Vec<f32> {
     let reach = length_px(img.width, TEXTURE_REACH).max(TEXTURE_REACH as usize);
-    let mut texture = texture_part(img, reach);
+    let mut texture = texture_part(img, reach).await;
+    crate::progress::poll().await;
     // A JPEG's quantization is noise of the picture where the image shows it, at the
     // range grain covers (see [`compression`])
     if let Some(c) = compression(img) {
@@ -76,9 +81,11 @@ pub fn grain_of(img: &Image) -> Vec<f32> {
 
 /// Half the step each pixel's gradient comes from, over the transition's width: what an edge
 /// leaves uncertain.
-fn edge_part(img: &Image) -> Vec<f32> {
+async fn edge_part(img: &Image) -> Vec<f32> {
     let (fine, _) = di_zenzo(img, SIGMA);
+    crate::progress::poll().await;
     let (coarse, _) = di_zenzo(img, BLUR_SCALE * SIGMA);
+    crate::progress::poll().await;
     let root = (2.0 * std::f64::consts::PI).sqrt();
     let b2 = BLUR_SCALE * BLUR_SCALE;
     fine.iter()
@@ -117,13 +124,14 @@ fn compression(img: &Image) -> Option<Vec<f32>> {
 /// How far the grain of each pixel's neighbourhood may move it: per channel the median absolute
 /// 3 x 3 Laplacian within `reach` over [`LAPLACIAN_MEDIAN`], times [`GRAIN_RANGE`], the channels
 /// added as a colour distance.
-fn texture_part(img: &Image, reach: usize) -> Vec<f32> {
+async fn texture_part(img: &Image, reach: usize) -> Vec<f32> {
     let (w, h) = (img.width, img.height);
     let mut total = vec![0f64; w * h];
     if w < 3 || h < 3 {
         return vec![0.; w * h];
     }
     for c in 0..3 {
+        crate::progress::poll().await;
         let ch = img.channel(c);
         // the response in levels, an integer for an 8-bit image (at most 16 levels of 255)
         let mut levels = vec![0u16; w * h];
@@ -138,6 +146,7 @@ fn texture_part(img: &Image, reach: usize) -> Vec<f32> {
                 levels[y * w + x] = (v.abs() * 255.0).round().min(BINS as f64 - 1.0) as u16;
             }
         }
+        crate::progress::poll().await;
         let median = sliding_median(&levels, w, h, reach);
         for (t, m) in total.iter_mut().zip(&median) {
             let s = GRAIN_RANGE * *m as f64 / 255.0 / LAPLACIAN_MEDIAN;
@@ -210,8 +219,11 @@ pub const PRICE: f64 = NOISE * NOISE;
 /// Puts `ctx` under the tolerance: each pixel may deviate by `tolerance` times its uncertainty,
 /// and a planned shape is drawn by the residual beyond that at [`PRICE`] per segment. How a
 /// shape is described keeps the plain error and the detail's price, all scaled by `tolerance^2`.
-pub fn apply(ctx: &mut crate::Context, tolerance: f64) {
-    let channel = Channel::of_target(&ctx.target, ctx.width);
+pub async fn apply(ctx: &mut crate::Context, tolerance: f64) {
+    let img = Image::from_target(&ctx.target, ctx.width);
+    let edge = edge_part(&img).await;
+    let texture = grain(&img).await;
+    let channel = Channel::of_parts(edge, texture);
     let t = tolerance as f32;
     ctx.tolerance = Some(std::sync::Arc::new(
         channel.total.iter().map(|u| u * t).collect(),

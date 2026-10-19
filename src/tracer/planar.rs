@@ -87,6 +87,34 @@ impl Grid<'_> {
         degree > 2 || (degree == 2 && image_corner)
     }
 
+    /// Calls `f` on each corner some crack meets, row by row: the corners whose four pixels
+    /// are not all of one region, read off two rows padded with [`OUTSIDE`].
+    fn boundary_corners(&self, mut f: impl FnMut(IVec2)) {
+        let (w, h) = (self.width as usize, self.height as usize);
+        let padded = |y: usize, row: &mut Vec<u32>| {
+            row.clear();
+            row.push(OUTSIDE);
+            if (1..=h).contains(&y) {
+                row.extend_from_slice(&self.labels[(y - 1) * w..y * w]);
+            } else {
+                row.resize(w + 1, OUTSIDE);
+            }
+            row.push(OUTSIDE);
+        };
+        let (mut up, mut down) = (Vec::with_capacity(w + 2), Vec::with_capacity(w + 2));
+        padded(0, &mut down);
+        for y in 0..=h {
+            std::mem::swap(&mut up, &mut down);
+            padded(y + 1, &mut down);
+            for x in 0..=w {
+                let a = up[x];
+                if a != up[x + 1] || a != down[x] || a != down[x + 1] {
+                    f(IVec2::new(x as i32, y as i32));
+                }
+            }
+        }
+    }
+
     /// Index of the undirected crack starting at `corner` in `dir`, for marking cracks as used.
     fn crack_index(&self, corner: IVec2, dir: IVec2) -> usize {
         let (p, horizontal) = match (dir.x, dir.y) {
@@ -134,30 +162,24 @@ pub fn build(labels: &[u32], width: usize, height: usize, region_count: usize) -
         }
     };
 
-    for y in 0..=grid.height {
-        for x in 0..=grid.width {
-            let corner = IVec2::new(x, y);
-            if !grid.is_junction(corner) {
-                continue;
-            }
-            for dir in DIRECTIONS {
-                if grid.is_crack(corner, dir) && !used[grid.crack_index(corner, dir)] {
-                    chains.push(walk(corner, dir, &mut used));
-                }
+    grid.boundary_corners(|corner| {
+        if !grid.is_junction(corner) {
+            return;
+        }
+        for dir in DIRECTIONS {
+            if grid.is_crack(corner, dir) && !used[grid.crack_index(corner, dir)] {
+                chains.push(walk(corner, dir, &mut used));
             }
         }
-    }
+    });
     // What remains are closed boundaries without junctions, like an island inside one region
-    for y in 0..=grid.height {
-        for x in 0..=grid.width {
-            let corner = IVec2::new(x, y);
-            for dir in [IVec2::X, IVec2::Y] {
-                if grid.is_crack(corner, dir) && !used[grid.crack_index(corner, dir)] {
-                    chains.push(walk(corner, dir, &mut used));
-                }
+    grid.boundary_corners(|corner| {
+        for dir in [IVec2::X, IVec2::Y] {
+            if grid.is_crack(corner, dir) && !used[grid.crack_index(corner, dir)] {
+                chains.push(walk(corner, dir, &mut used));
             }
         }
-    }
+    });
 
     let loops = region_loops(&chains, region_count);
     PlanarMap { chains, loops }

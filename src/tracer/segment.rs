@@ -241,6 +241,9 @@ pub async fn segment_seeded(
 ) -> Segmentation {
     let mut moments = vec![Moments::default(); count];
     for (i, (&c, &seed)) in colors.iter().zip(seeds).enumerate() {
+        if i % (MERGES_PER_POLL * 64) == 0 {
+            crate::progress::poll().await;
+        }
         let pixel = Moments::pixel((i % width) as f64 + 0.5, (i / width) as f64 + 0.5, c);
         moments[seed as usize] = moments[seed as usize].add(&pixel);
     }
@@ -249,6 +252,9 @@ pub async fn segment_seeded(
         .map(|m| Region::new(m, params))
         .collect();
     for y in 0..height {
+        if y % 16 == 0 {
+            crate::progress::poll().await;
+        }
         for x in 0..width {
             let i = y * width + x;
             let mut link = |j: usize| {
@@ -345,6 +351,9 @@ async fn merge(
         }
     };
     for (a, region) in regions.iter().enumerate() {
+        if a % (MERGES_PER_POLL * 16) == 0 {
+            crate::progress::poll().await;
+        }
         if parent[a] != a as u32 {
             continue;
         }

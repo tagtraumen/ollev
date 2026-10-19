@@ -316,6 +316,7 @@ async fn drop_loops(judge: &Judge<'_>, scene: &mut Scene, fixed: &crate::HashSet
         let mut drawn: Option<(Window, Vec<f64>)> = None;
         let mut l = 0;
         while scene.shapes[k].loops.len() > 1 && l < scene.shapes[k].loops.len() {
+            crate::progress::poll().await;
             let shape = scene.shapes[k].clone();
             let window = window_of(scene, &[id]);
             let mut errors = match drawn.take() {
@@ -427,7 +428,7 @@ mod tests {
             })
             .collect();
         let mut ctx = Context::new(&rgb, w, w, 1.);
-        crate::uncertainty::apply(&mut ctx, 1.);
+        crate::progress::finish(crate::uncertainty::apply(&mut ctx, 1.));
         ctx
     }
 

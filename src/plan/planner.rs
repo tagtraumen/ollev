@@ -66,7 +66,7 @@ pub(super) struct Planner<'a> {
 }
 
 impl<'a> Planner<'a> {
-    pub(super) fn new(ctx: &'a Context, hierarchy: &'a Hierarchy) -> Self {
+    pub(super) async fn new(ctx: &'a Context, hierarchy: &'a Hierarchy) -> Self {
         let segments = hierarchy
             .nodes
             .iter()
@@ -76,6 +76,28 @@ impl<'a> Planner<'a> {
             })
             .collect();
         let color: Vec<DVec3> = hierarchy.nodes.iter().map(|n| n.stats.mean()).collect();
+        let tolerance = match &ctx.tolerance {
+            Some(t) => {
+                let mut leaves = Vec::with_capacity(hierarchy.nodes.len());
+                for (n, node) in hierarchy.nodes.iter().enumerate() {
+                    if n % 4096 == 0 {
+                        crate::progress::poll().await;
+                    }
+                    leaves.push(node.children.is_none().then(|| {
+                        crate::uncertainty::Spread::new(
+                            hierarchy
+                                .pixels(n as u32)
+                                .iter()
+                                .map(|&i| t[i as usize])
+                                .collect(),
+                        )
+                    }));
+                }
+                crate::progress::poll().await;
+                Some((mean_squares(hierarchy, t), leaves))
+            }
+            None => None,
+        };
         let model = color.iter().map(|&c| Model::Solid(c)).collect();
         Self {
             ctx,
@@ -87,25 +109,7 @@ impl<'a> Planner<'a> {
             ramps: vec![std::sync::OnceLock::new(); hierarchy.nodes.len()],
             ellipses: vec![std::sync::OnceLock::new(); hierarchy.nodes.len()],
             weighted: None,
-            tolerance: ctx.tolerance.as_ref().map(|t| {
-                let leaves = hierarchy
-                    .nodes
-                    .iter()
-                    .enumerate()
-                    .map(|(n, node)| {
-                        node.children.is_none().then(|| {
-                            crate::uncertainty::Spread::new(
-                                hierarchy
-                                    .pixels(n as u32)
-                                    .iter()
-                                    .map(|&i| t[i as usize])
-                                    .collect(),
-                            )
-                        })
-                    })
-                    .collect();
-                (mean_squares(hierarchy, t), leaves)
-            }),
+            tolerance,
         }
     }
 
@@ -461,6 +465,7 @@ impl<'a> Planner<'a> {
                 }
             }
             while let Some((node, p, parent)) = stack.pop() {
+                crate::progress::poll().await;
                 let chosen = self.drawn[node as usize] < self.skipped(node, &p);
                 if chosen {
                     plan.push(Drawn {

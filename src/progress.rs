@@ -12,7 +12,7 @@ use std::pin::Pin;
 use std::task::Poll;
 
 use crate::Scene;
-use crate::model::Model;
+use crate::model::{Fidelity, Model};
 
 #[cfg(feature = "diagnostics")]
 mod gaps;
@@ -27,20 +27,40 @@ pub struct Progress<'a> {
     pub fraction: f64,
     /// The scene as it stands, where the trace has just changed it.
     pub scene: Option<&'a Scene>,
+    /// The latest scene kept for showing, and how many were kept up to it.
+    latest: Option<&'a Model>,
+    revision: u64,
+    fidelity: Option<&'a Fidelity>,
     finish: Option<&'a crate::tracing::Finish>,
 }
 
 impl Progress<'_> {
-    /// The scene as it stands, as the model the finished trace returns (scaled to the
-    /// image's size and lowered to the host); none where this checkpoint shows no scene.
-    /// Lowering a large scene takes a while, so a host asks for this only when it shows it.
+    /// The latest scene the trace kept for showing, as a model in the form the finished trace
+    /// returns (scaled to the image's size and lowered to the host); none before the first.
+    /// A large picture shows flat regions within milliseconds, refined in steps, then the
+    /// trace's own scenes as they grow, kept at most checkpoints. Objects lowered for an
+    /// earlier call are kept; others take the cheap form of each rewrite (a blur or a radial
+    /// focus dropped), which the result does not.
     #[must_use]
     pub fn model(&self) -> Option<Model> {
-        let scene = self.scene?;
-        Some(
-            self.finish
-                .map_or_else(|| scene.model(), |f| f.model(scene)),
-        )
+        let model = self.latest?.clone();
+        Some(match self.finish {
+            Some(f) => f.partial(model, self.fidelity),
+            None => model,
+        })
+    }
+
+    /// Whether [`Progress::model`] has a scene to show.
+    #[must_use]
+    pub fn showable(&self) -> bool {
+        self.latest.is_some()
+    }
+
+    /// How many scenes the trace has kept for showing: [`Progress::model`] is the same at two
+    /// checkpoints of one revision.
+    #[must_use]
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 }
 
@@ -70,7 +90,7 @@ impl Answer for ControlFlow<()> {
 #[derive(Default)]
 pub(crate) struct Place {
     track: Track,
-    finish: Option<crate::tracing::Finish>,
+    finish: Option<std::sync::Arc<crate::tracing::Finish>>,
 }
 
 /// What the checkpoints of a trace reach while it is polled (see [`TRACK`]).
@@ -83,24 +103,25 @@ struct Track {
     asked: bool,
     /// The scene the suspending checkpoint shows, lent until the trace is polled again.
     shown: Option<Scene>,
+    /// The latest scene kept for showing, its count of shapes (see [`keep`]), and how many
+    /// were kept.
+    latest: Option<Model>,
+    kept: usize,
+    revision: u64,
+    /// Whether the latest is a first look (see [`preview`]).
+    first_look: bool,
+    /// What a partial scene's lowering is judged by, from the trace's start.
+    fidelity: Option<Fidelity>,
     #[cfg(feature = "diagnostics")]
     gaps: Option<gaps::Gaps>,
 }
 
 impl Place {
     /// A trace's place before its first slice, its scenes made the host's model by `finish`.
-    pub(crate) fn new(finish: crate::tracing::Finish) -> Self {
+    pub(crate) fn new(finish: std::sync::Arc<crate::tracing::Finish>) -> Self {
         Self {
             finish: Some(finish),
             ..Self::default()
-        }
-    }
-
-    /// `scene` as the host's model.
-    pub(crate) fn model(&self, scene: &Scene) -> Model {
-        match &self.finish {
-            Some(finish) => finish.model(scene),
-            None => scene.model(),
         }
     }
 
@@ -110,7 +131,10 @@ impl Place {
             stage: self.track.stage.0,
             fraction: self.track.stage.1,
             scene: self.track.shown.as_ref(),
-            finish: self.finish.as_ref(),
+            latest: self.track.latest.as_ref(),
+            revision: self.track.revision,
+            fidelity: self.track.fidelity.as_ref(),
+            finish: self.finish.as_deref(),
         }
     }
 }
@@ -186,7 +210,6 @@ pub(crate) fn drive<F: Future + ?Sized>(
 }
 
 /// Runs `trace` to its end in one slice, hearing nothing.
-#[cfg(any(test, feature = "diagnostics"))]
 pub fn finish<F: Future>(trace: F) -> F::Output {
     let mut trace = std::pin::pin!(trace);
     match drive(trace.as_mut(), &mut Place::default(), &mut |_| {
@@ -238,6 +261,11 @@ impl Ask {
                 Set::At(done, of) => track.stage.1 = done as f64 / of.max(1) as f64,
             }
             track.asked = true;
+            if let Some(shown) = scene.as_ref()
+                && track.depth == 0
+            {
+                keep(track, shown, false);
+            }
             track.shown = scene.take();
             Poll::Pending
         })
@@ -276,6 +304,54 @@ impl Future for Show {
 /// `f` on the track of the trace being polled, if any.
 fn with_track<R>(f: impl FnOnce(&mut Track) -> R) -> Option<R> {
     TRACK.with_borrow_mut(|track| track.as_mut().map(f))
+}
+
+/// Keeps `scene` as the latest to show, where `always` or where its count of shapes has moved
+/// by a 32nd since the last kept (a model per scene shown would cost the square of the shapes);
+/// a first look gives way only to as many shapes as it has regions.
+fn keep(track: &mut Track, scene: &Scene, always: bool) {
+    let n = scene.shapes.len();
+    let fewer = n < track.kept && !track.first_look;
+    if always || fewer || n >= track.kept + (track.kept / 32).max(1) {
+        track.latest = Some(scene.model());
+        track.kept = n;
+        track.first_look = false;
+        track.revision += 1;
+    }
+}
+
+/// Whether a host hears the trace's checkpoints.
+pub(crate) fn driven() -> bool {
+    with_track(|_| ()).is_some()
+}
+
+/// Keeps `model` as the scene to show until the picture's own trace shows another: a first
+/// look before its first scene.
+pub(crate) fn preview(model: Model) {
+    with_track(|t| {
+        if t.depth == 0 {
+            t.kept = model.objects().len();
+            t.latest = Some(model);
+            t.first_look = true;
+            t.revision += 1;
+        }
+    });
+}
+
+/// Keeps the picture's own `scene` (not one beneath a layer) as the scene to show, where a
+/// stage leaves it whole.
+pub(crate) fn snapshot(scene: &Scene) {
+    with_track(|t| {
+        if t.depth == 0 {
+            keep(t, scene, true);
+        }
+    });
+}
+
+/// What a partial scene's lowering is judged by: the trace's own measure, before the result
+/// carries it.
+pub(crate) fn fidelity(fidelity: Fidelity) {
+    with_track(|t| t.fidelity = Some(fidelity));
 }
 
 /// How deep the traces beneath peeled layers are nested where the trace is: 0 in the

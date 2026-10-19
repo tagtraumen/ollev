@@ -159,7 +159,7 @@ pub async fn ranked_candidates(
     let pieces = super::veil::pieces(&img, leaves, &fixed.rim);
     // The proposal's relation points and families
     crate::progress::poll().await;
-    let (mut points, proposal_outside) = material_points(&img, &fixed);
+    let (mut points, proposal_outside) = material_points(&img, &fixed).await;
     // The layers the contours propose ([`super::veil`]) head families as fitted relations do:
     // a contour continued at k times its contrast is the gate's evidence, read along it.
     // Their outside is the picture off their own objects
@@ -205,13 +205,17 @@ pub async fn ranked_candidates(
     // and the thin objects over the beneath on them ([`super::above`]), for the holes of a
     // pinned family: shapes, not leaves, which blur breaks into thin slivers
     let shapes_thin = std::sync::OnceLock::new();
-    let shapes_thin = || {
-        shapes_thin.get_or_init(|| {
+    let shapes_thin = async || {
+        if shapes_thin.get().is_none() {
             let labels = shape_labels(scene, width, height);
+            crate::progress::poll().await;
             let (shapes, _mixed) = super::mixed::clean_labels(&labels, &img, width, height);
+            crate::progress::poll().await;
             let thin = super::above::thin_objects(&img, &shapes);
-            (shapes, thin)
-        })
+            crate::progress::poll().await;
+            let _ = shapes_thin.set((shapes, thin));
+        }
+        shapes_thin.get().expect("set above")
     };
     let reach = rank::reach(width);
     let top: Vec<(usize, &Family)> = families.iter().take(FAMILIES).enumerate().collect();
@@ -254,6 +258,7 @@ pub async fn ranked_candidates(
         let (region, grown_px, t_grow) = (&grown.0, grown.1, grown.2);
         let clock = crate::timing::Clock::now();
         let inp = InnerInputs::new(img, region, &fixed.rim, None);
+        crate::progress::poll().await;
         // A family is scanned only where its region holds the image of an outside material
         // under a relation the pin could take ([`homothety::gate`] on the inside palette
         // against the outside), since the coarse scan is costly
@@ -263,6 +268,7 @@ pub async fn ranked_candidates(
             Some(&homothety::Ring::of(img, region, &fixed.rim)),
         );
         let t_gate = clock.elapsed().as_secs_f64();
+        crate::progress::poll().await;
         // A veil head's evidence is the pairs that proposed it, which the region's palette
         // cannot repeat: the region passes where it holds at least half of its seeds. Each
         // proposal of a member's relation is a seed once, as several groups share one
@@ -346,6 +352,7 @@ pub async fn ranked_candidates(
         // a region re-cut at the pin's relation is pinned again near its k
         let pin = async |region: &[bool], k: f64| {
             let inp = InnerInputs::new(img, region, &fixed.rim, None);
+            crate::progress::poll().await;
             let fit = inner::repin(&inp, k).await;
             (inp, fit)
         };
@@ -397,6 +404,7 @@ pub async fn ranked_candidates(
                 })
                 .collect();
             let open = open_beyond(img, region, super::boundary::reach(img));
+            crate::progress::poll().await;
             placed = continuous(img, region, f.k, f.c(), &above, &open);
             crate::progress::poll().await;
             region = &placed;
@@ -483,7 +491,7 @@ pub async fn ranked_candidates(
         }
         let mut candidate = candidate_of(ctx, fit.k as f32, c, region, i + 1)?;
         crate::progress::poll().await;
-        let (shapes, thin_above) = shapes_thin();
+        let (shapes, thin_above) = shapes_thin().await;
         let holes = Holes {
             img,
             index: i + 1,
@@ -696,7 +704,9 @@ impl Holes<'_> {
             .collect::<Vec<bool>>();
         // The layer carried under the parts above: the holes and the grain objects the region
         // touches ([`super::grain`]). A counted material seen bare is no part
+        crate::progress::poll().await;
         let grain = super::grain::grain_objects(shapes, region, width, height);
+        crate::progress::poll().await;
         let opaque: Vec<bool> = {
             let near = dilate(region, width, height, Conn::Eight, length_px(width, 1.5));
             let mut touch = crate::HashSet::<u32>::default();

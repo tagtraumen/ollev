@@ -70,7 +70,7 @@ pub(super) async fn merge_all(
             }
             let lower = b.id;
             for kind in kinds(judge, scene, top, below) {
-                match try_merge(judge, scene, top, below, kind, tolerances) {
+                match try_merge(judge, scene, top, below, kind, tolerances).await {
                     Some(m) if m.gain > 0. => {
                         if best.as_ref().is_none_or(|(_, b)| m.gain > b.gain) {
                             best = Some((below, m));
@@ -244,9 +244,9 @@ struct Merged {
 }
 
 /// The shape at `below` traced again over the pixels `kind` gives it and fitted in its place,
-/// with the object at `top` gone, and what that gains.
-fn try_merge(
-    judge: &Judge,
+/// with the object at `top` gone, and what that gains; a checkpoint between its steps.
+async fn try_merge(
+    judge: &Judge<'_>,
     scene: &mut Scene,
     top: usize,
     below: usize,
@@ -275,6 +275,7 @@ fn try_merge(
     if loops.is_empty() {
         return None;
     }
+    crate::progress::poll().await;
     let mut shape = Shape {
         id: b.id,
         node: b.node,
@@ -301,17 +302,22 @@ fn try_merge(
     scene.shapes.remove(top);
     let lower = scene.shapes.remove(below);
     scene.change();
-    let fitted = (|| {
+    let fitted = async {
         let near = Place::new(&fit, scene, &shape, below, MARGIN)?;
+        crate::progress::poll().await;
         near.refine(&fit, &mut shape);
+        crate::progress::poll().await;
         let place = Place::new(&fit, scene, &shape, below, reach)?;
+        crate::progress::poll().await;
         if kind != Kind::Difference {
             shape.fill = refit_fill(ctx, &place, &shape);
         }
         let cost = place.cost(&fit, shape.fill);
         let origin = place.window.origin();
         let error = cost.value(&shape.path(origin));
+        crate::progress::poll().await;
         crate::cleanup::clean_in(&fit, &cost, origin, &mut shape, error);
+        crate::progress::poll().await;
         simplify_with(
             &fit,
             &place,
@@ -321,7 +327,8 @@ fn try_merge(
             crate::outline::CORNER_ANGLE,
         );
         Some(())
-    })();
+    }
+    .await;
     scene.shapes.insert(below, lower);
     scene.shapes.insert(top, o);
     scene.change();
@@ -339,6 +346,7 @@ fn try_merge(
         width,
         height,
     );
+    crate::progress::poll().await;
     let shown = judge.canvas.shown(scene, window);
     let error = judge.error(window, &shown);
     let at = scene.changes();

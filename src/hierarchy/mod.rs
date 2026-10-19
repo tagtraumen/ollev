@@ -74,6 +74,8 @@ const MIXED_LOW: f64 = 0.1;
 const MIXED_HIGH: f64 = 0.9;
 /// How far off the line between the two sides' colors a mixture may lie.
 const MIXED_OFF_LINE: f64 = 0.08;
+/// Pixels of a pass over the picture between two checkpoints.
+const POLL: usize = 1 << 16;
 
 pub struct Hierarchy {
     /// The leaves (regions of the segmentation) first, then each merge.
@@ -121,7 +123,7 @@ impl Ord for Merge {
 impl Hierarchy {
     /// Builds the tree over the regions of `labels` (`count` regions), with region statistics
     /// from `colors`.
-    pub fn build(
+    pub async fn build(
         labels: Vec<u32>,
         count: usize,
         colors: &[DVec3],
@@ -143,6 +145,9 @@ impl Hierarchy {
             })
             .collect();
         for (i, &label) in labels.iter().enumerate() {
+            if i % POLL == 0 {
+                crate::progress::poll().await;
+            }
             let (x, y) = (i % width, i / width);
             let p = IVec2::new(x as i32, y as i32);
             let node = &mut nodes[label as usize];
@@ -171,6 +176,9 @@ impl Hierarchy {
             }
         };
         for y in 0..height {
+            if y % 16 == 0 {
+                crate::progress::poll().await;
+            }
             for x in 0..width {
                 let i = y * width + x;
                 if x + 1 < width {
@@ -227,6 +235,9 @@ impl Hierarchy {
         };
         let mut heap = BinaryHeap::new();
         for (a, map) in neighbors.iter().enumerate() {
+            if a % (POLL / 4) == 0 {
+                crate::progress::poll().await;
+            }
             for (&b, &length) in map {
                 if (a as u32) < b {
                     heap.push(Merge {
@@ -286,7 +297,12 @@ impl Hierarchy {
             neighbors.push(merged);
             c
         };
+        let mut popped = 0usize;
         while let Some(Merge { cost: scale, a, b }) = heap.pop() {
+            popped += 1;
+            if popped.is_multiple_of(POLL / 16) {
+                crate::progress::poll().await;
+            }
             if !alive[a as usize] || !alive[b as usize] {
                 continue;
             }
@@ -362,17 +378,21 @@ impl Hierarchy {
             pixels,
             pixel_start,
         };
-        hierarchy.measure_perimeters(&boundaries);
+        crate::progress::poll().await;
+        hierarchy.measure_perimeters(&boundaries).await;
         hierarchy
     }
 
     /// Fills in every node's perimeter from the `boundaries` between leaves `(a, b, length)`: a
     /// boundary lies on the perimeter of every node containing one of its sides but not the
     /// other, those below the lowest node containing both.
-    fn measure_perimeters(&mut self, boundaries: &[(u32, u32, u32, f64)]) {
+    async fn measure_perimeters(&mut self, boundaries: &[(u32, u32, u32, f64)]) {
         let mut contribution = vec![0i64; self.nodes.len()];
         let mut width_contribution = vec![0f64; self.nodes.len()];
-        for &(a, b, length, width) in boundaries {
+        for (k, &(a, b, length, width)) in boundaries.iter().enumerate() {
+            if k % (POLL / 16) == 0 {
+                crate::progress::poll().await;
+            }
             contribution[a as usize] += length as i64;
             contribution[b as usize] += length as i64;
             width_contribution[a as usize] += width;

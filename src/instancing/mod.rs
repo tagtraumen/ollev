@@ -238,16 +238,18 @@ fn reach(shape: &Shape) -> f32 {
 
 /// Finds the scene's repeats and keeps them in [`Scene::repeats`], after reading each lattice
 /// on a ground as strokes where that is cheaper (see [`dual::apply`]).
-pub fn instance(ctx: &Context, scene: &mut Scene) {
+pub async fn instance(ctx: &Context, scene: &mut Scene) {
     scene.unique_ids();
     // A lattice is read from the shapes alike as they stand, before any is snapped
     let taken = crate::HashSet::default();
-    let lattices: Vec<Repeat> = find::clusters(scene, &taken)
-        .iter()
-        .filter_map(|c| snap::aligned(scene, c))
-        .collect();
+    let mut lattices: Vec<Repeat> = Vec::new();
+    for c in find::clusters(scene, &taken) {
+        crate::progress::poll().await;
+        lattices.extend(snap::aligned(scene, &c));
+    }
+    crate::progress::poll().await;
     dual::apply(ctx, scene, &lattices);
-    let repeats = repeats_of(ctx, scene);
+    let repeats = repeats_of(ctx, scene).await;
     if crate::diagnostics::log() {
         for r in &repeats {
             eprintln!(
@@ -263,13 +265,15 @@ pub fn instance(ctx: &Context, scene: &mut Scene) {
 
 /// The repeats of the scene's shapes: clusters of shapes alike, snapped to one prototype where
 /// that pays, their transforms read as a structure where that pays, drawn together.
-fn repeats_of(ctx: &Context, scene: &mut Scene) -> Vec<Repeat> {
+async fn repeats_of(ctx: &Context, scene: &mut Scene) -> Vec<Repeat> {
     // The shapes a cluster's snap leaves out are clustered again among themselves
     let mut repeats: Vec<Repeat> = Vec::new();
     let mut taken = crate::HashSet::default();
     loop {
         let before = repeats.len();
+        crate::progress::poll().await;
         for cluster in find::clusters(scene, &taken) {
+            crate::progress::poll().await;
             if let Some(repeat) = snap::snap(ctx, scene, &cluster) {
                 taken.extend(repeat.members.iter().map(|m| m.0));
                 repeats.extend(structure::recognize(ctx, scene, repeat));

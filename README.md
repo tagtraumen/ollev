@@ -25,14 +25,19 @@ for object in model.objects() {
 ```
 
 `trace_with` takes a progress callback as well: it hears the stage and how far it is, and
-the trace stops (within about a second) when the callback breaks.
+the trace stops (within a fraction of a second) when the callback breaks.
 
 A host that must not block, such as a UI thread or wasm in a browser, runs the trace in time
 slices with `Tracing`. No threads and no executor: each `step` runs the trace on the caller's
 thread until its callback breaks at a checkpoint, and the next `step` resumes it there.
-Checkpoints come many times a second, and on a megapixel picture less than a second apart
-on a desktop CPU; the host supplies the clock. Dropping the handle cancels the trace; the
-handle stays on the thread that made it (it is not `Send`).
+Checkpoints come many times a second, on a megapixel picture a few tenths of a second apart
+at most on a desktop CPU; the host supplies the clock. Dropping the handle cancels the trace;
+the handle is `Send`, stepped on one thread at a time.
+
+At a pause, `progress.model()` is the latest scene the trace kept for showing, in the form the
+finished trace returns: a large picture's flat regions within milliseconds, then the trace's
+own scenes as they grow. It is cheap enough to ask for every second or two, since what was
+lowered for an earlier call is kept; `progress.revision()` tells when the scene changed.
 
 ```rust
 let mut tracing = ollev::Tracing::new(&image, &ollev::TraceOptions::default()).unwrap();
@@ -41,7 +46,7 @@ let model = loop {
     match tracing.step(|_| {
         if now() < end { std::ops::ControlFlow::Continue(()) } else { std::ops::ControlFlow::Break(()) }
     }) {
-        // where it paused: stage, fraction, and where it shows one the scene so far
+        // where it paused: stage, fraction, and the latest scene kept for showing
         // (`progress.model()`, in the form the finished trace returns)
         ollev::Step::Paused(progress) => continue,
         ollev::Step::Done(model) => break model,
@@ -63,7 +68,8 @@ let model = loop {
   gradients, blurs, radial focus, clips, dashes, transparent gradient stops) is rewritten in
   the ones it has.
 - `stages`: the pipeline's stages (`Stages`: translucency, strokes, primitives, effects,
-  instancing), all on by default; one switched off is skipped, so the trace is faster.
+  instancing, path gradients), all on by default; one switched off is skipped, so the trace
+  is faster.
 
 The model's coordinates are pixels of the traced image, its colours sRGB-encoded with
 straight alpha; the `model` module documents the contract.

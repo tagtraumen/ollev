@@ -68,10 +68,11 @@ pub fn outline_corners(
     let max = (max + 1).min(IVec2::new(width as i32, height as i32));
     let size = (max - min).as_uvec2();
     let (w, h) = (size.x as usize, size.y as usize);
-    let labels: Vec<u32> = (0..h)
-        .flat_map(|y| (0..w).map(move |x| (x, y)))
-        .map(|(x, y)| u32::from(inside((min.y as usize + y) * width + min.x as usize + x)))
-        .collect();
+    let mut labels: Vec<u32> = Vec::with_capacity(w * h);
+    for y in 0..h {
+        let row = (min.y as usize + y) * width + min.x as usize;
+        labels.extend((row..row + w).map(|i| u32::from(inside(i))));
+    }
 
     let map = planar::build(&labels, w, h, 2);
     let mut fitted: HashMap<usize, Vec<Cubic>> = HashMap::default();

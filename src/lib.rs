@@ -58,6 +58,7 @@ internal!(
     outline,
     plan,
     polish,
+    preview,
     progress,
     recolor,
     refine,

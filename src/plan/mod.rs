@@ -92,14 +92,22 @@ pub(crate) async fn traced(
 ) -> (Scene, Option<crate::translucency::Candidate>) {
     let mut timings = Timings::default();
     let start = crate::timing::Clock::now();
+    // First looks for the host while the picture's own first scene is seconds away
+    if crate::progress::driven() {
+        crate::preview::preview(rgb, width, height, detail).await;
+    }
     let (mut ctx, hierarchy) =
         crate::hierarchy::analyze(rgb, width, height, detail, &mut timings).await;
     timings
         .time("uncertainty", async || {
-            crate::uncertainty::apply(&mut ctx, options.tolerance);
+            crate::uncertainty::apply(&mut ctx, options.tolerance).await;
         })
         .await;
     let target = ctx.clone();
+    crate::progress::fidelity(crate::model::Fidelity {
+        tolerance: target.tolerance.clone(),
+        segment_price: target.accept_cost(),
+    });
     let (mut scene, layer) = trace_level_layer(
         ctx,
         hierarchy,
@@ -129,8 +137,10 @@ pub(crate) async fn traced(
             })
             .await;
     }
+    crate::progress::snapshot(&scene);
     if options.stages.effects {
-        effects(&target, &mut scene, &mut timings).await;
+        effects(&target, &mut scene, options.stages.path_gradients, &mut timings).await;
+        crate::progress::snapshot(&scene);
     }
     // Shapes after the kept layer that overlap it in its own hue join its group in the SVG; a
     // line elsewhere or of another hue is not part of it. Found by layer index, since the shape
@@ -171,11 +181,12 @@ pub(crate) async fn traced(
             })
             .await;
         scene.marks_layer = layer_n;
+        crate::progress::snapshot(&scene);
     }
     if options.stages.instancing {
         timings
             .time("instancing", async || {
-                crate::instancing::instance(&target, &mut scene);
+                crate::instancing::instance(&target, &mut scene).await;
             })
             .await;
     }
@@ -187,6 +198,7 @@ pub(crate) async fn traced(
         })
         .await;
     level_log(format_args!("economy: {economy:?}"));
+    crate::progress::snapshot(&scene);
     // The objects still in error moved jointly down the whole scene's error, last: before the
     // economy its merges would retrace polished shapes on a thinner margin
     let polished = timings
@@ -200,6 +212,7 @@ pub(crate) async fn traced(
         segment_price: target.accept_cost(),
     });
     timings.report(&format!("plan {:.1?}", start.elapsed()));
+    crate::progress::snapshot(&scene);
     scene = crate::progress::scene(scene, true).await;
     (scene, layer)
 }
@@ -350,7 +363,7 @@ async fn trace_level_layer(
     if ctx.tolerance.is_none() {
         timings
             .time("uncertainty", async || {
-                crate::uncertainty::apply(&mut ctx, options.tolerance);
+                crate::uncertainty::apply(&mut ctx, options.tolerance).await;
             })
             .await;
     }
@@ -360,8 +373,13 @@ async fn trace_level_layer(
     // Plan with estimated segment counts, trace the chosen outlines, and plan again with their
     // real counts
     // The target's edges, for the edge term
-    let edge_field = crate::edges::EdgeField::of_target(&ctx.target, width, height);
-    let planner = Planner::new(&ctx, hierarchy);
+    let edge_field = timings
+        .time("edges", async || {
+            crate::edges::EdgeField::of_target(&ctx.target, width, height)
+        })
+        .await;
+    crate::progress::poll().await;
+    let planner = Planner::new(&ctx, hierarchy).await;
     let mut planner = timings
         .time("edges", async || planner.with_edges(&edge_field, EDGE_TERM))
         .await;
@@ -403,7 +421,7 @@ async fn trace_level_layer(
     // Which shapes go below an earlier sibling
     let under = timings
         .time("order", async || {
-            occluders(hierarchy, &plan, &outlines, width, height)
+            occluders(hierarchy, &plan, &outlines, width, height).await
         })
         .await;
 
@@ -446,8 +464,10 @@ async fn trace_level_layer(
             .collect();
         let covered: Vec<u32> = masked.iter().map(|m| m.0).collect();
         let reading = smooth_at(&ctx, hierarchy, drawn.node, &covered);
+        crate::progress::poll().await;
         let smooth = reading.smooth;
         let allowance = block_allowance(&ctx, hierarchy, drawn.node, drawn.parent, &plan, smooth);
+        crate::progress::poll().await;
         let how = completion(smooth, allowance, options.stages.primitives);
         // The gain, the position (on top of everything) and the shape
         let mut best: Option<(f64, usize, Shape)> = None;
@@ -469,15 +489,10 @@ async fn trace_level_layer(
                     window.intersects(n.min.as_vec2(), n.max.as_vec2())
                 })
                 .collect();
+            let weights = plan_weights(&ctx, hierarchy, &masked, &later, drawn.color, window);
+            crate::progress::poll().await;
             let fit = Context {
-                weights: Some(edge_weighted(plan_weights(
-                    &ctx,
-                    hierarchy,
-                    &masked,
-                    &later,
-                    drawn.color,
-                    window,
-                ))),
+                weights: Some(edge_weighted(weights)),
                 ..ctx.clone()
             };
             let Some(near) = timings
@@ -586,19 +601,17 @@ async fn trace_level_layer(
             .collect();
         let covered: Vec<u32> = masked.iter().map(|m| m.0).collect();
         let smooth = smooth_at(&ctx, hierarchy, plan[k].node, &covered).smooth;
+        crate::progress::poll().await;
         let allowance =
             block_allowance(&ctx, hierarchy, plan[k].node, plan[k].parent, &plan, smooth);
+        crate::progress::poll().await;
         let how = completion(smooth, allowance, options.stages.primitives);
         let reach = MARGIN + tolerances[tolerances.len() - 1];
         let window = Window::around(shape.min, shape.max, reach, width, height);
+        let weights = detail_weights(&ctx, hierarchy, &masked, plan[k].color, window);
+        crate::progress::poll().await;
         let fit = Context {
-            weights: Some(edge_weighted(detail_weights(
-                &ctx,
-                hierarchy,
-                &masked,
-                plan[k].color,
-                window,
-            ))),
+            weights: Some(edge_weighted(weights)),
             ..ctx.clone()
         };
         let Some(place) = timings
@@ -658,6 +671,9 @@ async fn trace_level_layer(
         }
     }
 
+    if show {
+        crate::progress::snapshot(&scene);
+    }
     crate::progress::stage("shapes").await;
     timings
         .time("recolor", async || recolor(&ctx, &mut scene).await)
@@ -670,8 +686,14 @@ async fn trace_level_layer(
             crate::cleanup::cleanup(&ctx, &mut scene).await;
         })
         .await;
+    if show {
+        crate::progress::snapshot(&scene);
+    }
     if options.stages.strokes {
         strokes(&ctx, hierarchy, &mut scene, timings).await;
+        if show {
+            crate::progress::snapshot(&scene);
+        }
     }
     if !levels || !options.stages.translucency {
         return (scene, None);
@@ -732,23 +754,23 @@ async fn trace_level_layer(
     // A family is accepted on its gate's evidence, the objective only ordering the families
     // (see [`decide_whole`]); but not where its drawing errs by more than the opaque trace's
     // whole error again, a beneath or a part above that went wrong
+    crate::progress::poll().await;
     let without = parts(&ctx, &scene);
     let without_error = without.error;
-    let decided: Vec<(Scene, f64, crate::translucency::Candidate)> = whole
-        .into_iter()
-        .flatten()
-        .filter(|(with, _, candidate)| {
-            let drawn = parts(&ctx, with).error;
-            let refused = drawn > 2.0 * without_error;
-            if refused {
-                level_log(format_args!(
-                    "whole family k {:.3}: refused, drawn at error {drawn:.0} against {without_error:.0} without",
-                    candidate.k
-                ));
-            }
-            !refused
-        })
-        .collect();
+    let mut decided: Vec<(Scene, f64, crate::translucency::Candidate)> = Vec::new();
+    for (with, objective, candidate) in whole.into_iter().flatten() {
+        crate::progress::poll().await;
+        let drawn = parts(&ctx, &with).error;
+        let refused = drawn > 2.0 * without_error;
+        if refused {
+            level_log(format_args!(
+                "whole family k {:.3}: refused, drawn at error {drawn:.0} against {without_error:.0} without",
+                candidate.k
+            ));
+        } else {
+            decided.push((with, objective, candidate));
+        }
+    }
     // A family decided on its evidence overrides any candidate of the discovery, which is
     // then not proposed at all
     let candidates = timings
@@ -770,6 +792,7 @@ async fn trace_level_layer(
         }
     ));
     for (n, candidate) in candidates.into_iter().enumerate() {
+        crate::progress::poll().await;
         let Some(overlay) = candidate.overlay(width, height) else {
             continue;
         };
@@ -909,9 +932,11 @@ async fn trace_level_layer(
 /// The effects: runs of bands the picture shades across drawn as one shape with a gradient,
 /// grounds drawn flat under glows, and shapes blurred where the picture shows their boundary as a
 /// ramp.
-async fn effects(target: &Context, scene: &mut Scene, timings: &mut Timings) {
+async fn effects(target: &Context, scene: &mut Scene, paths: bool, timings: &mut Timings) {
     let softened = timings
-        .time("soft", async || crate::soft::soften_scene(target, scene).await)
+        .time("soft", async || {
+            crate::soft::soften_scene(target, scene, paths).await
+        })
         .await;
     level_log(format_args!("soft: {softened} runs replaced"));
     // Grounds drawn flat with glows fading to transparent over them, where that pays
@@ -942,7 +967,7 @@ async fn strokes(ctx: &Context, hierarchy: &Hierarchy, scene: &mut Scene, timing
         })
         .await;
     timings
-        .time("dashes", async || crate::dashes::group(ctx, scene))
+        .time("dashes", async || crate::dashes::group(ctx, scene).await)
         .await;
     // The dashes and dots the trace left undrawn, read off the segmentation's leaves
     timings

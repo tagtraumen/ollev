@@ -119,8 +119,11 @@ pub async fn into_scene(
         height: h,
         px: comp.clone(),
     };
+    crate::progress::poll().await;
     let weak = weak_edges(&target);
+    crate::progress::poll().await;
     let mut miss = missing(&target, &render);
+    crate::progress::poll().await;
     let mut out = Planned {
         missing_lines: miss.lines.iter().filter(|m| **m).count(),
         missing_steps: miss.steps.iter().filter(|m| **m).count(),
@@ -129,12 +132,15 @@ pub async fn into_scene(
     // the missing lines followed along their ridges before anything is priced, so that a fold
     // is one candidate, not its fragments
     let followed = follow_ridges(&target, &miss.lines);
+    crate::progress::poll().await;
     // the followed lines bound a cut as the detected ones do
     for (b, f) in miss.barrier.iter_mut().zip(&followed) {
         *b |= *f;
     }
     let mut chains = chains_of(&target, &miss.lines, true);
+    crate::progress::poll().await;
     let steps = chains_of(&target, &miss.steps, false);
+    crate::progress::poll().await;
     chains.extend(steps);
     let lines = linked(&chains);
     // the followed lines are candidates beside the detected ones, not in their place (a row
@@ -220,6 +226,7 @@ pub async fn into_scene(
             let mut chosen: Chosen = None;
             let mut seen: Option<(usize, Choice)> = None;
             for (i, c) in g.iter().enumerate() {
+                crate::progress::poll().await;
                 let choice = match c {
                     Candidate::Stroke(f) => {
                         try_stroke(ctx, scene, &target, field, lambda, f, &Variant::Same)

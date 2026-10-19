@@ -399,6 +399,7 @@ pub async fn candidates(ctx: &Context, lv: &leaves::Leaves) -> Vec<Candidate> {
     for (k, m, shade) in relations {
         crate::progress::poll().await;
         let regions = stage::regions_of(lv, target, k, m, shade);
+        crate::progress::poll().await;
         overlaps.extend(regions.iter().filter(|r| r.show && r.interior).cloned());
         let good: Vec<&stage::Region> = regions.iter().filter(|r| r.kept()).collect();
         if debug {
@@ -459,7 +460,10 @@ pub async fn candidates(ctx: &Context, lv: &leaves::Leaves) -> Vec<Candidate> {
         }
     }
     // Pieces of one shape that no relation grew whole
-    for (share, candidate) in merge_phase(lv, target, &overlaps, debug) {
+    crate::progress::poll().await;
+    let merged = merge_phase(lv, target, &overlaps, debug).await;
+    crate::progress::poll().await;
+    for (share, candidate) in merged {
         if !found.iter().any(|(_, c)| c.mask == candidate.mask) {
             found.push((share, candidate));
         }
@@ -507,6 +511,7 @@ pub async fn candidates(ctx: &Context, lv: &leaves::Leaves) -> Vec<Candidate> {
             }
         }
     }
+    crate::progress::poll().await;
     // Ranked, the uncovered first, by the share of their boundary that fits times k, the
     // show-through, times the share of their interior that peels into colors seen around them
     // (see [`continuity`]): a score, never a gate
@@ -639,7 +644,7 @@ fn joint_fit(groups: &[&Group]) -> Option<(f32, Vec3)> {
 /// Pieces (stage regions with show-through and interior) merge, nearest first, when one
 /// relation explains them ([`joint_fit`]) and the gap is no wider than the wider piece; a
 /// group is a candidate where its union passes the share rule.
-fn merge_phase(
+async fn merge_phase(
     lv: &leaves::Leaves,
     target: &[Vec3],
     regions: &[stage::Region],
@@ -673,6 +678,7 @@ fn merge_phase(
     // where their boxes lie near enough for it to matter
     let mut gap = vec![vec![f32::INFINITY; n]; n];
     for i in 0..n {
+        crate::progress::poll().await;
         for j in i + 1..n {
             let ((a0, a1), (b0, b1)) = (boxes[i], boxes[j]);
             let apart = (b0 - a1).max(a0 - b1).max(IVec2::ZERO).as_vec2().length();

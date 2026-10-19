@@ -39,7 +39,7 @@ const PAIRS: [(IVec2, IVec2); 12] = {
 /// Replaces anti-aliased pixels by the pure color of the side they mostly belong to, so the
 /// segmentation sees hard edges and does not turn the blended band along every edge into a sliver
 /// region of its own.
-pub fn unmix(
+pub async fn unmix(
     colors: &[DVec3],
     width: usize,
     height: usize,
@@ -52,6 +52,9 @@ pub fn unmix(
 
     let mut out = colors.to_vec();
     for y in 0..h {
+        if y % 32 == 0 {
+            crate::progress::poll().await;
+        }
         for x in 0..w {
             let p = IVec2::new(x, y);
             let c = colors[(y * w + x) as usize];

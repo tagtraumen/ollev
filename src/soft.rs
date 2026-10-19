@@ -464,8 +464,14 @@ fn seams(owner: &[u32], width: usize, run: &[usize], window: Window) -> Vec<Cont
 
 /// Draws `run` (places in the stack, its lowest first) as its lowest band painted with the
 /// gradient fitted to the run's pixels, the others removed, where that lowers the error plus
-/// price over the run's box; else leaves the scene as it was.
-fn replace(ctx: &Context, scene: &mut Scene, owner: &[u32], run: &[usize]) -> bool {
+/// price over the run's box; else leaves the scene as it was. A checkpoint between its steps.
+async fn replace(
+    ctx: &Context,
+    scene: &mut Scene,
+    owner: &[u32],
+    run: &[usize],
+    paths: bool,
+) -> bool {
     let (w, h) = (ctx.width, ctx.height);
     let lowest = run[0];
     // No shape clipped to a band that would go
@@ -503,9 +509,10 @@ fn replace(ctx: &Context, scene: &mut Scene, owner: &[u32], run: &[usize]) -> bo
     let costs = Costs::at(ctx.accept_cost());
     let center = scene.shapes[lowest].primitive_center();
     let (mut fill, sse) = fit(&samples, &[], solid, center, costs, &extent);
+    crate::progress::poll().await;
     // A path gradient along each band boundary of the run (its iso-contours start the curve
     // well) against the linear or radial, on error plus price; the curves compared on at most
-    // [`PATH_SAMPLES`] of the samples, the best refitted on all
+    // [`PATH_SAMPLES`] of the samples, the best refitted on all; none without `paths`
     let stride = samples.len().div_ceil(PATH_SAMPLES);
     let few: Vec<(Vec2, Vec3)> = samples.iter().step_by(stride).copied().collect();
     let share = few.len() as f32 / samples.len() as f32;
@@ -514,10 +521,15 @@ fn replace(ctx: &Context, scene: &mut Scene, owner: &[u32], run: &[usize]) -> bo
         ..costs
     };
     let mut curve: Option<(Contour, f32)> = None;
-    for contour in boundaries(scene, run)
-        .into_iter()
-        .chain(seams(owner, w, run, window))
-    {
+    let contours = if paths {
+        let mut contours = boundaries(scene, run);
+        contours.extend(seams(owner, w, run, window));
+        contours
+    } else {
+        Vec::new()
+    };
+    for contour in contours {
+        crate::progress::poll().await;
         if let Some((f, e)) = along(&few, contour, scaled) {
             let total = e / share + costs.of(&f);
             if curve.is_none_or(|c| total < c.1) {
@@ -534,11 +546,14 @@ fn replace(ctx: &Context, scene: &mut Scene, owner: &[u32], run: &[usize]) -> bo
     if fill.gradient.is_none() {
         return false;
     }
+    crate::progress::poll().await;
     let render = |scene: &Scene| scene.render(window, 0..scene.shapes.len(), [0.; 3]);
     let before = ctx.error(window, &render(scene)) as f64
         + run.iter().map(|&k| price(ctx, &scene.shapes[k], costs)).sum::<f64>();
     let old = scene.shapes[lowest].clone();
+    crate::progress::poll().await;
     let outline = run_outline(scene, owner, run);
+    crate::progress::poll().await;
     let removed: Vec<(usize, Shape)> = run[1..]
         .iter()
         .rev()
@@ -584,7 +599,7 @@ fn replace(ctx: &Context, scene: &mut Scene, owner: &[u32], run: &[usize]) -> bo
 /// one, within its outline, linked to it by seams the picture shades across (no step within
 /// [`SOFT_EDGE`]) and progressing steadily in colour. The stack is walked from the bottom, so
 /// the largest run that pays is taken. Returns how many runs were replaced.
-pub async fn soften_scene(ctx: &Context, scene: &mut Scene) -> usize {
+pub async fn soften_scene(ctx: &Context, scene: &mut Scene, paths: bool) -> usize {
     let mut bands = Bands::of(ctx, scene);
     let mut replaced = 0;
     let mut lowest = 0;
@@ -598,8 +613,9 @@ pub async fn soften_scene(ctx: &Context, scene: &mut Scene) -> usize {
             lowest += 1;
             continue;
         };
-        if replace(ctx, scene, &bands.owner, &run) {
+        if replace(ctx, scene, &bands.owner, &run, paths).await {
             replaced += 1;
+            crate::progress::poll().await;
             bands = Bands::of(ctx, scene);
         }
         lowest += 1;
@@ -636,7 +652,7 @@ mod tests {
         }
         let full = Window::full(w, w);
         let before = ctx.error(full, &scene.render(full, 0..scene.shapes.len(), [0.; 3]));
-        let replaced = crate::progress::finish(soften_scene(&ctx, &mut scene));
+        let replaced = crate::progress::finish(soften_scene(&ctx, &mut scene, true));
         assert_eq!(replaced, 1);
         assert_eq!(scene.shapes.len(), 2);
         assert!(scene.shapes[1].fill.gradient.is_some());
@@ -674,7 +690,7 @@ mod tests {
         }
         let full = Window::full(w, w);
         let before = ctx.error(full, &scene.render(full, 0..scene.shapes.len(), [0.; 3]));
-        assert_eq!(crate::progress::finish(soften_scene(&ctx, &mut scene)), 1);
+        assert_eq!(crate::progress::finish(soften_scene(&ctx, &mut scene, true)), 1);
         assert_eq!(scene.shapes.len(), 3);
         let ring = &scene.shapes[2];
         assert!(ring.fill.gradient.is_some());

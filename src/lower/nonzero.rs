@@ -9,7 +9,7 @@ use glam::DVec2;
 use super::Lowering;
 use crate::model::{Clip, Curve, Geometry, Object};
 
-pub(super) fn lower(l: &mut Lowering, o: &Object) -> Option<Vec<Object>> {
+pub(super) async fn lower(l: &mut Lowering<'_>, o: &Object) -> Option<Vec<Object>> {
     let Geometry::Fill {
         loops,
         rule: FillRule::EvenOdd,
@@ -20,7 +20,11 @@ pub(super) fn lower(l: &mut Lowering, o: &Object) -> Option<Vec<Object>> {
     l.report.wound += 1;
     Some(vec![Object {
         geometry: Geometry::Fill {
-            loops: nonzero(l, loops),
+            loops: if l.quick {
+                wind(loops)
+            } else {
+                nonzero(l, loops).await
+            },
             rule: FillRule::NonZero,
         },
         ..o.clone()
@@ -28,27 +32,37 @@ pub(super) fn lower(l: &mut Lowering, o: &Object) -> Option<Vec<Object>> {
 }
 
 /// A clip's loops for the nonzero rule.
-pub(super) fn clip(l: &Lowering, c: &mut Clip) {
+pub(super) async fn clip(l: &Lowering<'_>, c: &mut Clip) {
     if c.rule == FillRule::EvenOdd {
-        c.loops = nonzero(l, &c.loops);
+        c.loops = if l.quick {
+            wind(&c.loops)
+        } else {
+            nonzero(l, &c.loops).await
+        };
         c.rule = FillRule::NonZero;
     }
 }
 
 /// Loops whose nonzero coverage is the even-odd coverage of `loops`: they themselves as they
 /// turn, else turned to the filled side; for loops that cross, the turned ones within the
-/// price, else the coverage traced afresh where that misses less, each drawn in black.
-fn nonzero(l: &Lowering, loops: &[Vec<Curve>]) -> Vec<Vec<Curve>> {
+/// price, else the coverage traced afresh where that misses less, each drawn in black; a
+/// checkpoint between the steps of a trace afresh.
+async fn nonzero(l: &Lowering<'_>, loops: &[Vec<Curve>]) -> Vec<Vec<Curve>> {
     let geometry = |loops: &[Vec<Curve>], rule| Geometry::Fill {
         loops: loops.to_vec(),
         rule,
     };
-    let even_odd = geometry(loops, FillRule::EvenOdd);
+    // The loops' coverage by either rule from one rasterization
+    let path = |loops: &[Vec<Curve>]| crate::scene::loops_path(&crate::model::loops32(loops));
+    let [even_odd, as_is] =
+        crate::scene::coverage_rasters(&path(loops), [FillRule::EvenOdd, FillRule::NonZero]);
+    if difference(&even_odd, &as_is) <= 1. / 256. {
+        return loops.to_vec();
+    }
     let wound = wind(loops);
-    for candidate in [loops, &wound] {
-        if difference(&even_odd, &geometry(candidate, FillRule::NonZero)) <= 1. / 256. {
-            return candidate.to_vec();
-        }
+    let turned = crate::scene::coverage_raster(&path(&wound), FillRule::NonZero);
+    if difference(&even_odd, &turned) <= 1. / 256. {
+        return wound;
     }
     let fill = |loops: &[Vec<Curve>], rule| Object {
         geometry: geometry(loops, rule),
@@ -58,16 +72,19 @@ fn nonzero(l: &Lowering, loops: &[Vec<Curve>]) -> Vec<Vec<Curve>> {
         clip: None,
     };
     let plain = fill(loops, FillRule::EvenOdd);
-    let traced = wind(&super::layers::Field::of(l, &plain, false, false, false).loops(0.5));
     let miss =
         |c: &[Vec<Curve>]| l.miss(std::slice::from_ref(&plain), &[fill(c, FillRule::NonZero)]);
     // The turned loops are the coarser form: kept within the price, as every rewrite is
     let kept = miss(&wound);
-    if l.price.is_none_or(|p| kept > p) && miss(&traced) < kept {
-        traced
-    } else {
-        wound
+    if l.price.is_some_and(|p| kept <= p) {
+        return wound;
     }
+    crate::progress::poll().await;
+    let field = super::layers::Field::of(l, &plain, false, false, false);
+    crate::progress::poll().await;
+    let traced = wind(&field.loops(0.5));
+    crate::progress::poll().await;
+    if miss(&traced) < kept { traced } else { wound }
 }
 
 /// The loops flattened to polygons, finely enough to tell inside from outside.
@@ -117,13 +134,8 @@ fn wind(loops: &[Vec<Curve>]) -> Vec<Vec<Curve>> {
         .collect()
 }
 
-/// The largest difference of two geometries' coverage over any pixel.
-fn difference(a: &Geometry, b: &Geometry) -> f32 {
-    let raster = |g: &Geometry| {
-        let (loops, rule) = g.outline();
-        crate::scene::coverage_raster(&crate::scene::loops_path(&loops), rule)
-    };
-    let (ra, rb) = (raster(a), raster(b));
+/// The largest difference of two coverages over any pixel.
+fn difference(ra: &crate::Raster, rb: &crate::Raster) -> f32 {
     let (x0, y0) = (ra.x0.min(rb.x0), ra.y0.min(rb.y0));
     let (x1, y1) = (
         (ra.x0 + ra.w).max(rb.x0 + rb.w),

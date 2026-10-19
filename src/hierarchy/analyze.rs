@@ -22,10 +22,11 @@ pub async fn analyze(
     crate::progress::stage("analyze").await;
     let colors = timings
         .time("smooth", async || {
-            let colors = crate::tracer::segmentation_colors(rgb, width, height, &params);
+            let colors = crate::tracer::segmentation_colors(rgb, width, height, &params).await;
             if let Some(antialias) = &params.antialias {
                 ctx.unmixed = Some(std::sync::Arc::new(
                     crate::tracer::unmixed_colors(rgb, width, height, antialias)
+                        .await
                         .iter()
                         .map(|c| c.as_vec3())
                         .collect(),
@@ -56,7 +57,7 @@ pub async fn analyze(
         .await;
     let hierarchy = timings
         .time("tree", async || {
-            super::Hierarchy::build(labels, count, &colors, width, height)
+            super::Hierarchy::build(labels, count, &colors, width, height).await
         })
         .await;
     (ctx, hierarchy)

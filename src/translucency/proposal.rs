@@ -44,6 +44,7 @@ impl FixedInputs {
             };
         }
         let eq = equation_regions_default(img);
+        crate::progress::poll().await;
         let n = eq.iter().max().map_or(0, |&l| l as usize + 1);
         let mut border = vec![false; n.max(1)];
         border[0] = true;
@@ -98,7 +99,7 @@ pub struct Point {
 /// The homothety's relation points on the proposal and each component where
 /// [`homothety::gate`] passes, each list scaled to its best (shared colours kept), with the
 /// proposal's outside palette (none where the proposal is empty).
-pub fn material_points(img: &Image, fixed: &FixedInputs) -> (Vec<Point>, Option<Palette>) {
+pub async fn material_points(img: &Image, fixed: &FixedInputs) -> (Vec<Point>, Option<Palette>) {
     let mut out = Vec::new();
     let mut proposal_outside = None;
     let regions = std::iter::once(("proposal".to_string(), &fixed.proposal)).chain(
@@ -116,13 +117,18 @@ pub fn material_points(img: &Image, fixed: &FixedInputs) -> (Vec<Point>, Option<
         }
         let clock = crate::timing::Clock::now();
         // the inside first: where it holds nothing the gate could pair, no outside is read
+        crate::progress::poll().await;
         let pi = Palette::new(img, r, &fixed.rim, min_material_px(img));
         if !homothety::may_pass(&pi) {
             continue;
         }
+        crate::progress::poll().await;
         let po = outside_palette(img, r, &fixed.rim, None);
         let t_palettes = clock.elapsed().as_secs_f64();
-        let gate = homothety::gate(&pi, &po, Some(&homothety::Ring::of(img, r, &fixed.rim)));
+        crate::progress::poll().await;
+        let ring = homothety::Ring::of(img, r, &fixed.rim);
+        crate::progress::poll().await;
+        let gate = homothety::gate(&pi, &po, Some(&ring));
         if debug {
             eprintln!(
                 "points: {name} gate {} in {:.2}s: {}",

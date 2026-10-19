@@ -107,6 +107,58 @@ fn a_paused_trace_shows_its_scene() {
     assert!(shown > 3, "{shown} scenes shown");
 }
 
+/// A host asking for the model at every pause gets a first look before the trace's own first
+/// scene, then each kept scene lowered to it, and in the end the model of a trace it never
+/// asked.
+#[test]
+fn partial_models_leave_the_result_alone() {
+    let size = 128;
+    let rgba = picture(size);
+    let graphite = crate::Capabilities {
+        even_odd: false,
+        path_gradients: false,
+        blur: false,
+        radial_focus: false,
+        ..crate::Capabilities::ALL
+    };
+    for host in [graphite, crate::Capabilities::NONE] {
+        let options = TraceOptions {
+            host,
+            ..TraceOptions::default()
+        };
+        let whole = format!("{:?}", trace(&image(&rgba, size), &options).unwrap());
+        let mut tracing = Tracing::new(&image(&rgba, size), &options).unwrap();
+        let (mut asks, mut revision, mut fresh) = (0, 0, false);
+        let mut first_look = None;
+        let model = loop {
+            let step = tracing.step(|p: &Progress| {
+                fresh |= p.scene.is_some();
+                every(5, &mut asks)(p)
+            });
+            let Step::Paused(p) = step else {
+                let Step::Done(model) = step else {
+                    unreachable!()
+                };
+                break model;
+            };
+            assert!(p.revision() >= revision, "revisions only grow");
+            revision = p.revision();
+            if let Some(model) = p.model() {
+                first_look.get_or_insert(!fresh);
+                assert_eq!((model.width, model.height), (size, size));
+                let even_odd = model.objects().iter().any(|o| {
+                    matches!(o.geometry, crate::model::Geometry::Fill { rule, .. }
+                        if rule == crate::model::FillRule::EvenOdd)
+                });
+                assert!(!even_odd, "a partial model in the host's form");
+            }
+        };
+        assert_eq!(first_look, Some(true), "a first look before the first scene");
+        assert!(revision > 3, "{revision} scenes kept");
+        assert_eq!(format!("{model:?}"), whole);
+    }
+}
+
 /// A trace dropped between slices is cancelled, wherever it is, and leaves nothing behind
 /// that changes the next trace; a callback that breaks makes `trace_with` return the
 /// cancellation, asking nothing more.
@@ -181,7 +233,8 @@ fn traces_interleave_and_nest() {
 }
 
 /// Each stage switched off still traces, and what it alone draws is gone: no stroke without
-/// the strokes, no instance without instancing, no layer group without translucency.
+/// the strokes, no instance without instancing, no layer group without translucency, no
+/// gradient along a curve without the path gradients.
 #[test]
 fn every_stage_can_be_switched_off() {
     use crate::model::{Geometry, Item};
@@ -194,6 +247,7 @@ fn every_stage_can_be_switched_off() {
         crate::Stages { primitives: false, ..all },
         crate::Stages { effects: false, ..all },
         crate::Stages { instancing: false, ..all },
+        crate::Stages { path_gradients: false, ..all },
     ] {
         let options = TraceOptions {
             stages,
@@ -213,5 +267,10 @@ fn every_stage_can_be_switched_off() {
         assert!(stages.instancing || !instanced, "{stages:?}");
         let grouped = model.items.iter().any(|i| matches!(i, Item::Group { .. }));
         assert!(stages.translucency || !grouped, "{stages:?}");
+        let along = model.objects().iter().any(|o| {
+            matches!(&o.paint, crate::model::Paint::Gradient(g)
+                if matches!(g.shape(), crate::model::GradientShape::Path { .. }))
+        });
+        assert!(stages.path_gradients || !along, "{stages:?}");
     }
 }

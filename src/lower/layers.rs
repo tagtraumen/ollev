@@ -14,7 +14,7 @@ use crate::model::{Clip, Geometry, Gradient, Object, Paint};
 /// alpha by half the noise (see [`crate::translucency::raster::NOISE`]) for a soft one.
 const LAYERS: [usize; 7] = [1, 2, 4, 8, 16, 32, 64];
 
-pub(super) fn lower(l: &mut Lowering, o: &Object) -> Option<Vec<Object>> {
+pub(super) async fn lower(l: &mut Lowering<'_>, o: &Object) -> Option<Vec<Object>> {
     let blur = o.blur > 0. && !l.host.blur;
     let alpha =
         !l.host.transparent_stops && matches!(&o.paint, Paint::Gradient(g) if !g.is_opaque());
@@ -23,7 +23,6 @@ pub(super) fn lower(l: &mut Lowering, o: &Object) -> Option<Vec<Object>> {
         return None;
     }
     l.report.layered += 1;
-    let field = Field::of(l, o, blur, alpha, clip);
     let base = Object {
         paint: if alpha {
             opaque(&o.paint)
@@ -34,15 +33,35 @@ pub(super) fn lower(l: &mut Lowering, o: &Object) -> Option<Vec<Object>> {
         clip: if clip { None } else { o.clip },
         ..o.clone()
     };
+    if l.quick {
+        return Some(vec![base]);
+    }
+    let field = Field::of(l, o, blur, alpha, clip);
     let peak = field.values.iter().fold(0f32, |a, &v| a.max(v));
     if peak <= 0. {
         return Some(Vec::new());
     }
-    // Only a field with a soft part needs more than one level
+    // Only a field with a soft part needs more than one level; the forms as `coarsest` takes
+    // them, a checkpoint between levels
     let soft = blur || alpha;
-    let counts = LAYERS.iter().take(if soft { LAYERS.len() } else { 1 });
-    let forms = counts.map(|&k| field.layers(&base, k, peak, o.opacity));
-    Some(l.coarsest(o, forms))
+    let counts = &LAYERS[..if soft { LAYERS.len() } else { 1 }];
+    let Some(price) = l.price else {
+        let finest = counts[counts.len() - 1];
+        return Some(field.layers(&base, finest, peak, o.opacity).await);
+    };
+    let mut best: Option<(f64, Vec<Object>)> = None;
+    for &k in counts {
+        let form = field.layers(&base, k, peak, o.opacity).await;
+        crate::progress::poll().await;
+        let miss = l.miss(std::slice::from_ref(o), &form);
+        if miss <= price {
+            return Some(form);
+        }
+        if best.as_ref().is_none_or(|b| miss < b.0) {
+            best = Some((miss, form));
+        }
+    }
+    Some(best.map(|b| b.1).unwrap_or_default())
 }
 
 /// The object's alpha over the box it paints, `scale` samples per pixel along each axis.
@@ -152,31 +171,32 @@ impl Field {
     /// `count` nested layers of `base` up to `peak`, the stack brought to `opacity` times the
     /// field: layer `k` the region at the middle of its step, at the opacity that takes the
     /// stack's alpha from step `k - 1` to step `k`.
-    fn layers(&self, base: &Object, count: usize, peak: f32, opacity: f64) -> Vec<Object> {
+    async fn layers(&self, base: &Object, count: usize, peak: f32, opacity: f64) -> Vec<Object> {
         let n = count as f64;
         let reached = |k: usize| opacity * f64::from(peak) * k as f64 / n;
-        (1..=count)
-            .filter_map(|k| {
-                let loops = self.loops(peak * (k as f32 - 0.5) / count as f32);
-                if loops.is_empty() {
-                    return None;
-                }
-                let (below, now) = (reached(k - 1), reached(k));
-                let alpha = if below >= 1. {
-                    0.
-                } else {
-                    1. - (1. - now) / (1. - below)
-                };
-                Some(Object {
-                    geometry: Geometry::Fill {
-                        loops,
-                        rule: FillRule::EvenOdd,
-                    },
-                    opacity: alpha,
-                    ..base.clone()
-                })
-            })
-            .collect()
+        let mut layers = Vec::with_capacity(count);
+        for k in 1..=count {
+            crate::progress::poll().await;
+            let loops = self.loops(peak * (k as f32 - 0.5) / count as f32);
+            if loops.is_empty() {
+                continue;
+            }
+            let (below, now) = (reached(k - 1), reached(k));
+            let alpha = if below >= 1. {
+                0.
+            } else {
+                1. - (1. - now) / (1. - below)
+            };
+            layers.push(Object {
+                geometry: Geometry::Fill {
+                    loops,
+                    rule: FillRule::EvenOdd,
+                },
+                opacity: alpha,
+                ..base.clone()
+            });
+        }
+        layers
     }
 }
 

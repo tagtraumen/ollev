@@ -22,7 +22,7 @@ const SMOOTH_REACH: f32 = 2.;
 /// For each planned shape, the earlier sibling that occludes it, if any: of two siblings
 /// sharing a boundary, the one whose outline bridged across it still follows it owns it, and
 /// the other goes below (a circle under a square; two blocks sharing a side keep their order).
-pub(super) fn occluders(
+pub(super) async fn occluders(
     hierarchy: &Hierarchy,
     plan: &[Drawn],
     outlines: &HashMap<u32, Vec<Vec<Cubic>>>,
@@ -144,6 +144,7 @@ pub(super) fn occluders(
 
     let mut under = vec![None; plan.len()];
     for k in 1..plan.len() {
+        crate::progress::poll().await;
         let mut best: Option<(usize, f64)> = None;
         for s in 1..k {
             if plan[s].parent != plan[k].parent {

@@ -3,11 +3,12 @@
 
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::{Arc, Mutex};
 use std::task::Poll;
 
 use crate::input::{Detail, Image, TraceError, TraceOptions};
 use crate::lower::Capabilities;
-use crate::model::Model;
+use crate::model::{Fidelity, Model};
 use crate::progress::{Answer, Place, Progress};
 
 /// Traces `image` into a scene model in what the host draws.
@@ -20,7 +21,7 @@ pub fn trace(image: &Image, options: &TraceOptions) -> Result<Model, TraceError>
 }
 
 /// [`trace`], telling `progress` the stage, how far it is and the scene as it grows; where
-/// `progress` breaks, the trace stops (within about a second).
+/// `progress` breaks, the trace stops (within a fraction of a second).
 ///
 /// # Errors
 ///
@@ -38,8 +39,9 @@ pub fn trace_with<A: Answer>(
 
 /// A trace that runs in slices on the host's thread: each [`Tracing::step`] runs it until the
 /// host's callback ends the slice at a checkpoint, and the next step resumes it there. The
-/// checkpoints come at least about once a second; dropping the handle cancels the trace. The
-/// handle is `Send`: a host may step it on any one thread at a time.
+/// checkpoints come a few tenths of a second apart at most on a megapixel picture; dropping
+/// the handle cancels the trace. The handle is `Send`: a host may step it on any one thread at
+/// a time.
 ///
 /// ```
 /// let pixels = [255u8, 0, 0, 255].repeat(16 * 16);
@@ -69,7 +71,7 @@ pub fn trace_with<A: Answer>(
 /// assert!(!model.objects().is_empty());
 /// ```
 pub struct Tracing {
-    trace: Option<Pin<Box<dyn Future<Output = crate::Scene> + Send>>>,
+    trace: Option<Pin<Box<dyn Future<Output = Model> + Send>>>,
     place: Place,
     #[cfg(feature = "diagnostics")]
     diagnostics: crate::Diagnostics,
@@ -125,16 +127,19 @@ impl Tracing {
                 parent: None,
             }
         });
-        let place = Place::new(Finish {
+        let finish = Arc::new(Finish {
             scale,
             width: w,
             height: h,
             clip,
             host: options.host,
+            memo: Mutex::default(),
         });
+        let place = Place::new(finish.clone());
         Ok(Self {
             trace: Some(Box::pin(async move {
-                crate::plan::traced(&rgb, tw, th, detail, plan).await.0
+                let scene = crate::plan::traced(&rgb, tw, th, detail, plan).await.0;
+                finish.finished(&scene).await
             })),
             place,
             #[cfg(feature = "diagnostics")]
@@ -160,9 +165,9 @@ impl Tracing {
         #[cfg(not(feature = "diagnostics"))]
         let poll = crate::progress::drive(trace.as_mut(), place, &mut callback);
         match poll {
-            Poll::Ready(scene) => {
+            Poll::Ready(model) => {
                 self.trace = None;
-                Step::Done(self.place.model(&scene))
+                Step::Done(model)
             }
             Poll::Pending => Step::Paused(self.place.progress()),
         }
@@ -170,7 +175,8 @@ impl Tracing {
 }
 
 /// What turns a scene into the host's model: scaled back to the image's size, clipped to its
-/// opaque part where transparency is kept, and lowered to what the host draws.
+/// opaque part where transparency is kept, and lowered to what the host draws, each object
+/// lowered once over the partial scenes and the result.
 #[derive(Debug)]
 pub(crate) struct Finish {
     scale: f64,
@@ -178,11 +184,16 @@ pub(crate) struct Finish {
     height: usize,
     clip: Option<crate::model::Clip>,
     host: Capabilities,
+    memo: Mutex<crate::lower::Memo>,
 }
 
 impl Finish {
-    pub(crate) fn model(&self, scene: &crate::Scene) -> Model {
-        let mut model = scene.model();
+    /// The model of a scene at the image's size and clip, judged by `fidelity` where it has
+    /// none of its own.
+    fn sized(&self, mut model: Model, fidelity: Option<&Fidelity>) -> Model {
+        if model.fidelity.is_none() {
+            model.fidelity = fidelity.cloned();
+        }
         if self.scale != 1. {
             model = model.scaled(self.scale, self.width, self.height);
         }
@@ -190,7 +201,21 @@ impl Finish {
             model.clips.push(clip.clone());
             model.clip = Some(model.clips.len() - 1);
         }
-        crate::lower::lower(&model, &self.host).0
+        model
+    }
+
+    /// A partial scene's model in the host's form: what was lowered before kept, the rest
+    /// lowered quickly (see [`crate::lower`]).
+    pub(crate) fn partial(&self, model: Model, fidelity: Option<&Fidelity>) -> Model {
+        let model = self.sized(model, fidelity);
+        crate::lower::lower_kept(&model, &self.host, &mut crate::lower::lock(&self.memo), true)
+    }
+
+    /// The trace's result in the host's form, its objects lowered one per checkpoint.
+    async fn finished(&self, scene: &crate::Scene) -> Model {
+        let model = self.sized(scene.model(), None);
+        crate::lower::keep(&model, &self.host, &self.memo).await;
+        crate::lower::lower_kept(&model, &self.host, &mut crate::lower::lock(&self.memo), false)
     }
 }
 

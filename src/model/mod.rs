@@ -271,7 +271,7 @@ pub(crate) fn bounds(loops: &[Vec<Curve>]) -> (glam::Vec2, glam::Vec2) {
 }
 
 /// Loops in the scene's single precision.
-fn loops32(loops: &[Vec<Curve>]) -> Vec<Vec<crate::tracer::Cubic>> {
+pub(crate) fn loops32(loops: &[Vec<Curve>]) -> Vec<Vec<crate::tracer::Cubic>> {
     loops.iter().map(|l| l.iter().map(to32).collect()).collect()
 }
 

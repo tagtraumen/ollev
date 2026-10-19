@@ -61,6 +61,9 @@ impl Loss {
     }
 }
 
+/// Shapes composited, or differentiated, between two checkpoints.
+const SHAPES: usize = 64;
+
 /// Moves the objects of `scene` still in error by [`STEPS`] joint steps down its error, keeping
 /// the best scene seen. Each parameter steps by its gradient over its curvature, read off its
 /// last move (a diagonal secant step), as an edge's minimum is sharper than any common step.
@@ -84,7 +87,7 @@ pub async fn polish(ctx: &Context, scene: &mut Scene, edge: Option<EdgeTerm>) ->
         .map(|s| !fixed.contains(&s.id) && !members.contains(&s.id))
         .collect();
     // The objects still in error: any error they show
-    let (pixels, _) = forward(scene, full, &[]);
+    let (pixels, _) = forward(scene, full, &[]).await;
     let shown = residuals(ctx, scene, full, &pixels, &loss, &movable);
     let active: Vec<bool> = (0..scene.shapes.len())
         .map(|k| movable[k] && shown[k] > 0.)
@@ -103,8 +106,9 @@ pub async fn polish(ctx: &Context, scene: &mut Scene, edge: Option<EdgeTerm>) ->
     // The parameters and gradient of the last step, for the curvature
     let mut last: Option<(Vec<f32>, Vec<f32>)> = None;
     for step in 0..=STEPS {
+        crate::progress::poll().await;
         set_params(scene, &slots, &params);
-        let (pixels, below) = forward(scene, window, &slots);
+        let (pixels, below) = forward(scene, window, &slots).await;
         let (value, d_image) = image_loss(ctx, window, &pixels, &loss);
         if step == 0 {
             report.before = value;
@@ -116,7 +120,7 @@ pub async fn polish(ctx: &Context, scene: &mut Scene, edge: Option<EdgeTerm>) ->
             break;
         }
         crate::progress::poll().await;
-        let grad = backward(scene, window, &slots, &below, d_image, params.len());
+        let grad = backward(scene, window, &slots, &below, d_image, params.len()).await;
         let next: Vec<f32> = (0..params.len())
             .map(|j| {
                 let (g, most) = (grad[j], cap(kinds[j]));
@@ -256,11 +260,18 @@ fn untangle(scene: &Scene, slots: &[Slot], params: &mut [f32]) {
 
 /// The scene rendered over `window`, and what lies below each slot's shape at the pixels
 /// [`walk`] visits, in its order.
-fn forward(scene: &Scene, window: Window, slots: &[Slot]) -> (Vec<Vec3>, Vec<Vec<Vec3>>) {
+async fn forward(
+    scene: &Scene,
+    window: Window,
+    slots: &[Slot],
+) -> (Vec<Vec3>, Vec<Vec<Vec3>>) {
     let mut pixels = vec![Vec3::ONE; window.width * window.height];
     let mut below = Vec::with_capacity(slots.len());
     let mut next = slots.iter().peekable();
     for k in 0..scene.shapes.len() {
+        if k % SHAPES == 0 {
+            crate::progress::poll().await;
+        }
         if next.peek().is_some_and(|s| s.k == k) {
             next.next();
             let mut under = Vec::new();
@@ -376,7 +387,7 @@ fn walk(scene: &Scene, k: usize, window: Window, mut f: impl FnMut(usize, f32, f
 }
 
 /// The derivative of the error by the flat parameters, `d_image` walked down the stack.
-fn backward(
+async fn backward(
     scene: &Scene,
     window: Window,
     slots: &[Slot],
@@ -387,6 +398,9 @@ fn backward(
     let mut grad = vec![0f32; n];
     let mut next = slots.len();
     for k in (0..scene.shapes.len()).rev() {
+        if k % SHAPES == 0 {
+            crate::progress::poll().await;
+        }
         let slot = (next > 0 && slots[next - 1].k == k).then(|| {
             next -= 1;
             next
@@ -528,13 +542,14 @@ mod tests {
         let (slots, params, _) = layout(&scene, &active);
         let value = |scene: &mut Scene, p: &[f32]| {
             set_params(scene, &slots, p);
-            let (pixels, _) = forward(scene, window, &slots);
+            let (pixels, _) = crate::progress::finish(forward(scene, window, &slots));
             image_loss(&ctx, window, &pixels, &loss).0
         };
         set_params(&mut scene, &slots, &params);
-        let (pixels, below) = forward(&scene, window, &slots);
+        let (pixels, below) = crate::progress::finish(forward(&scene, window, &slots));
         let (_, d) = image_loss(&ctx, window, &pixels, &loss);
-        let grad = backward(&scene, window, &slots, &below, d, params.len());
+        let grad =
+            crate::progress::finish(backward(&scene, window, &slots, &below, d, params.len()));
         for (k, &g) in grad.iter().enumerate() {
             let step = 1e-2;
             let mut p = params.clone();

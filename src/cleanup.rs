@@ -45,7 +45,9 @@ pub async fn cleanup(ctx: &Context, scene: &mut Scene) {
         // moves with it, since the whole-scene render is cached by it
         let shape = scene.shapes.remove(k);
         scene.change();
-        let candidate = Place::new(ctx, scene, &shape, k, MARGIN).map(|place| {
+        let place = Place::new(ctx, scene, &shape, k, MARGIN);
+        crate::progress::poll().await;
+        let candidate = place.map(|place| {
             let cost = place.cost(ctx, shape.fill);
             let origin = place.window.origin();
             let error = cost.value(&shape.path(origin));

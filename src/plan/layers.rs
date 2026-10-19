@@ -78,7 +78,9 @@ pub(super) async fn decide_whole(
             false,
         )
         .await;
+        crate::progress::poll().await;
         let with_parts = parts(ctx, &with);
+        crate::progress::poll().await;
         let terms = LayerTerms::measure(ctx, &with, scene, &candidate);
         let better = without.total()
             + margin(

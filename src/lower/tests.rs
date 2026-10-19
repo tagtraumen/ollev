@@ -267,3 +267,36 @@ fn crossing_loops_are_traced_afresh() {
     let miss = excess(&model, &lowered);
     assert!(miss <= price, "miss {miss} against {price}: {report}");
 }
+
+/// Through a memo, after a partial's quick lowering or the objects kept one by one, the model
+/// lowers as [`lower`] lowers it, each object's clips placed after those added before; a quick
+/// lowering uses none of what the host lacks either.
+#[test]
+fn a_memo_lowers_as_lower_does() {
+    let model = model();
+    let mut reversed = model.clone();
+    reversed.items.reverse();
+    let graphite = Capabilities {
+        even_odd: false,
+        path_gradients: false,
+        blur: false,
+        radial_focus: false,
+        ..Capabilities::ALL
+    };
+    for host in [graphite, Capabilities::NONE] {
+        let want = format!("{:?}", lower(&model, &host).0);
+        let memo = std::sync::Mutex::new(Memo::default());
+        let quick = lower_kept(&model, &host, &mut lock(&memo), true);
+        assert_eq!(uses(&quick, host), Vec::<&str>::new());
+        crate::progress::finish(keep(&model, &host, &memo));
+        for _ in 0..2 {
+            let kept = lower_kept(&model, &host, &mut lock(&memo), false);
+            assert_eq!(format!("{kept:?}"), want);
+        }
+        let want = format!("{:?}", lower(&reversed, &host).0);
+        for quick in [false, true] {
+            let kept = lower_kept(&reversed, &host, &mut lock(&memo), quick);
+            assert_eq!(format!("{kept:?}"), want);
+        }
+    }
+}

@@ -35,6 +35,9 @@ pub(super) fn lower(l: &mut Lowering, o: &Object) -> Option<Vec<Object>> {
         paint: Paint::Gradient(Gradient::new(from, centred)),
         ..o.clone()
     };
+    if l.quick {
+        return Some(vec![dropped]);
+    }
     let (loops, rule) = o.geometry.outline();
     let clip = l.clip(Clip {
         loops: crate::model::loops64(&loops),

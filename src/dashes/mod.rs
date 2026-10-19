@@ -122,7 +122,7 @@ impl Dash {
 /// Groups the scene's strokes into dashed strokes where that costs less in error plus segments
 /// and paths. A chain keeps its members' stack order against the shapes they overlap
 /// ([`chain_slot`]) and draws them where they are ([`off_phase`]).
-pub fn group(ctx: &Context, scene: &mut Scene) {
+pub async fn group(ctx: &Context, scene: &mut Scene) {
     let dashes: Vec<Dash> = scene
         .shapes
         .iter()
@@ -142,6 +142,7 @@ pub fn group(ctx: &Context, scene: &mut Scene) {
     // A short stroke may be a dash or a dot: the chains of dashes take theirs first, the
     // dots chain among the rest, so no two chains share a member, and all are planned on
     // the scene as it is
+    crate::progress::poll().await;
     let mut planned: Vec<(Vec<usize>, Stroke, &str)> = (dash_chains(&dashes).into_iter())
         .map(|(positions, dashed)| (positions, dashed, "dashes"))
         .collect();
@@ -149,6 +150,7 @@ pub fn group(ctx: &Context, scene: &mut Scene) {
     for &p in planned.iter().flat_map(|(positions, _, _)| positions) {
         taken[p] = true;
     }
+    crate::progress::poll().await;
     let dots = dot_chains(scene, &taken);
     planned.extend(
         dots.into_iter()
@@ -156,6 +158,7 @@ pub fn group(ctx: &Context, scene: &mut Scene) {
     );
     let mut replacements: Vec<(Vec<usize>, usize, Shape)> = Vec::new();
     for (positions, dashed, kind) in planned {
+        crate::progress::poll().await;
         if let Some((slot, shape)) = try_chain(ctx, scene, &positions, dashed, kind) {
             replacements.push((positions, slot, shape));
         }

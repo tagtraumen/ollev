@@ -581,8 +581,10 @@ pub async fn settle(ctx: &Context, scene: &mut Scene) {
             continue;
         }
         let below = scene.render(window, 0..k, [1.; 3]);
+        crate::progress::poll().await;
         let above = scene.layer(window, k + 1);
         let clip = scene.clip_mask(window, k);
+        crate::progress::poll().await;
         if let Some((outer, primitive)) = shape.primitive {
             // A primitive stays exact: only its parameters move
             let cost = coverage_cost(

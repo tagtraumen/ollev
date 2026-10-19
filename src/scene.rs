@@ -858,9 +858,15 @@ pub fn loops_path(loops: &[Vec<Cubic>]) -> Path {
 
 /// The coverage by `rule` of the pixels of the path's box within the image.
 pub fn coverage_raster(path: &Path, rule: FillRule) -> Raster {
+    let [raster] = coverage_rasters(path, [rule]);
+    raster
+}
+
+/// [`coverage_raster`] by each of `rules`, the path rasterized once.
+pub fn coverage_rasters<const N: usize>(path: &Path, rules: [FillRule; N]) -> [Raster; N] {
     let polys = crate::render::scene::flatten(path);
     let winding = crate::render::raster::rasterize(&polys, i32::MAX as u32, i32::MAX as u32);
-    Raster {
+    rules.map(|rule| Raster {
         x0: winding.x0.max(0) as usize,
         y0: winding.y0.max(0) as usize,
         w: winding.w,
@@ -874,7 +880,7 @@ pub fn coverage_raster(path: &Path, rule: FillRule) -> Raster {
                     .clamp(0., 1.)
             })
             .collect(),
-    }
+    })
 }
 
 /// [`coverage_raster`] blurred by a Gaussian of `sigma` pixels, over the box it reaches.

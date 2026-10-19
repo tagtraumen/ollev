@@ -67,6 +67,10 @@ pub struct Stages {
     /// Instancing: repeated shapes drawn as instances of one definition. Off, every copy is an
     /// object of its own.
     pub instancing: bool,
+    /// Path gradients, part of the effects: a run of shaded bands may take a gradient along a
+    /// curve of its boundary. Off, no such gradient is fitted, and the run takes a linear or
+    /// radial one or stays in bands; a host without path gradients then has none to lower.
+    pub path_gradients: bool,
 }
 
 impl Stages {
@@ -77,6 +81,7 @@ impl Stages {
         primitives: true,
         effects: true,
         instancing: true,
+        path_gradients: true,
     };
 }
 

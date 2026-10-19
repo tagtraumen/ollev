@@ -99,27 +99,35 @@ fn rgb_colors(rgb: &[u8]) -> Vec<DVec3> {
 /// The picture's colors with anti-aliased pixels unmixed to the side they mostly belong to, and
 /// no denoise: the translucency stage reads differences of a few levels, which the
 /// segmentation's bilateral filter would smooth away.
-pub fn unmixed_colors(
+pub async fn unmixed_colors(
     rgb: &[u8],
     width: usize,
     height: usize,
     antialias: &AntialiasParams,
 ) -> Vec<DVec3> {
-    antialias::unmix(&rgb_colors(rgb), width, height, antialias)
+    antialias::unmix(&rgb_colors(rgb), width, height, antialias).await
 }
 
 /// The colors segmentation works on: denoised and with anti-aliased pixels unmixed back to the
 /// colors on either side, as `params` asks.
-pub fn segmentation_colors(rgb: &[u8], width: usize, height: usize, params: &Params) -> Vec<DVec3> {
+pub async fn segmentation_colors(
+    rgb: &[u8],
+    width: usize,
+    height: usize,
+    params: &Params,
+) -> Vec<DVec3> {
     let mut colors = rgb_colors(rgb);
     if let Some(range) = params.denoise {
-        colors = bilateral(&colors, width, height, range);
+        colors = bilateral(&colors, width, height, range).await;
     }
     if let Some(antialias) = &params.antialias {
-        colors = antialias::unmix(&colors, width, height, antialias);
+        colors = antialias::unmix(&colors, width, height, antialias).await;
     }
     colors
 }
+
+/// Rows of a pass over the picture between two checkpoints.
+const ROWS: isize = 32;
 
 pub fn signed_area(cubics: &[Cubic]) -> f32 {
     cubics
@@ -132,7 +140,7 @@ pub fn signed_area(cubics: &[Cubic]) -> f32 {
 
 /// Edge-preserving smoothing, which removes compression noise and dithering before segmentation
 /// so they do not turn into speckle regions.
-fn bilateral(colors: &[DVec3], width: usize, height: usize, range: f64) -> Vec<DVec3> {
+async fn bilateral(colors: &[DVec3], width: usize, height: usize, range: f64) -> Vec<DVec3> {
     const RADIUS: isize = 2;
     const SPATIAL: f64 = 1.5;
     let (w, h) = (width as isize, height as isize);
@@ -147,6 +155,9 @@ fn bilateral(colors: &[DVec3], width: usize, height: usize, range: f64) -> Vec<D
         })
         .collect();
     for y in 0..h {
+        if y % ROWS == 0 {
+            crate::progress::poll().await;
+        }
         for x in 0..w {
             let center = colors[(y * w + x) as usize];
             let (mut sum, mut weight) = (DVec3::ZERO, 0.);

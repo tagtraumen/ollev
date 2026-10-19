@@ -93,27 +93,10 @@ impl EdgeField {
     pub fn of_target(target: &[Vec3], width: usize, height: usize) -> Self {
         let img = Image::from_target(target, width);
         let edges = edges_and_lines(&img);
+        // An edge's count reaches the pixels its anti-aliasing mixes: those within the square
+        // of radius `REACH` about it, which the eight-connected dilation by `REACH` is
         let near = dilate(&edges, width, height, Conn::Eight, REACH);
-        // An edge's count reaches the pixels its anti-aliasing mixes
-        let r = REACH as i32;
-        let mut strength = vec![0.; edges.len()];
-        for y in 0..height as i32 {
-            for x in 0..width as i32 {
-                let i = y as usize * width + x as usize;
-                if !near[i] {
-                    continue;
-                }
-                for dy in -r..=r {
-                    for dx in -r..=r {
-                        let (xx, yy) = (x + dx, y + dy);
-                        if xx >= 0 && yy >= 0 && (xx as usize) < width && (yy as usize) < height {
-                            let j = yy as usize * width + xx as usize;
-                            strength[i] = f64::max(strength[i], f64::from(u8::from(edges[j])));
-                        }
-                    }
-                }
-            }
-        }
+        let strength = near.iter().map(|&n| f64::from(u8::from(n))).collect();
         Self {
             width,
             height,
