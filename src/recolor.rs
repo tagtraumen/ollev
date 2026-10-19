@@ -5,40 +5,47 @@
 use glam::{Vec2, Vec3};
 
 use crate::hierarchy::Stats;
-use crate::{Context, Raster, Scene, Shape};
+use crate::{Context, Raster, Scene};
 
-/// How much of each pixel a shape covers: its raster cropped to the image.
-fn coverage_of(shape: &Shape, width: usize, height: usize) -> Raster {
-    let r = shape.raster();
+/// Image indices and coverage of the pixels of `r`'s box within the image.
+fn in_image(r: &Raster, width: usize, height: usize) -> impl Iterator<Item = (usize, f32)> + '_ {
     let w = (r.x0 + r.w).min(width).saturating_sub(r.x0);
     let h = (r.y0 + r.h).min(height).saturating_sub(r.y0);
-    Raster {
-        x0: r.x0,
-        y0: r.y0,
-        w,
-        h,
-        values: (0..h)
-            .flat_map(|y| r.values[y * r.w..y * r.w + w].iter().copied())
-            .collect(),
-    }
+    (0..h).flat_map(move |y| {
+        (0..w).map(move |x| ((r.y0 + y) * width + r.x0 + x, r.values[y * r.w + x]))
+    })
+}
+
+/// What the shape at `k` covers once clipped: its own raster where it has no clip.
+fn coverage<'a>(scene: &'a Scene, clipped: &'a [Option<Raster>], k: usize) -> &'a Raster {
+    clipped[k]
+        .as_ref()
+        .unwrap_or_else(|| scene.shapes[k].raster())
 }
 
 /// Fills every shape, from the top down, with what the pixels it shows ask for, or removes it
 /// where the shapes below show them about as well for less than it costs.
 pub async fn recolor(ctx: &Context, scene: &mut Scene) {
     let (width, height) = (ctx.width, ctx.height);
-    // What each shape covers once clipped, its clip coming before it
-    let mut coverage: Vec<Raster> = Vec::with_capacity(scene.shapes.len());
+    // A clipped shape's coverage times its clip's, the clip coming before it
+    let mut clipped: Vec<Option<Raster>> = Vec::with_capacity(scene.shapes.len());
     for shape in &scene.shapes {
-        let mut own = coverage_of(shape, width, height);
-        if let Some(clip) = shape.clip {
-            let clip = &coverage[scene.position(clip)];
-            let indices: Vec<usize> = own.pixels(width).map(|(i, _)| i).collect();
-            for (v, i) in own.values.iter_mut().zip(indices) {
-                *v *= clip.at(i, width);
+        let own = shape.clip.map(|clip| {
+            let clip = coverage(scene, &clipped, scene.position(clip));
+            let r = shape.raster();
+            let w = (r.x0 + r.w).min(width).saturating_sub(r.x0);
+            let h = (r.y0 + r.h).min(height).saturating_sub(r.y0);
+            Raster {
+                x0: r.x0,
+                y0: r.y0,
+                w,
+                h,
+                values: in_image(r, width, height)
+                    .map(|(i, v)| v * clip.at(i, width))
+                    .collect(),
             }
-        }
-        coverage.push(own);
+        });
+        clipped.push(own);
     }
     let target = |i: usize| ctx.target[i].as_dvec3();
     // The coverage of the kept shapes above the one at hand, per pixel
@@ -49,7 +56,7 @@ pub async fn recolor(ctx: &Context, scene: &mut Scene) {
         // Pixels the shape shows, and those it shows without anti-aliasing, which give the color
         let mut shown = Vec::new();
         let (mut all, mut interior) = (Stats::default(), Stats::default());
-        for (i, c) in coverage[k].pixels(width) {
+        for (i, c) in in_image(coverage(scene, &clipped, k), width, height) {
             if c >= 0.5 && above[i] < 0.5 {
                 shown.push(i);
                 all = all.add(&Stats::pixel(target(i)));
@@ -62,7 +69,7 @@ pub async fn recolor(ctx: &Context, scene: &mut Scene) {
         // The fill is fitted away from the rim, see [`crate::fill::erosion`]: each shown
         // pixel's depth is how far around it everything is fully shown
         let sampled: Vec<(Vec2, Vec3, usize)> = if interior.n > 0. {
-            let c = &coverage[k];
+            let c = coverage(scene, &clipped, k);
             let full = |x: isize, y: isize| {
                 x < 0
                     || y < 0
@@ -130,7 +137,7 @@ pub async fn recolor(ctx: &Context, scene: &mut Scene) {
                 let (x, y) = (i % width, i / width);
                 (0..k)
                     .rev()
-                    .find(|&j| keep[j] && coverage[j].at(i, width) >= 0.5)
+                    .find(|&j| keep[j] && coverage(scene, &clipped, j).at(i, width) >= 0.5)
                     .map_or(scene.shapes[0].fill.at_pixel(x, y), |j| {
                         scene.shapes[j].fill.at_pixel(x, y)
                     })
@@ -171,7 +178,7 @@ pub async fn recolor(ctx: &Context, scene: &mut Scene) {
             // a placeholder
             scene.set_fill_at(k, fill);
         }
-        for (i, c) in coverage[k].pixels(width) {
+        for (i, c) in in_image(coverage(scene, &clipped, k), width, height) {
             above[i] = 1. - (1. - above[i]) * (1. - c);
         }
     }

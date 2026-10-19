@@ -97,7 +97,9 @@ pub struct SegmentParams {
 /// Regions merged between two checkpoints (see [`crate::progress`]), about a millisecond.
 const MERGES_PER_POLL: usize = 1024;
 
+/// Packed to four bytes, so a neighbour's entry takes 16 bytes instead of 24.
 #[derive(Clone, Copy, Debug, Default)]
+#[repr(C, packed(4))]
 struct Boundary {
     len: u32,
     /// Summed squared color difference of the pixel pairs across the boundary.
@@ -125,9 +127,6 @@ struct Region {
     /// Neighbor region and the length of the shared boundary.
     neighbors: HashMap<u32, Boundary>,
     version: u32,
-    /// Neighbors a contrast merge was refused with because the merged colors did not fit; retried
-    /// once either side grows.
-    misfits: Vec<u32>,
 }
 
 impl Region {
@@ -137,7 +136,6 @@ impl Region {
             moments,
             neighbors: HashMap::default(),
             version: 0,
-            misfits: Vec::new(),
         }
     }
 }
@@ -378,6 +376,9 @@ async fn merge(
     // outnumber current ones by far and are dropped whenever the queue has doubled
     let mut compacted = heap.len();
     let mut popped = 0usize;
+    // Per region, the neighbours a contrast merge was refused with because the merged colors
+    // did not fit, retried once either side grows
+    let mut misfits: HashMap<u32, Vec<u32>> = HashMap::default();
     while let Some(c) = heap.pop() {
         popped += 1;
         if popped.is_multiple_of(MERGES_PER_POLL) {
@@ -392,8 +393,8 @@ async fn merge(
         }
         let (a, b) = (c.a, c.b);
         if matches!(criterion, Criterion::Contrast) && !fits(regions, a, b) {
-            regions[a as usize].misfits.push(b);
-            regions[b as usize].misfits.push(a);
+            misfits.entry(a).or_default().push(b);
+            misfits.entry(b).or_default().push(a);
             continue;
         }
 
@@ -429,10 +430,10 @@ async fn merge(
 
         let neighbors: Vec<u32> = match criterion {
             Criterion::Contrast => {
-                let mut misfits = std::mem::take(&mut regions[keep as usize].misfits);
-                misfits.append(&mut regions[gone as usize].misfits);
+                let mut refused = misfits.remove(&keep).unwrap_or_default();
+                refused.extend(misfits.remove(&gone).unwrap_or_default());
                 let kept = &regions[keep as usize].neighbors;
-                let changed = gone_neighbors.keys().chain(&misfits);
+                let changed = gone_neighbors.keys().chain(&refused);
                 let mut changed: Vec<u32> = changed
                     .copied()
                     .filter(|&n| parent[n as usize] == n && kept.contains_key(&n))

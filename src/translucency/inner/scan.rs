@@ -5,21 +5,40 @@ use super::{
     fit_fixed, in_gamut_c, vote_cells,
 };
 
-/// One k of the scan: the best fit over the point matcher's candidates of m.
+/// One k of the scan: the best fit's score over the point matcher's candidates of m, and the
+/// fit itself where the row leads the scan.
 pub struct ScanRow {
     pub k: f64,
+    pub score: Option<f64>,
     pub fit: Option<InnerFit>,
 }
 
 /// The scan: per k of the grid the point matcher's vote cells refitted (as the pin does)
-/// give the candidates of m, each fitted with the layer alone; the best by score.
-pub async fn scan(inp: &InnerInputs, ks: &[f64]) -> Vec<ScanRow> {
+/// give the candidates of m, each fitted with the layer alone; the best by score. Each row's
+/// fit is shown to `look` and kept only on the leading row (the last of equal scores).
+pub async fn scan(
+    inp: &InnerInputs,
+    ks: &[f64],
+    mut look: impl FnMut(&InnerFit),
+) -> Vec<ScanRow> {
     let mts = scan_matchers(inp);
-    let mut rows = Vec::with_capacity(ks.len());
+    let mut rows: Vec<ScanRow> = Vec::with_capacity(ks.len());
     for &k in ks {
         crate::progress::poll().await;
         let fit = row_best(inp, &mts, k).map(|(m, _)| fit_fixed(inp, k, m));
-        rows.push(ScanRow { k, fit });
+        let score = fit.as_ref().map(|f| f.score);
+        if let Some(f) = &fit {
+            look(f);
+        }
+        let leads = score.is_some_and(|s| rows.iter().filter_map(|r| r.score).all(|b| s >= b));
+        if leads {
+            rows.iter_mut().for_each(|r| r.fit = None);
+        }
+        rows.push(ScanRow {
+            k,
+            score,
+            fit: fit.filter(|_| leads),
+        });
     }
     rows
 }
@@ -91,26 +110,33 @@ async fn pin_over(inp: &InnerInputs, mut grid: Vec<f64>, done: Vec<ScanRow>) -> 
     grid.retain(|&k| !done.iter().any(|r| r.k.to_bits() == k.to_bits()));
     // the rest of the grid with the rows done, in the grid's order (the matchers built once)
     let mts = scan_matchers(inp);
-    let mut rows: Vec<(f64, Option<Option<InnerFit>>)> =
-        done.into_iter().map(|r| (r.k, Some(r.fit))).collect();
+    let mut rows: Vec<(f64, Option<ScanRow>)> = done.into_iter().map(|r| (r.k, Some(r))).collect();
     rows.extend(grid.into_iter().map(|k| (k, None)));
     rows.sort_by(|a, b| a.0.total_cmp(&b.0));
-    let mut best: Option<InnerFit> = None;
+    // the leading score, and the fit of the row that last took the lead with its fit kept: a
+    // done row without its fit never ends the pin's best, as the scan's leader outscores it
+    let (mut lead, mut best): (Option<f64>, Option<InnerFit>) = (None, None);
     for (k, done) in rows {
         crate::progress::poll().await;
-        let fit = match done {
-            Some(fit) => fit,
+        let (score, fit) = match done {
+            Some(row) => (row.score, row.fit),
             // a row of the rest scored without its record, its fit built only where it takes
             // the lead: the score is the fit's, bit for bit (`the_score_alone_matches_the_fit`),
             // so the rows that do not lead need none
-            None => row_best(inp, &mts, k)
-                .filter(|&(_, s)| best.as_ref().is_none_or(|b| s >= b.score))
-                .map(|(m, _)| fit_fixed(inp, k, m)),
+            None => {
+                let fit = row_best(inp, &mts, k)
+                    .filter(|&(_, s)| lead.is_none_or(|b| s >= b))
+                    .map(|(m, _)| fit_fixed(inp, k, m));
+                (fit.as_ref().map(|f| f.score), fit)
+            }
         };
-        if let Some(f) = fit
-            && best.as_ref().is_none_or(|b| f.score >= b.score)
+        if let Some(s) = score
+            && lead.is_none_or(|b| s >= b)
         {
-            best = Some(f);
+            lead = Some(s);
+            if fit.is_some() {
+                best = fit;
+            }
         }
     }
     best

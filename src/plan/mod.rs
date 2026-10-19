@@ -398,6 +398,8 @@ async fn trace_level_layer(
             }
         }
     }
+    // The plan is decided: the planner's per-node fits go before the drawing
+    drop(planner);
     // Which shapes go below an earlier sibling
     let under = timings
         .time("order", async || {

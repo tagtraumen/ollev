@@ -7,6 +7,7 @@ use glam::Vec3;
 use crate::edges::{EdgeField, EdgeTerm};
 use crate::{Context, Scene, Shape, Window};
 
+mod canvas;
 mod merge;
 
 /// Segments an object costs beyond its cubics per loop, as the bench and usvg count them: the
@@ -20,6 +21,8 @@ const PAINT_SEGMENTS: f64 = 1.5;
 pub(crate) struct Judge<'a> {
     ctx: &'a Context,
     edges: Option<(EdgeField, f64)>,
+    /// The scene as the economy's steps leave it, for the error of a window as drawn.
+    canvas: canvas::Canvas,
 }
 
 impl<'a> Judge<'a> {
@@ -33,6 +36,7 @@ impl<'a> Judge<'a> {
                     t.lambda,
                 )
             }),
+            canvas: canvas::Canvas::default(),
         }
     }
 
@@ -42,6 +46,15 @@ impl<'a> Judge<'a> {
             .zip(rendered)
             .map(|(i, r)| self.pixel(i, *r))
             .sum()
+    }
+
+    /// The error of each pixel of `window` showing `rendered`, which [`Judge::error`] sums.
+    fn errors(&self, window: Window, rendered: &[Vec3]) -> Vec<f64> {
+        window
+            .pixels(self.ctx.width)
+            .zip(rendered)
+            .map(|(i, r)| self.pixel(i, *r))
+            .collect()
     }
 
     /// What showing `color` at each pixel `shape` covers instead of its own fill adds to the
@@ -157,7 +170,7 @@ pub async fn economize(
     let mut order: Vec<(f64, usize)> = Vec::new();
     for (u, unit) in units.iter().enumerate() {
         crate::progress::poll().await;
-        let margin = worth(&judge, scene, &unit.ids) - unit.price;
+        let margin = worth(&judge, scene, &unit.ids).0 - unit.price;
         if margin < 0. {
             order.push((margin, u));
         }
@@ -166,7 +179,7 @@ pub async fn economize(
     for (_, u) in order {
         crate::progress::poll().await;
         let unit = &units[u];
-        let worth = worth(&judge, scene, &unit.ids);
+        let (worth, window, without) = worth(&judge, scene, &unit.ids);
         if worth >= unit.price {
             continue;
         }
@@ -176,8 +189,10 @@ pub async fn economize(
                 unit.ids, unit.price
             );
         }
+        let at = scene.changes();
         scene.shapes.retain(|s| !unit.ids.contains(&s.id));
         scene.change();
+        judge.canvas.patched(at, scene, window, &without);
         if unit.ids.len() > 1 || scene.repeats.iter().any(|r| r.members[0].0 == unit.ids[0]) {
             report.repeats_dropped += 1;
             scene.repeats.retain(|r| r.members[0].0 != unit.ids[0]);
@@ -256,13 +271,15 @@ fn window_of(scene: &Scene, ids: &[usize]) -> Window {
     Window::around(min, max, 1., scene.width, scene.height)
 }
 
-/// How much error the shapes `ids` save the scene: its error without them less with them.
-fn worth(judge: &Judge, scene: &mut Scene, ids: &[usize]) -> f64 {
+/// How much error the shapes `ids` save the scene: its error without them less with them; and
+/// the window they paint, rendered without them.
+fn worth(judge: &Judge, scene: &mut Scene, ids: &[usize]) -> (f64, Window, Vec<Vec3>) {
     let window = window_of(scene, ids);
     if window.is_empty() {
-        return 0.;
+        return (0., window, Vec::new());
     }
-    let with = judge.drawn(scene, window);
+    let with = judge.error(window, &judge.canvas.shown(scene, window));
+    let at = scene.changes();
     let places: Vec<usize> = (0..scene.shapes.len())
         .rev()
         .filter(|&k| ids.contains(&scene.shapes[k].id))
@@ -272,18 +289,21 @@ fn worth(judge: &Judge, scene: &mut Scene, ids: &[usize]) -> f64 {
         .map(|k| (k, scene.shapes.remove(k)))
         .collect();
     scene.change();
-    let without = judge.drawn(scene, window);
+    let shown = scene.render(window, 0..scene.shapes.len(), [0.; 3]);
+    let without = judge.error(window, &shown);
     for (k, s) in removed.into_iter().rev() {
         scene.shapes.insert(k, s);
     }
     scene.change();
-    without - with
+    judge.canvas.restored(at, scene);
+    (without - with, window, shown)
 }
 
 /// Drops each loop of a many-looped shape (a hole filled, an island gone) whose part of the
 /// picture costs less error than its cubics and its move and close; returns how many went.
 async fn drop_loops(judge: &Judge<'_>, scene: &mut Scene, fixed: &crate::HashSet<usize>) -> usize {
     let repeated = repeated(scene);
+    let width = scene.width;
     let mut dropped = 0;
     for k in 1..scene.shapes.len() {
         crate::progress::poll().await;
@@ -291,11 +311,19 @@ async fn drop_loops(judge: &Judge<'_>, scene: &mut Scene, fixed: &crate::HashSet
         if fixed.contains(&id) || repeated.contains(&id) || scene.shapes[k].stroke.is_some() {
             continue;
         }
+        // The error of each pixel of the shape's window as the scene stands, kept while its
+        // loops are tried: a loop changes only the pixels where the shape's coverage moves
+        let mut drawn: Option<(Window, Vec<f64>)> = None;
         let mut l = 0;
         while scene.shapes[k].loops.len() > 1 && l < scene.shapes[k].loops.len() {
             let shape = scene.shapes[k].clone();
             let window = window_of(scene, &[id]);
-            let with = judge.drawn(scene, window);
+            let mut errors = match drawn.take() {
+                Some((w, errors)) if w == window => errors,
+                _ => judge.errors(window, &judge.canvas.shown(scene, window)),
+            };
+            let at = scene.changes();
+            let with: f64 = errors.iter().copied().sum();
             let mut without = shape.clone();
             without.loops.remove(l);
             without.primitive = match without.primitive {
@@ -307,22 +335,79 @@ async fn drop_loops(judge: &Judge<'_>, scene: &mut Scene, fixed: &crate::HashSet
             let saved = judge.price(&shape) - judge.price(&without);
             scene.shapes[k] = without;
             scene.change();
-            let after = judge.drawn(scene, window);
+            let m = moved(&shape, &scene.shapes[k], window).unwrap_or(Window::full(0, 0));
+            let shown = scene.render(m, 0..scene.shapes.len(), [0.; 3]);
+            let now = judge.errors(m, &shown);
+            let after: f64 = window
+                .pixels(width)
+                .zip(&errors)
+                .map(|(i, &e)| m.index(i, width).map_or(e, |j| now[j]))
+                .sum();
             if after - with < saved {
                 if crate::diagnostics::log() {
                     eprintln!(
                         "economy: loop {l} of shape {id} dropped, error {with:.4} to {after:.4} for {saved:.4}"
                     );
                 }
+                for (i, e) in m.pixels(width).zip(now) {
+                    errors[window.index(i, width).expect("moved within the window")] = e;
+                }
+                judge.canvas.patched(at, scene, m, &shown);
+                drawn = Some((window, errors));
                 dropped += 1;
                 continue;
             }
             scene.shapes[k] = shape;
             scene.change();
+            judge.canvas.restored(at, scene);
+            drawn = Some((window, errors));
             l += 1;
         }
     }
     dropped
+}
+
+/// The box of the pixels of `window` where shape `b` paints or clips other than `a` does, if
+/// any: every other pixel of the scene renders as before.
+fn moved(a: &Shape, b: &Shape, window: Window) -> Option<Window> {
+    let (mut lo, mut hi) = ([usize::MAX; 2], [0; 2]);
+    for (ra, rb) in [(a.raster(), b.raster()), (a.painted(), b.painted())] {
+        let at = |r: &crate::Raster, x: usize, y: usize| {
+            let inside = x >= r.x0 && y >= r.y0 && x < r.x0 + r.w && y < r.y0 + r.h;
+            if inside {
+                r.values[(y - r.y0) * r.w + x - r.x0]
+            } else {
+                0.
+            }
+        };
+        let same_box = (ra.x0, ra.y0, ra.w, ra.h) == (rb.x0, rb.y0, rb.w, rb.h);
+        for y in window.y..window.y + window.height {
+            let (x0, x1) = (window.x, window.x + window.width);
+            // Rows of one box compare as slices over the columns they share with the window
+            let differs = |x: usize| at(ra, x, y) != at(rb, x, y);
+            let (first, last) = if same_box && y >= ra.y0 && y < ra.y0 + ra.h {
+                let (c0, c1) = (x0.max(ra.x0), x1.min(ra.x0 + ra.w));
+                let row = (y - ra.y0) * ra.w;
+                let (sa, sb) = (&ra.values[row..row + ra.w], &rb.values[row..row + ra.w]);
+                let d = |x: &usize| sa[x - ra.x0] != sb[x - ra.x0];
+                ((c0..c1).find(d), (c0..c1).rev().find(d))
+            } else if same_box {
+                (None, None)
+            } else {
+                ((x0..x1).find(|&x| differs(x)), (x0..x1).rev().find(|&x| differs(x)))
+            };
+            if let (Some(f), Some(l)) = (first, last) {
+                lo = [lo[0].min(f), lo[1].min(y)];
+                hi = [hi[0].max(l), hi[1].max(y)];
+            }
+        }
+    }
+    (lo[0] <= hi[0]).then(|| Window {
+        x: lo[0],
+        y: lo[1],
+        width: hi[0] + 1 - lo[0],
+        height: hi[1] + 1 - lo[1],
+    })
 }
 
 #[cfg(test)]

@@ -306,34 +306,23 @@ pub async fn ranked_candidates(
         // relations, as the re-cut region can meet more than this one; the line at its best,
         // the last of equal scores as the pin takes it, since the pin keeps the relation's line
         let t_inputs = clock.elapsed().as_secs_f64();
-        let rows = inner::scan(&inp, &coarse_grid).await;
+        let (mut meeting, mut by_k) = (0, Vec::new());
+        let rows = inner::scan(&inp, &coarse_grid, |f| {
+            meeting = meeting.max(rank::contact(&inp, f, reach).meeting);
+            if debug {
+                let apart = line_apart(&inp, f, p0.k, p0.c);
+                by_k.push(format!("{:.2}:{:.0}", f.k, apart * 255.));
+            }
+        })
+        .await;
         crate::progress::poll().await;
         let t_scan = clock.elapsed().as_secs_f64() - t_inputs;
-        let best = rows
-            .iter()
-            .filter_map(|r| r.fit.as_ref())
-            .fold(None::<&inner::InnerFit>, |b, f| {
-                if b.is_none_or(|b| f.score >= b.score) {
-                    Some(f)
-                } else {
-                    b
-                }
-            });
-        let meeting = rows
-            .iter()
-            .filter_map(|r| r.fit.as_ref())
-            .map(|f| rank::contact(&inp, f, reach).meeting)
-            .max()
-            .unwrap_or(0);
+        // the scan keeps the leading row's fit alone, the last of equal scores as the pin
+        let best = rows.iter().find_map(|r| r.fit.as_ref());
         let apart = best.map_or(f64::INFINITY, |f| line_apart(&inp, f, p0.k, p0.c));
         let on_line = apart <= f64::from(SHOW_THROUGH);
         let gated = meeting < least_meeting || !on_line;
         if debug {
-            let by_k: Vec<String> = rows
-                .iter()
-                .filter_map(|r| r.fit.as_ref())
-                .map(|f| format!("{:.2}:{:.0}", f.k, line_apart(&inp, f, p0.k, p0.c) * 255.))
-                .collect();
             eprintln!(
                 "families: family {} grown at k {:.3} c {:?} ({} px, {} colours; inputs \
                  {t_inputs:.2}s, coarse scan {t_scan:.2}s) on the coarse grid: {meeting} \

@@ -109,9 +109,9 @@ pub struct Shape {
     pub primitive: Option<(usize, crate::tracer::primitives::Primitive)>,
     /// The shape's coverage of its bounding box, once something asked for it; cleared whenever
     /// the outline changes through [`Shape::update_bounds`].
-    pub raster: OnceLock<Raster>,
+    pub raster: OnceLock<Arc<Raster>>,
     /// What a blurred shape paints over its box, its raster blurred; cleared with the raster.
-    pub painted: OnceLock<Raster>,
+    pub painted: OnceLock<Arc<Raster>>,
     /// A gradient fill's paint over the painted box, the first time a render asks for it; kept
     /// with the fill and box it was read for, so a shape given another fill reads it again.
     pub paint: Kept<Option<Arc<Paint>>>,
@@ -415,7 +415,7 @@ impl Shape {
             return self.raster();
         }
         self.painted
-            .get_or_init(|| blurred_raster(&self.path(Vec2::ZERO), self.fill_rule(), self.blur))
+            .get_or_init(|| Arc::new(blurred_raster(&self.path(Vec2::ZERO), self.fill_rule(), self.blur)))
     }
 
     /// [`Fill::paint_pixel`] over the painted box (see [`Shape::painted`]) for a gradient fill,
@@ -448,7 +448,7 @@ impl Shape {
     /// without a blur, rasterized the first time it is asked for.
     pub fn raster(&self) -> &Raster {
         self.raster
-            .get_or_init(|| coverage_raster(&self.path(Vec2::ZERO), self.fill_rule()))
+            .get_or_init(|| Arc::new(coverage_raster(&self.path(Vec2::ZERO), self.fill_rule())))
     }
 
     /// How much of each pixel of `window` the shape's outline covers, by itself and without its
@@ -513,7 +513,7 @@ pub struct Scene {
     /// The whole scene rendered, with the count of changes it is current for: kept up to date
     /// while shapes are pushed on top, which is what fitting one shape after another does, and
     /// rendered again when something else changed it.
-    canvas: Kept<Option<(u64, Vec<Vec3>)>>,
+    canvas: Kept<Option<(u64, Arc<Vec<Vec3>>)>>,
     /// Objects drawn with the shapes but outside the scene's own render: a translucent layer's
     /// marks (see `translucency::vocabulary`), added once the scene is decided. A mark with a
     /// clip shows through the layer's shape, the first of the layer's group.
@@ -608,7 +608,9 @@ impl Scene {
             && *current == before
             && position + 1 == self.shapes.len()
         {
-            self.composite_onto(Window::full(self.width, self.height), position, pixels);
+            let full = Window::full(self.width, self.height);
+            let pixels: &mut Vec<Vec3> = Arc::make_mut(pixels);
+            self.composite_onto(full, position, pixels);
             *current = change;
         }
         id
@@ -630,6 +632,11 @@ impl Scene {
     /// The next count of changes.
     pub(crate) fn change(&mut self) -> u64 {
         self.changes += 1;
+        self.changes
+    }
+
+    /// The count of changes so far.
+    pub(crate) fn changes(&self) -> u64 {
         self.changes
     }
 
@@ -681,7 +688,7 @@ impl Scene {
                 .is_none_or(|(current, _)| *current != self.changes)
             {
                 let full = Window::full(self.width, self.height);
-                *canvas = Some((self.changes, self.render_shapes(full, range, background)));
+                *canvas = Some((self.changes, Arc::new(self.render_shapes(full, range, background))));
             }
             let (_, pixels) = canvas.as_ref().expect("just rendered");
             return window.pixels(self.width).map(|i| pixels[i]).collect();
@@ -717,9 +724,24 @@ impl Scene {
         };
         let clip = self.clip_mask(shared, k);
         let paint = shape.paint();
+        // A flat fill unclipped composites row by row with one colour
+        if paint.is_none() && clip.is_none() {
+            let (c, a) = (shape.fill.color, shape.fill.opacity);
+            for y in shared.y..shared.y + shared.height {
+                let from = (y - raster.y0) * raster.w + shared.x - raster.x0;
+                let to = (y - window.y) * window.width + shared.x - window.x;
+                let row = &mut pixels[to..to + shared.width];
+                for (p, &alpha) in row.iter_mut().zip(&raster.values[from..from + shared.width]) {
+                    if alpha != 0. {
+                        *p = *p + alpha * a * (c - *p);
+                    }
+                }
+            }
+            return;
+        }
         let paint_at = |x: usize, y: usize| match &paint {
             Some(p) => p.at(x, y),
-            None => shape.fill.paint_pixel(x, y),
+            None => (shape.fill.color, shape.fill.opacity),
         };
         for y in shared.y..shared.y + shared.height {
             for x in shared.x..shared.x + shared.width {
@@ -793,7 +815,7 @@ impl Scene {
                     }
                     let (paint, a) = match &kept {
                         Some(p) => p.at(x, y),
-                        None => shape.fill.paint_pixel(x, y),
+                        None => (shape.fill.color, shape.fill.opacity),
                     };
                     let alpha = covered * a;
                     let c = color[j];

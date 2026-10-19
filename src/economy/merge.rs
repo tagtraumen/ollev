@@ -58,7 +58,7 @@ pub(super) async fn merge_all(
         let Some(top) = scene.shapes.iter().position(|s| s.id == id) else {
             continue;
         };
-        let mut best: Option<(f64, usize, Shape)> = None;
+        let mut best: Option<(usize, Merged)> = None;
         for below in (1..top).rev() {
             crate::progress::poll().await;
             let b = &scene.shapes[below];
@@ -71,9 +71,9 @@ pub(super) async fn merge_all(
             let lower = b.id;
             for kind in kinds(judge, scene, top, below) {
                 match try_merge(judge, scene, top, below, kind, tolerances) {
-                    Some((gain, shape)) if gain > 0. => {
-                        if best.as_ref().is_none_or(|(g, _, _)| gain > *g) {
-                            best = Some((gain, below, shape));
+                    Some(m) if m.gain > 0. => {
+                        if best.as_ref().is_none_or(|(_, b)| m.gain > b.gain) {
+                            best = Some((below, m));
                         }
                     }
                     _ => {
@@ -82,21 +82,23 @@ pub(super) async fn merge_all(
                 }
             }
         }
-        if let Some((gain, below, shape)) = best {
+        if let Some((below, m)) = best {
             if crate::diagnostics::log() {
                 eprintln!(
-                    "economy: shape {id} merged into {}, gain {gain:.5}",
-                    scene.shapes[below].id
+                    "economy: shape {id} merged into {}, gain {:.5}",
+                    scene.shapes[below].id, m.gain
                 );
             }
+            let at = scene.changes();
             let change = scene.change();
             scene.shapes[below] = Shape {
                 changed: change,
                 fitted: change,
-                ..shape
+                ..m.shape
             };
             scene.shapes.remove(top);
             scene.change();
+            judge.canvas.patched(at, scene, m.window, &m.shown);
             merged += 1;
         }
     }
@@ -113,20 +115,27 @@ fn touches(a: &Shape, b: &Shape, width: usize, height: usize) -> bool {
         return false;
     }
     let (ra, rb) = (a.raster(), b.raster());
-    in_image(ra, width, height).any(|(i, v)| {
-        v >= 0.5 && {
-            let (x, y) = ((i % width) as i64, (i / width) as i64);
-            [(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1)]
-                .iter()
-                .any(|(dx, dy)| {
-                    let (xx, yy) = (x + dx, y + dy);
-                    xx >= 0
-                        && yy >= 0
-                        && (xx as usize) < width
-                        && (yy as usize) < height
-                        && rb.at(yy as usize * width + xx as usize, width) >= 0.5
-                })
-        }
+    // Only a pixel of `a` within a pixel of `b`'s box can border it
+    let x0 = ra.x0.max(rb.x0.saturating_sub(1));
+    let y0 = ra.y0.max(rb.y0.saturating_sub(1));
+    let x1 = (ra.x0 + ra.w).min(rb.x0 + rb.w + 1).min(width);
+    let y1 = (ra.y0 + ra.h).min(rb.y0 + rb.h + 1).min(height);
+    (y0..y1).any(|y| {
+        (x0..x1).any(|x| {
+            ra.values[(y - ra.y0) * ra.w + x - ra.x0] >= 0.5 && {
+                let (x, y) = (x as i64, y as i64);
+                [(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1)]
+                    .iter()
+                    .any(|(dx, dy)| {
+                        let (xx, yy) = (x + dx, y + dy);
+                        xx >= 0
+                            && yy >= 0
+                            && (xx as usize) < width
+                            && (yy as usize) < height
+                            && rb.at(yy as usize * width + xx as usize, width) >= 0.5
+                    })
+            }
+        })
     })
 }
 
@@ -225,8 +234,17 @@ fn sliver(s: &Shape) -> bool {
     perimeter > 0. && 2. * area / perimeter <= SLIVER_WIDTH
 }
 
+/// A merge tried: what it gains in error plus price (a loss below zero), the merged shape, and
+/// the window it changes as the scene renders it merged.
+struct Merged {
+    gain: f64,
+    shape: Shape,
+    window: Window,
+    shown: Vec<Vec3>,
+}
+
 /// The shape at `below` traced again over the pixels `kind` gives it and fitted in its place,
-/// with the object at `top` gone, and what that gains in error plus price (a loss below zero).
+/// with the object at `top` gone, and what that gains.
 fn try_merge(
     judge: &Judge,
     scene: &mut Scene,
@@ -234,7 +252,7 @@ fn try_merge(
     below: usize,
     kind: Kind,
     tolerances: &[f32],
-) -> Option<(f64, Shape)> {
+) -> Option<Merged> {
     let ctx = judge.ctx;
     let (width, height) = (scene.width, scene.height);
     let (o, b) = (scene.shapes[top].clone(), scene.shapes[below].clone());
@@ -279,6 +297,7 @@ fn try_merge(
         )),
         ..ctx.clone()
     };
+    let at = scene.changes();
     scene.shapes.remove(top);
     let lower = scene.shapes.remove(below);
     scene.change();
@@ -306,6 +325,7 @@ fn try_merge(
     scene.shapes.insert(below, lower);
     scene.shapes.insert(top, o);
     scene.change();
+    judge.canvas.restored(at, scene);
     fitted?;
     // Measured over everything the three shapes paint, the merged one in the lower's place
     let (lo, hi) = (
@@ -319,8 +339,9 @@ fn try_merge(
         width,
         height,
     );
-    let shown = scene.render(window, 0..scene.shapes.len(), [0.; 3]);
+    let shown = judge.canvas.shown(scene, window);
     let error = judge.error(window, &shown);
+    let at = scene.changes();
     let o = scene.shapes.remove(top);
     let lower = std::mem::replace(&mut scene.shapes[below], shape.clone());
     scene.change();
@@ -328,6 +349,7 @@ fn try_merge(
     scene.shapes[below] = lower;
     scene.shapes.insert(top, o);
     scene.change();
+    judge.canvas.restored(at, scene);
     // A merge that only redescribes what is drawn (within the noise, away from the old
     // outlines' anti-aliasing) is priced at the detail's price, as a simplification is; one
     // that changes the drawing at the acceptance price
@@ -369,7 +391,12 @@ fn try_merge(
             shape.segments()
         );
     }
-    Some((before - after, shape))
+    Some(Merged {
+        gain: before - after,
+        shape,
+        window,
+        shown: merged,
+    })
 }
 
 /// The solid colour that best draws the pixels the merged shape shows fully at its place: the

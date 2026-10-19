@@ -194,7 +194,7 @@ impl Weights {
 }
 
 /// A rectangle of whole pixels within the image.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Window {
     pub x: usize,
     pub y: usize,

@@ -254,8 +254,8 @@ fn untangle(scene: &Scene, slots: &[Slot], params: &mut [f32]) {
     }
 }
 
-/// The scene rendered over `window`, and what lies below each slot's shape over its box
-/// within the window, row by row.
+/// The scene rendered over `window`, and what lies below each slot's shape at the pixels
+/// [`walk`] visits, in its order.
 fn forward(scene: &Scene, window: Window, slots: &[Slot]) -> (Vec<Vec3>, Vec<Vec<Vec3>>) {
     let mut pixels = vec![Vec3::ONE; window.width * window.height];
     let mut below = Vec::with_capacity(slots.len());
@@ -263,19 +263,30 @@ fn forward(scene: &Scene, window: Window, slots: &[Slot]) -> (Vec<Vec3>, Vec<Vec
     for k in 0..scene.shapes.len() {
         if next.peek().is_some_and(|s| s.k == k) {
             next.next();
-            let b = boxed(scene, k, window);
-            below.push(
-                b.map(|b| {
-                    b.pixels(window.width)
-                        .map(|j| pixels[j])
-                        .collect::<Vec<Vec3>>()
-                })
-                .unwrap_or_default(),
-            );
+            let mut under = Vec::new();
+            reached(scene, k, window, |j, _, _| under.push(pixels[j]));
+            below.push(under);
         }
         scene.composite_onto(window, k, &mut pixels);
     }
     (pixels, below)
+}
+
+/// Calls `f(j, x, y)` for each pixel `j` of `window` (at `x`, `y` in the image) where the
+/// shape at `k` paints any coverage, row by row.
+fn reached(scene: &Scene, k: usize, window: Window, mut f: impl FnMut(usize, usize, usize)) {
+    let Some(b) = boxed(scene, k, window) else {
+        return;
+    };
+    let raster = scene.shapes[k].painted();
+    for y in b.y + window.y..b.y + window.y + b.height {
+        let row = (y - raster.y0) * raster.w;
+        for x in b.x + window.x..b.x + window.x + b.width {
+            if raster.values[row + x - raster.x0] != 0. {
+                f((y - window.y) * window.width + x - window.x, x, y);
+            }
+        }
+    }
 }
 
 /// The box of what the shape at `k` paints within `window`, in the window's frame.
@@ -351,23 +362,17 @@ fn walk(scene: &Scene, k: usize, window: Window, mut f: impl FnMut(usize, f32, f
     };
     let clip = scene.clip_mask(shared, k);
     let paint = shape.paint();
-    for y in shared.y..shared.y + shared.height {
-        for x in shared.x..shared.x + shared.width {
-            let c = raster.values[(y - raster.y0) * raster.w + x - raster.x0];
-            if c == 0. {
-                continue;
-            }
-            let m = clip
-                .as_ref()
-                .map_or(1., |m| m[(y - shared.y) * shared.width + x - shared.x]);
-            let (color, a) = match &paint {
-                Some(p) => p.at(x, y),
-                None => shape.fill.paint_pixel(x, y),
-            };
-            let j = (y - window.y) * window.width + x - window.x;
-            f(j, c * m * a, m * a, (color, a));
-        }
-    }
+    reached(scene, k, window, |j, x, y| {
+        let c = raster.values[(y - raster.y0) * raster.w + x - raster.x0];
+        let m = clip
+            .as_ref()
+            .map_or(1., |m| m[(y - shared.y) * shared.width + x - shared.x]);
+        let (color, a) = match &paint {
+            Some(p) => p.at(x, y),
+            None => shape.fill.paint_pixel(x, y),
+        };
+        f(j, c * m * a, m * a, (color, a));
+    });
 }
 
 /// The derivative of the error by the flat parameters, `d_image` walked down the stack.
@@ -396,15 +401,14 @@ fn backward(
         let mut d_cov = vec![0f32; raster.values.len()];
         let (mut d_color, mut d_to) = (Vec3::ZERO, Vec3::ZERO);
         let mut d_geometry = shape.fill.gradient.map(|g| g.zeroed());
-        let Some(b) = boxed(scene, k, window) else {
+        if boxed(scene, k, window).is_none() {
             continue;
-        };
-        let under = &below[si];
+        }
+        let mut under = below[si].iter();
         walk(scene, k, window, |j, alpha, share, (color, a)| {
             let d = d_image[j];
             let (x, y) = (window.x + j % window.width, window.y + j / window.width);
-            let bj = (y - window.y - b.y) * b.width + (x - window.x - b.x);
-            let u = under[bj];
+            let u = *under.next().expect("a pixel below each reached");
             d_cov[(y - raster.y0) * raster.w + x - raster.x0] = share * d.dot(color - u);
             let coverage = alpha / a.max(1e-12);
             match &shape.fill.gradient {
