@@ -5,10 +5,11 @@ edition = "2024"
 rust-version = "1.88"
 description = "Raster images traced into layered vector scenes: shapes, strokes, gradients, blurs, repeats and translucent layers"
 readme = "README.md"
+license = "MIT OR Apache-2.0"
 repository = "https://github.com/tagtraumen/ollev"
 keywords = ["vectorization", "tracing", "svg", "raster", "graphics"]
 categories = ["graphics", "multimedia::images"]
-include = ["src/**/*", "Cargo.toml", "README.md"]
+include = ["src/**/*", "Cargo.toml", "README.md", "LICENSE-MIT", "LICENSE-APACHE"]
 
 [dependencies]
 glam = "0.33.12"
