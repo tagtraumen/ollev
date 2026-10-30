@@ -9,6 +9,9 @@ set by a detail slider.
 
 ollev is the tracer behind Graphite's vectorize node.
 
+Disclaimer: Claude was used to aid with the development and not every line was reviewed by a human.
+
+
 ## Use
 
 ```rust
