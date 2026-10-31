@@ -1,5 +1,18 @@
 //! The draw order: a shape occluded by an earlier sibling goes below it.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::disallowed_macros,
+    clippy::disallowed_methods,
+    clippy::indexing_slicing,
+    clippy::too_many_lines,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+
 use super::*;
 use crate::tracer::fit::eval;
 
@@ -86,7 +99,7 @@ pub(super) async fn occluders(
                         .iter()
                         .map(|q| p.distance(*q))
                         .fold(f32::INFINITY, f32::min);
-                    total += d as f64;
+                    total += f64::from(d);
                     count += 1;
                 }
             }

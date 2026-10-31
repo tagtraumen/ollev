@@ -2,8 +2,18 @@
 //! sRGB-encoded colours without alpha, so a pixel is brought to that encoding and composited
 //! over the matte; the model's colours are sRGB-encoded in 0..1, as SVG reads them.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+
 #[cfg(feature = "diagnostics")]
 use crate::diagnostics::Diagnostics;
+use crate::error::{TraceError, area, with_capacity};
 use crate::lower::Capabilities;
 
 /// A raw image's pixels, row by row from the top, four channels per pixel.
@@ -56,6 +66,7 @@ impl Detail {
 /// off is skipped, its work not done, so the trace is faster; what it would have drawn is drawn
 /// by the stages that stay (the plain shapes in the end).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[expect(clippy::struct_excessive_bools, reason = "independent switches")]
 pub struct Stages {
     /// Translucent layers: the families and the discovery proposing a layer over what it
     /// covers, the beneath traced under a kept layer, and the layer's marks (lenses, hems,
@@ -152,41 +163,18 @@ impl Default for TraceOptions {
     }
 }
 
-/// Why an image is not traced.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TraceError {
-    /// A side of zero pixels.
-    Empty,
-    /// The pixels do not hold four channels for each pixel of the size.
-    Size {
-        /// The channel values the size asks for.
-        expected: usize,
-        /// The channel values given.
-        actual: usize,
-    },
-    /// The progress callback asked to stop ([`crate::trace_with`]).
-    Cancelled,
-}
-
-impl std::fmt::Display for TraceError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            TraceError::Empty => write!(f, "the image has no pixels"),
-            TraceError::Size { expected, actual } => {
-                write!(f, "expected {expected} channel values, got {actual}")
-            }
-            TraceError::Cancelled => write!(f, "the trace was cancelled"),
-        }
-    }
-}
-
-impl std::error::Error for TraceError {}
-
 /// The picture downsampled from `w` by `h` to `tw` by `th`, each new pixel the mean of the `s`
 /// by `s` square of old pixels it covers (fractions at its sides), in the sRGB encoding SVG
 /// composites in.
-pub(crate) fn downsampled(rgb: &[u8], w: usize, h: usize, tw: usize, th: usize, s: f64) -> Vec<u8> {
-    let mut out = Vec::with_capacity(3 * tw * th);
+pub(crate) fn downsampled(
+    rgb: &[u8],
+    w: usize,
+    h: usize,
+    tw: usize,
+    th: usize,
+    s: f64,
+) -> Result<Vec<u8>, TraceError> {
+    let mut out = with_capacity(area(tw, th, 3)?)?;
     // The old pixels a new one spans along an axis, with their shares
     let spans = |n: usize, old: usize| -> Vec<Vec<(usize, f64)>> {
         (0..n)
@@ -199,14 +187,18 @@ pub(crate) fn downsampled(rgb: &[u8], w: usize, h: usize, tw: usize, th: usize, 
             .collect()
     };
     let (xs, ys) = (spans(tw, w), spans(th, h));
+    let rows: Vec<&[u8]> = rgb.chunks_exact(area(w, 1, 3)?.max(1)).collect();
     for row in &ys {
         for col in &xs {
             let (mut sum, mut weight) = ([0f64; 3], 0.);
             for &(y, wy) in row {
+                let Some(old) = rows.get(y) else { continue };
                 for &(x, wx) in col {
-                    let p = &rgb[3 * (y * w + x)..][..3];
-                    for c in 0..3 {
-                        sum[c] += f64::from(p[c]) * wx * wy;
+                    let Some(&[r, g, b]) = old.get(3 * x..3 * x + 3) else {
+                        continue;
+                    };
+                    for (sum, v) in sum.iter_mut().zip([r, g, b]) {
+                        *sum += f64::from(v) * wx * wy;
                     }
                     weight += wx * wy;
                 }
@@ -214,47 +206,48 @@ pub(crate) fn downsampled(rgb: &[u8], w: usize, h: usize, tw: usize, th: usize, 
             out.extend(sum.map(|v| (v / weight.max(f64::MIN_POSITIVE)).round() as u8));
         }
     }
-    out
+    Ok(out)
 }
 
 /// The image as the tracer reads it, sRGB-encoded bytes, three per pixel, composited over
 /// `matte` in that encoding (as SVG composites); and each pixel's alpha.
 pub(crate) fn pixels8(image: &Image, matte: [f32; 3]) -> Result<(Vec<u8>, Vec<f32>), TraceError> {
-    let n = image.width * image.height;
+    let n = area(image.width, image.height, 1)?;
     if n == 0 {
         return Err(TraceError::Empty);
     }
+    let expected = area(image.width, image.height, 4)?;
     let actual = match image.pixels {
         Pixels::Rgba8(d) => d.len(),
         Pixels::RgbaF32 { data, .. } => data.len(),
     };
-    if actual != 4 * n {
-        return Err(TraceError::Size {
-            expected: 4 * n,
-            actual,
-        });
+    if actual != expected {
+        return Err(TraceError::Size { expected, actual });
     }
     let byte = |v: f32| (v.clamp(0., 1.) * 255.).round() as u8;
-    let mut out = Vec::with_capacity(3 * n);
-    let mut alphas = Vec::with_capacity(n);
-    for i in 0..n {
-        let (c, a) = match image.pixels {
-            Pixels::Rgba8(d) => {
-                let p = &d[4 * i..4 * i + 4];
-                (
-                    [p[0], p[1], p[2]].map(|v| f32::from(v) / 255.),
-                    f32::from(p[3]) / 255.,
-                )
+    let mut out = with_capacity(area(image.width, image.height, 3)?)?;
+    let mut alphas = with_capacity(n)?;
+    let mut push = |c: [f32; 3], a: f32| {
+        for (c, m) in c.iter().zip(matte) {
+            out.push(byte(c * a + m * (1. - a)));
+        }
+        alphas.push(a);
+    };
+    match image.pixels {
+        Pixels::Rgba8(d) => {
+            for &[r, g, b, a] in d.as_chunks::<4>().0 {
+                push([r, g, b].map(|v| f32::from(v) / 255.), f32::from(a) / 255.);
             }
-            Pixels::RgbaF32 {
-                data,
-                linear,
-                premultiplied,
-            } => {
-                let p = &data[4 * i..4 * i + 4];
-                let finite = |v: f32| if v.is_finite() { v } else { 0. };
-                let a = finite(p[3]).clamp(0., 1.);
-                let c = [p[0], p[1], p[2]].map(|v| {
+        }
+        Pixels::RgbaF32 {
+            data,
+            linear,
+            premultiplied,
+        } => {
+            let finite = |v: f32| if v.is_finite() { v } else { 0. };
+            for &[r, g, b, a] in data.as_chunks::<4>().0 {
+                let a = finite(a).clamp(0., 1.);
+                let c = [r, g, b].map(|v| {
                     let v = finite(v);
                     let v = if premultiplied {
                         if a > 0. { v / a } else { 0. }
@@ -263,13 +256,9 @@ pub(crate) fn pixels8(image: &Image, matte: [f32; 3]) -> Result<(Vec<u8>, Vec<f3
                     };
                     if linear { encode(v.clamp(0., 1.)) } else { v }
                 });
-                (c, a)
+                push(c, a);
             }
-        };
-        for (c, m) in c.iter().zip(matte) {
-            out.push(byte(c * a + m * (1. - a)));
         }
-        alphas.push(a);
     }
     Ok((out, alphas))
 }

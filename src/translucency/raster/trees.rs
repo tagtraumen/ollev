@@ -1,5 +1,23 @@
 //! Nearest neighbours in the Chebyshev metric: a k-d tree and a grid.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::disallowed_macros,
+    clippy::float_cmp,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::cast_possible_wrap,
+    clippy::disallowed_methods,
+    clippy::too_many_lines,
+))]
+
 use super::{DVec3, cheb};
 
 /// Nearest neighbors among colors in the Chebyshev metric (as scipy's `cKDTree` with
@@ -21,6 +39,7 @@ struct Node {
 const LEAF: usize = 16;
 
 impl ChebTree {
+    #[must_use]
     pub fn new(pts: &[DVec3]) -> Self {
         let mut t = ChebTree {
             pts: pts.to_vec(),
@@ -33,6 +52,7 @@ impl ChebTree {
         t
     }
 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.pts.is_empty()
     }
@@ -81,6 +101,7 @@ impl ChebTree {
 
     /// The nearest point within `bound` (exclusive), its distance and index; the lowest
     /// index among points at the same distance.
+    #[must_use]
     pub fn nearest(&self, q: DVec3, bound: f64) -> Option<(f64, usize)> {
         if self.pts.is_empty() {
             return None;
@@ -130,6 +151,7 @@ impl ChebTree {
     }
 
     /// The distance to the nearest point (infinity for none).
+    #[must_use]
     pub fn nearest_dist(&self, q: DVec3) -> f64 {
         self.nearest(q, f64::INFINITY)
             .map_or(f64::INFINITY, |b| b.0)
@@ -150,6 +172,7 @@ pub struct ChebGrid {
 }
 
 impl ChebGrid {
+    #[must_use]
     pub fn new(pts: &[DVec3], side: f64) -> Self {
         let mut grid = ChebGrid {
             pts: pts.to_vec(),
@@ -198,6 +221,7 @@ impl ChebGrid {
         grid
     }
 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.pts.is_empty()
     }
@@ -221,6 +245,7 @@ impl ChebGrid {
 
     /// The nearest point within `bound` (exclusive), its distance and index; the lowest
     /// index among points at the same distance.
+    #[must_use]
     pub fn nearest(&self, q: DVec3, bound: f64) -> Option<(f64, usize)> {
         if self.pts.is_empty() {
             return None;
@@ -332,7 +357,7 @@ mod tests {
 
     #[test]
     fn pairwise_matches_the_blocks() {
-        let a: Vec<f64> = (0..300).map(|i| (i as f64 * 0.37).sin()).collect();
+        let a: Vec<f64> = (0..300).map(|i| (f64::from(i) * 0.37).sin()).collect();
         // the halves of 300 are 144 and 156, each summed in blocks of eight
         assert_eq!(pairwise(&a), pairwise(&a[..144]) + pairwise(&a[144..]));
         assert_eq!(pairwise(&a[..5]), (((a[0] + a[1]) + a[2]) + a[3]) + a[4]);
@@ -369,7 +394,7 @@ mod tests {
     #[test]
     fn tree_finds_the_lowest_index_on_ties() {
         let pts: Vec<DVec3> = (0..100)
-            .map(|i| DVec3::new((i % 7) as f64, (i % 3) as f64, 0.0))
+            .map(|i| DVec3::new(f64::from(i % 7), f64::from(i % 3), 0.0))
             .collect();
         let t = ChebTree::new(&pts);
         let q = DVec3::new(3.2, 1.0, 0.0);

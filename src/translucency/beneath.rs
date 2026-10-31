@@ -2,6 +2,29 @@
 //! ([`super::inner`]), and how far a color lies outside what the layer can produce, which
 //! marks the pixels drawn over the layer (strands, outlines) whose peel is no beneath.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+#![cfg_attr(
+    feature = "diagnostics",
+    expect(
+        clippy::indexing_slicing,
+        reason = "panic ratchet: remove a lint once the module is clean of it"
+    )
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::disallowed_macros,
+    clippy::disallowed_methods,
+    clippy::too_many_lines,
+))]
+
 #[cfg(feature = "diagnostics")]
 use super::inner::{Class, InnerFit};
 #[cfg(feature = "diagnostics")]
@@ -10,6 +33,7 @@ use super::raster::DVec3;
 
 /// How far a color lies outside the colors the layer `o = k b + m` can produce (b in the unit
 /// cube), the largest excess over the channels; zero inside.
+#[must_use]
 pub fn outside_image(c: DVec3, k: f64, m: DVec3) -> f64 {
     let lo = m;
     let hi = m + DVec3::splat(k);
@@ -20,6 +44,7 @@ pub fn outside_image(c: DVec3, k: f64, m: DVec3) -> f64 {
 /// opacity, a tint by its relation), then by the layer's relation; not clamped, as a peel
 /// outside the unit cube is a color the layer cannot have been over.
 #[cfg(feature = "diagnostics")]
+#[must_use]
 pub fn peel(img: &Image, region: &[bool], fit: &InnerFit) -> Vec<DVec3> {
     (0..img.len())
         .map(|i| {

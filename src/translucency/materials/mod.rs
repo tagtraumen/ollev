@@ -2,6 +2,23 @@
 //! outside a region onto the color clusters inside it, found by votes on a k grid
 //! ([`vote_cells`]) and scored exactly ([`Matcher::score`]); a color counts only if moved.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::disallowed_macros,
+    clippy::indexing_slicing,
+    clippy::too_many_lines,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::cast_possible_wrap,
+    clippy::disallowed_methods,
+))]
+
 use crate::HashMap;
 
 use glam::DVec3;
@@ -42,28 +59,33 @@ const LINK_CELLS: i64 = 256 / LINK_LEVELS + 1;
 
 /// [`RIM_SLOPE`] at this image's width: at s times the width a drawing's shading ramps s times
 /// slower per pixel, while a step's anti-aliasing stays a pixel or two wide.
+#[must_use]
 pub fn rim_slope(img: &Image) -> f64 {
     RIM_SLOPE / unit_of(img.width)
 }
 
 /// [`MIN_MATERIAL_PX`] at this image's width, an area: a stray shading step or speck covers
 /// s^2 times the pixels at s times the width.
+#[must_use]
 pub fn min_material_px(img: &Image) -> f64 {
     area_px(img.width, MIN_MATERIAL_PX)
 }
 
 /// [`MIN_SEEN`] at this image's width, an area: a mixed rim colour seen once at 330 is seen
 /// four times at twice the width, and would link two materials into one cluster.
+#[must_use]
 pub fn min_seen(img: &Image) -> f64 {
     area_px(img.width, MIN_SEEN as f64).round()
 }
 
 /// How far an outside palette starts clear of a region: 2 px at 330, in the unit.
+#[must_use]
 pub fn clear_of(img: &Image) -> usize {
     length_px(img.width, 2.0)
 }
 
 /// The rims: pixels whose color changes by more than [`rim_slope`] per pixel.
+#[must_use]
 pub fn rim_of(img: &Image) -> Vec<bool> {
     gradient_magnitude(img)
         .into_iter()
@@ -101,8 +123,10 @@ fn summed(mut entries: Vec<(i64, i64)>) -> (Vec<i64>, Vec<i64>) {
     let mut u: Vec<i64> = Vec::new();
     let mut w: Vec<i64> = Vec::new();
     for (c, k) in entries {
-        if u.last() == Some(&c) {
-            *w.last_mut().unwrap() += k;
+        if u.last() == Some(&c)
+            && let Some(w) = w.last_mut()
+        {
+            *w += k;
         } else {
             u.push(c);
             w.push(k);
@@ -248,6 +272,7 @@ fn witnesses(x: &[DVec3], w: &[f64]) -> (Vec<DVec3>, Vec<f64>) {
 impl Palette {
     /// Clusters by color alone: the colors of `mask` off `rim` linked where they step by a
     /// few levels.
+    #[must_use]
     pub fn new(img: &Image, mask: &[bool], rim: &[bool], min_px: f64) -> Self {
         let sel: Vec<bool> = mask.iter().zip(rim).map(|(m, r)| *m && !*r).collect();
         let (u, w) = unique_counts(codes_of(img, &sel));
@@ -292,6 +317,7 @@ impl Palette {
     }
 
     /// The clusters that are materials, largest first.
+    #[must_use]
     pub fn materials(&self) -> std::ops::Range<usize> {
         0..self.material_count
     }
@@ -299,6 +325,7 @@ impl Palette {
     /// Clusters by place and color: the mask's pixels off the rims in 4-connected pieces,
     /// joined where most of the smaller one's colors are the other's, so two places whose
     /// colors link by color alone stay apart.
+    #[must_use]
     pub fn spatial(img: &Image, mask: &[bool], rim: &[bool], min_px: f64, overlap: f64) -> Self {
         let sel: Vec<bool> = mask.iter().zip(rim).map(|(m, r)| *m && !*r).collect();
         let (lab, n) = label(&sel, img.width, img.height, Conn::Four);
@@ -308,6 +335,7 @@ impl Palette {
     /// Clusters by the opaque trace's shapes: the mask's pixels off the rims in the pieces
     /// `shapes` labels (1-based), joined as [`Palette::spatial`] joins its pieces. A shape is
     /// local where a color is not.
+    #[must_use]
     pub fn of_shapes(
         img: &Image,
         mask: &[bool],
@@ -334,7 +362,7 @@ impl Palette {
             .iter()
             .zip(lab)
             .filter(|(_, l)| **l > 0)
-            .map(|(c, l)| (*l as i64 - 1) * (1 << 24) + code_of(*c))
+            .map(|(c, l)| (i64::from(*l) - 1) * (1 << 24) + code_of(*c))
             .collect();
         let (uk, ck) = unique_counts(keys);
         let piece: Vec<usize> = uk.iter().map(|k| (k >> 24) as usize).collect();
@@ -464,6 +492,7 @@ impl Palette {
     /// A cluster's colors grouped on the [`VOTE_GRID`], one mean color per cell, and the
     /// cells' pixels: the cluster's support covered evenly, whatever its pixels'
     /// distribution.
+    #[must_use]
     pub fn samples(&self, ci: usize) -> (Vec<DVec3>, Vec<f64>) {
         let cl = &self.clusters[ci];
         let x = &self.colors[cl.start..cl.end];

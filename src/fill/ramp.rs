@@ -1,5 +1,16 @@
 //! Multi-stop ramps and focal radial gradients fitted to a region's samples.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::disallowed_macros,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+
 use super::*;
 
 /// Sums over the samples in one stretch of a gradient's parameter `t`, enough for the least
@@ -81,7 +92,7 @@ impl Profile {
             .max(2);
         let mut moments = vec![Moments::default(); bins];
         for (p, c) in samples {
-            let t = gradient.t(*p) as f64;
+            let t = f64::from(gradient.t(*p));
             let c = c.as_dvec3();
             let m = &mut moments[((t * bins as f64) as usize).min(bins - 1)];
             m.n += 1.;
@@ -277,6 +288,7 @@ const POLISH_SWEEPS: usize = 3;
 /// The ramp along `gradient` fitting `samples` best: stops go in where they help most while each
 /// lowers the error by more than `stop_cost`, then are polished. Returns the start color and the
 /// gradient, unclamped, or None for samples that do not spread along it.
+#[must_use]
 pub fn ramp(
     samples: &[(Vec2, Vec3)],
     gradient: &Gradient,
@@ -289,7 +301,7 @@ pub fn ramp(
     // for the final stop that does not pay
     while let Some(mut more) = profile.insertion(&knots, &colors) {
         let (_, e) = profile.solve(&more);
-        if sse - e <= stop_cost as f64 {
+        if sse - e <= f64::from(stop_cost) {
             break;
         }
         profile.polish(&mut more, e);
@@ -436,6 +448,7 @@ const STRETCH_SAMPLES: usize = 2000;
 /// The radius, axis angle and minor to major ratio of the ellipse about `center` whose radial
 /// gradient (linear in the elliptical radius up to the rim) fits `samples` least, by a pattern
 /// search from the circle of `radius`, which it stays where no ellipse fits better.
+#[must_use]
 pub fn stretch(samples: &[(Vec2, Vec3)], center: Vec2, radius: f32) -> (f32, f32, f32) {
     let stride = samples.len().div_ceil(STRETCH_SAMPLES);
     let few: Vec<(Vec2, Vec3)> = samples.iter().step_by(stride).copied().collect();
@@ -447,11 +460,12 @@ pub fn stretch(samples: &[(Vec2, Vec3)], center: Vec2, radius: f32) -> (f32, f32
     // Started from the circle or an ellipse along one of four axes, whichever fits best: from
     // the circle alone the axis cannot move
     let starts = (0..4).map(|k| (radius, k as f32 * std::f32::consts::FRAC_PI_4, 0.75));
-    let (mut best, mut least) = std::iter::once((radius, 0f32, 1f32))
-        .chain(starts)
+    let circle = (radius, 0f32, 1f32);
+    let (mut best, mut least) = starts
         .map(|c| (c, error(c.0, c.1, c.2)))
-        .min_by(|a, b| a.1.total_cmp(&b.1))
-        .expect("a start");
+        .fold((circle, error(circle.0, circle.1, circle.2)), |best, c| {
+            if c.1.total_cmp(&best.1).is_lt() { c } else { best }
+        });
     let (mut step_r, mut step_a, mut step_s) = (0.25 * radius, std::f32::consts::FRAC_PI_4, 0.25);
     while step_s > 1. / 64. {
         let (r, a, s) = best;
@@ -482,6 +496,7 @@ pub fn stretch(samples: &[(Vec2, Vec3)], center: Vec2, radius: f32) -> (f32, f32
 
 /// The plane map of the ellipse of axis `angle` and minor to major ratio `squash` (see
 /// [`stretch`]), the identity for a circle.
+#[must_use]
 pub fn ellipse_transform(angle: f32, squash: f32) -> glam::Mat2 {
     if squash < 1. {
         glam::Mat2::from_angle(angle) * glam::Mat2::from_diagonal(Vec2::new(1., squash))

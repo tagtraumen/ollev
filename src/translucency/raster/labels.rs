@@ -1,6 +1,23 @@
 //! Connectivity, labels, dilation and skeletons as scipy and scikit-image compute them.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::disallowed_macros,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::disallowed_methods,
+    clippy::too_many_lines,
+))]
 /// The neighbors a component joins through: the 4 of scipy's default (`CROSS`) or all 8.
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Conn {
     Four,
@@ -48,6 +65,7 @@ pub fn forward(i: usize, width: usize, height: usize) -> impl Iterator<Item = us
 
 /// scipy's `ndimage.label`: 0 off the mask, components 1..=n numbered in raster order of
 /// their first pixel.
+#[must_use]
 pub fn label(mask: &[bool], width: usize, height: usize, conn: Conn) -> (Vec<u32>, usize) {
     let mut lab = vec![0u32; mask.len()];
     let mut n = 0u32;
@@ -80,6 +98,7 @@ pub fn label(mask: &[bool], width: usize, height: usize, conn: Conn) -> (Vec<u32
 /// scipy's `binary_dilation(mask, structure, iterations)` with the border outside, the
 /// structure the cross or the 3 x 3 square: the pixels within `iterations` of the mask in the
 /// city-block or chessboard distance, which two raster passes give exactly (Rosenfeld, Pfaltz).
+#[must_use]
 pub fn dilate(
     mask: &[bool],
     width: usize,
@@ -155,12 +174,13 @@ const SKELETON_LUT: [u8; 256] = [
 
 /// scikit-image's `skeletonize` (Zhang and Suen, `_fast_skeletonize`): both passes per
 /// round, each pass reading the skeleton as the last pass left it, until nothing goes.
+#[must_use]
 pub fn skeletonize(mask: &[bool], width: usize, height: usize) -> Vec<bool> {
     let (w2, h2) = (width + 2, height + 2);
     let mut sk = vec![0u8; w2 * h2];
     for y in 0..height {
         for x in 0..width {
-            sk[(y + 1) * w2 + x + 1] = mask[y * width + x] as u8;
+            sk[(y + 1) * w2 + x + 1] = u8::from(mask[y * width + x]);
         }
     }
     let mut clean = sk.clone();

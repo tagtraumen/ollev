@@ -1,5 +1,22 @@
 //! A relation's inner fit: the layer alone and its score.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::disallowed_macros,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::disallowed_methods,
+    clippy::too_many_lines,
+))]
+
 use super::{
     Class, DVec3, InnerInputs, MATCH_TOL, NO_FIT, Open, PixelFit, SHOW_THROUGH, Tint, classify_colors, in_gamut_c, open_at,
     with_interior,
@@ -30,9 +47,11 @@ pub struct InnerFit {
 
 impl InnerFit {
     #[cfg(feature = "diagnostics")]
+    #[must_use]
     pub fn n(&self) -> usize {
         self.materials.len()
     }
+    #[must_use]
     pub fn c(&self) -> DVec3 {
         self.m / (1.0 - self.k)
     }
@@ -147,6 +166,7 @@ pub fn assemble(
 
 /// The layer's m refitted on the pixels it explains alone (each the color less k times its
 /// open material's nearest color), every pixel weighed alike.
+#[must_use]
 pub fn refit_alone(inp: &InnerInputs, op: &Open, k: f64, m: DVec3, pc: &[PixelFit]) -> DVec3 {
     let (mut s, mut n) = (DVec3::ZERO, 0.0);
     for (e, f) in pc.iter().enumerate() {
@@ -238,6 +258,7 @@ pub(super) fn fit_at_score(inp: &InnerInputs, k: f64, m0: DVec3) -> (DVec3, f64)
 }
 
 /// The layer alone at (k, m) as given.
+#[must_use]
 pub fn fit_fixed(inp: &InnerInputs, k: f64, m: DVec3) -> InnerFit {
     let op = open_at(inp, k, m);
     let pc = classify_colors(inp, &op, k, m, false);

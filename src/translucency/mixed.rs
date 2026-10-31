@@ -2,6 +2,23 @@
 //! pixels and slivers (shapes of no interior whose colour lies between two neighbours') take
 //! the nearest real shape's label, so adjacency and extent are read between real shapes.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::disallowed_macros,
+    clippy::indexing_slicing,
+    clippy::too_many_lines,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::cast_possible_truncation,
+    clippy::disallowed_methods,
+))]
+
 use std::collections::VecDeque;
 
 use super::materials::MATCH_TOL;
@@ -27,6 +44,7 @@ fn between(c: DVec3, a: DVec3, b: DVec3) -> bool {
 
 /// The labels with the mixed pixels and the slivers reassigned to the nearest real shape,
 /// and the mixed mask. `labels` is a label per pixel, dense from 0.
+#[must_use]
 pub fn clean_labels(labels: &[u32], img: &Image, w: usize, h: usize) -> (Vec<u32>, Vec<bool>) {
     let n = labels.iter().max().map_or(0, |&l| l as usize + 1);
     let mut sum = vec![DVec3::ZERO; n];

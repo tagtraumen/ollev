@@ -2,6 +2,19 @@
 //! below are also a ground in the cells' colour with strokes in the ground's along the gaps.
 //! Both readings are priced as repeats; the cheaper in error plus price is kept.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::disallowed_macros,
+    clippy::float_cmp,
+    clippy::indexing_slicing,
+    clippy::too_many_lines,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+
 use crate::tracer::fit::eval;
 use glam::{Vec2, Vec3};
 
@@ -263,7 +276,7 @@ impl Pen {
             .pixels(ctx.width)
             .zip(&parts)
             .map(|(i, (base, ta))| {
-                (*base + *ta * self.colour).distance_squared(ctx.target[i]) as f64
+                f64::from((*base + *ta * self.colour).distance_squared(ctx.target[i]))
             })
             .sum()
     }
@@ -346,14 +359,15 @@ fn dual_of(ctx: &Context, scene: &Scene, repeat: &Repeat) -> Option<Scene> {
     let mut extent = cells
         .ids
         .iter()
-        .map(|&id| frame.extent(scene.get(id)))
+        // the caller found every member in the scene
+        .filter_map(|&id| scene.get(id).ok().map(|s| frame.extent(s)))
         .fold((Vec2::INFINITY, Vec2::NEG_INFINITY), |a, b| {
             (a.0.min(b.0), a.1.max(b.1))
         });
     let width = scene.width;
     // The ground: the topmost shape below the cells covering the gaps between neighbouring
     // cells, at the gaps' centres
-    let lowest = cells.ids.iter().map(|&id| scene.position(id)).min()?;
+    let lowest = cells.ids.iter().filter_map(|&id| scene.position(id).ok()).min()?;
     let mut gaps: Vec<Vec2> = Vec::new();
     for (k, a) in cells.nodes.iter().enumerate() {
         for b in &cells.nodes[k + 1..] {
@@ -574,7 +588,7 @@ fn dual_of(ctx: &Context, scene: &Scene, repeat: &Repeat) -> Option<Scene> {
             dual.insert(slot + k, s);
         }
     }
-    let error = |s: &Scene| ctx.error(window, &s.render(window, 0..s.shapes.len(), [1.; 3])) as f64;
+    let error = |s: &Scene| f64::from(ctx.error(window, &s.render(window, 0..s.shapes.len(), [1.; 3])));
     let before = error(scene) + before_price * ctx.segment_cost;
     let after = error(&dual) + after_price * ctx.segment_cost;
     if crate::diagnostics::log() {

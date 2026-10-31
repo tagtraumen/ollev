@@ -2,6 +2,23 @@
 //! under a layer keeps its geometry while each side's color b becomes `k b + m`, so two
 //! linked parts of one smooth line pin the relation.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::disallowed_macros,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::cast_precision_loss,
+    clippy::disallowed_methods,
+    clippy::too_many_lines,
+))]
+
 use glam::{DVec2, DVec3};
 
 use super::raster::{ChebTree, Image, NOISE, radians};
@@ -54,6 +71,7 @@ pub(crate) fn ridge_radii(u: f64) -> Vec<isize> {
 }
 
 /// A visible kink.
+#[must_use]
 pub fn kink() -> f64 {
     radians(20.0)
 }
@@ -62,6 +80,7 @@ pub fn kink() -> f64 {
 pub type Bezier = [DVec2; 4];
 
 /// The pixel a sample point falls on, rounded half to even and kept in the frame.
+#[must_use]
 pub fn pixel_of(img: &Image, q: DVec2) -> usize {
     let x = (q.x.round_ties_even() as i64).clamp(0, img.width as i64 - 1) as usize;
     let y = (q.y.round_ties_even() as i64).clamp(0, img.height as i64 - 1) as usize;
@@ -79,6 +98,7 @@ pub struct OneSide {
     pub passing: Vec<usize>,
 }
 
+#[must_use]
 pub fn one_side_seeds(img: &Image) -> OneSide {
     let chains = build_chains(img);
     let links = all_links(&chains);
@@ -122,7 +142,7 @@ mod tests {
         let mut seed = 7u32;
         let mut next = || {
             seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-            (seed >> 24) as f64 / 255.0
+            f64::from(seed >> 24) / 255.0
         };
         let blocks: Vec<DVec3> = (0..64)
             .map(|_| DVec3::new(next(), next(), next()))
@@ -143,7 +163,7 @@ mod tests {
     #[test]
     fn a_line_of_points_is_one_cubic() {
         let p: Vec<DVec2> = (0..20)
-            .map(|i| DVec2::new(i as f64, 0.5 * i as f64))
+            .map(|i| DVec2::new(f64::from(i), 0.5 * f64::from(i)))
             .collect();
         let c = fit_cubics(&p, FIT_TOL);
         assert_eq!(c.len(), 1);
@@ -152,8 +172,8 @@ mod tests {
 
     #[test]
     fn a_right_angle_is_cut() {
-        let mut p: Vec<DVec2> = (0..15).map(|i| DVec2::new(i as f64, 0.0)).collect();
-        p.extend((1..15).map(|i| DVec2::new(14.0, i as f64)));
+        let mut p: Vec<DVec2> = (0..15).map(|i| DVec2::new(f64::from(i), 0.0)).collect();
+        p.extend((1..15).map(|i| DVec2::new(14.0, f64::from(i))));
         assert_eq!(split_at_corners(&p, CORNER_REACH).len(), 2);
     }
 

@@ -2,6 +2,20 @@
 //! contact map between them: per directed pair of leaves that touch, points along the contact
 //! where the two sides' colors are compared.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::disallowed_macros,
+    clippy::disallowed_methods,
+    clippy::indexing_slicing,
+    clippy::too_many_lines,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+
 use std::cmp::Reverse;
 use std::collections::{BTreeSet, BinaryHeap};
 
@@ -19,16 +33,19 @@ pub struct Plane {
 }
 
 impl Plane {
+    #[must_use]
     pub fn at(&self, p: Vec2) -> Vec3 {
         self.a + self.gx * p.x + self.gy * p.y
     }
 
     /// How steep the plane is, over its three channels and two directions.
+    #[must_use]
     pub fn slope(&self) -> f32 {
         (self.gx.length_squared() + self.gy.length_squared()).sqrt()
     }
 
     /// How far it changes color between two points, per channel.
+    #[must_use]
     pub fn step(&self, d: Vec2) -> Vec3 {
         self.gx * d.x + self.gy * d.y
     }
@@ -37,6 +54,7 @@ impl Plane {
 /// Whether the inside's color slope is the outside's times `k`, in the same direction:
 /// beneath a translucent shape a gradient stays the gradient scaled by `k`, and a flat region
 /// cannot be a gradient seen through one (the equation graph's constraint).
+#[must_use]
 pub fn slope_fits(inside: &Plane, outside: &Plane, k: f32) -> bool {
     let diff = ((inside.gx - k * outside.gx).length_squared()
         + (inside.gy - k * outside.gy).length_squared())
@@ -151,6 +169,7 @@ const MERGE_SAMPLE: usize = 4000;
 /// The segmentation's regions merged greedily while one plane fits the union, so a gradient
 /// stays one region: a pair merges, cheapest first, when each plane predicts the other's
 /// pixels to the 90th percentile within the tolerance and so does the joint plane to the 95th.
+#[must_use]
 pub fn equation_regions(target: &[Vec3], labels: &[u32], width: usize) -> Vec<u32> {
     let count = labels.iter().max().map_or(0, |&l| l as usize + 1);
     let mut pixels: Vec<Vec<u32>> = vec![Vec::new(); count];
@@ -210,8 +229,8 @@ pub fn equation_regions(target: &[Vec3], labels: &[u32], width: usize) -> Vec<u3
             for &i in list.iter().step_by(step) {
                 let p = at(i);
                 joint.add(
-                    p.x as f64,
-                    p.y as f64,
+                    f64::from(p.x),
+                    f64::from(p.y),
                     target[i as usize].as_dvec3(),
                     step as f64,
                 );
@@ -490,6 +509,7 @@ pub struct Leaves {
 }
 
 impl Leaves {
+    #[must_use]
     pub fn new(target: &[Vec3], segments: &[u32], width: usize, height: usize) -> Self {
         let eq = equation_regions(target, segments, width);
         let flat = flat_components(target, width, height);
@@ -545,7 +565,7 @@ impl Leaves {
             .map(|m| m.mean().as_vec3().clamp(Vec3::ZERO, Vec3::ONE))
             .collect();
         let centroid: Vec<Vec2> = (0..n)
-            .map(|l| (all[l] / size[l].max(1) as f64).as_vec2())
+            .map(|l| (all[l] / f64::from(size[l].max(1))).as_vec2())
             .collect();
         let plain: Vec<Vec3> = (0..width * height)
             .map(|i| plane[label[i] as usize].at(at(i)))
@@ -660,11 +680,13 @@ impl Leaves {
     }
 
     /// The pixels of leaf `l`.
+    #[must_use]
     pub fn pixels_of(&self, l: usize) -> &[u32] {
         &self.pixels[self.start[l]..self.start[l + 1]]
     }
 
     /// The pixels the bridged map gives leaf `l`.
+    #[must_use]
     pub fn filled_of(&self, l: usize) -> &[u32] {
         &self.filled_pixels[self.filled_start[l]..self.filled_start[l + 1]]
     }
@@ -706,7 +728,7 @@ impl Leaves {
                 }
                 // The eigenvector of the larger eigenvalue of the scatter
                 let t = (sxx - syy) / 2.;
-                let l = (sxx + syy) / 2. + (t * t + sxy * sxy).sqrt();
+                let l = f32::midpoint(sxx, syy) + (t * t + sxy * sxy).sqrt();
                 let axis = if sxy.abs() > 1e-12 {
                     Vec2::new(l - syy, sxy).normalize()
                 } else if sxx >= syy {
@@ -788,6 +810,7 @@ impl Leaves {
     /// Per directed pair (x inside, y outside): x is y seen through `o = k b + m` at every
     /// contact point to the noise and the planes' uncertainty, the two differ somewhere, x's
     /// texture is k times y's, the slopes agree, and x has an interior.
+    #[must_use]
     pub fn pair_fits(&self, k: f32, m: Vec3) -> Vec<bool> {
         let unc = &self.uncertainty;
         self.pairs
@@ -838,6 +861,6 @@ pub fn median(values: &mut [f32]) -> f32 {
     if n % 2 == 1 {
         values[n / 2]
     } else {
-        (values[n / 2 - 1] + values[n / 2]) / 2.
+        f32::midpoint(values[n / 2 - 1], values[n / 2])
     }
 }

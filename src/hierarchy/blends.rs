@@ -1,5 +1,21 @@
 //! Thin blends between two regions dissolved into them before the tree is built.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::disallowed_macros,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::too_many_lines,
+))]
+
 use super::*;
 
 /// Most pixels per pixel of boundary a blend region has: about one pixel thick.
@@ -52,7 +68,7 @@ pub fn dissolve_blends(
     // The two neighbors each thin region is a blend of, if any
     let between: Vec<Option<(u32, u32)>> = (0..count)
         .map(|l| {
-            if stats[l].n > BLEND_THICKNESS * boundary[l] as f64 {
+            if stats[l].n > BLEND_THICKNESS * f64::from(boundary[l]) {
                 return None;
             }
             let m = stats[l].mean();
@@ -84,8 +100,10 @@ pub fn dissolve_blends(
             .is_some_and(|(a, b)| between[a as usize].is_none() && between[b as usize].is_none())
     };
     for (i, label) in labels.iter_mut().enumerate() {
-        if dissolved(*label) {
-            let (a, b) = between[*label as usize].expect("dissolved regions have neighbors");
+        // a dissolved region lies between two neighbors
+        if dissolved(*label)
+            && let Some((a, b)) = between[*label as usize]
+        {
             let (ca, cb) = (stats[a as usize].mean(), stats[b as usize].mean());
             *label = if colors[i].distance_squared(ca) <= colors[i].distance_squared(cb) {
                 a
@@ -149,7 +167,7 @@ mod linear_fill_tests {
     fn moments_match_the_sums() {
         // A diagonal ramp with a little texture
         let pixels: Vec<(DVec2, DVec3)> = (0..20)
-            .flat_map(|y| (0..30).map(move |x| DVec2::new(x as f64 + 0.5, y as f64 + 0.5)))
+            .flat_map(|y| (0..30).map(move |x| DVec2::new(f64::from(x) + 0.5, f64::from(y) + 0.5)))
             .map(|p| {
                 let wobble = ((p.x * 1.7).sin() * (p.y * 0.9).cos()) * 0.02;
                 let c = DVec3::new(0.2, 0.5, 0.7)
@@ -188,7 +206,7 @@ mod linear_fill_tests {
         // A disc shaded from a point off its center, far from the origin
         let light = DVec2::new(331.3, 207.8);
         let pixels: Vec<(DVec2, DVec3)> = (180..240)
-            .flat_map(|y| (300..380).map(move |x| DVec2::new(x as f64 + 0.5, y as f64 + 0.5)))
+            .flat_map(|y| (300..380).map(move |x| DVec2::new(f64::from(x) + 0.5, f64::from(y) + 0.5)))
             .map(|p| {
                 let d = p.distance(light);
                 (
@@ -216,7 +234,7 @@ mod linear_fill_tests {
     #[test]
     fn flat_pixels_have_no_fill() {
         let pixels: Vec<(DVec2, DVec3)> = (0..10)
-            .flat_map(|y| (0..10).map(move |x| DVec2::new(x as f64, y as f64)))
+            .flat_map(|y| (0..10).map(move |x| DVec2::new(f64::from(x), f64::from(y))))
             .map(|p| (p, DVec3::splat(0.5)))
             .collect();
         assert!(stats_of(&pixels).linear_fill().is_none());

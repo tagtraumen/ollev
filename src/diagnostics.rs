@@ -2,6 +2,15 @@
 //! caller asks through [`Diagnostics`]; nothing by default. Without the feature the logs' tests
 //! are constant false and the dumps are not compiled.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![cfg_attr(
+    not(feature = "diagnostics"),
+    expect(
+        clippy::inline_always,
+        reason = "panic ratchet: remove a lint once the module is clean of it"
+    )
+)]
+
 #[cfg(feature = "diagnostics")]
 pub use asked::*;
 
@@ -16,6 +25,7 @@ mod asked {
 
     /// The reports and dumps asked for.
     #[derive(Clone, Debug, Default, PartialEq)]
+    #[expect(clippy::struct_excessive_bools, reason = "independent switches")]
     pub struct Diagnostics {
         /// Stage timings, per-pass counts and the longest gaps between progress asks to stderr.
         pub log: bool,
@@ -55,36 +65,43 @@ mod asked {
     }
 
     /// Whether stage timings and per-pass counts are logged.
+    #[must_use]
     pub fn log() -> bool {
         read(|d| d.log).unwrap_or(false)
     }
 
     /// Whether the translucency decisions are logged.
+    #[must_use]
     pub fn levels() -> bool {
         read(|d| d.levels).unwrap_or(false)
     }
 
     /// Whether the translucency stages' detailed reads are logged.
+    #[must_use]
     pub fn debug() -> bool {
         read(|d| d.debug).unwrap_or(false)
     }
 
     /// Whether every shape is left opaque.
+    #[must_use]
     pub fn no_peel() -> bool {
         read(|d| d.no_peel).unwrap_or(false)
     }
 
     /// Where the kept layers' regions go, if anywhere.
+    #[must_use]
     pub fn mask_dir() -> Option<PathBuf> {
         read(|d| d.mask_dir.clone()).flatten()
     }
 
     /// Where the images beneath peeled layers go, if anywhere.
+    #[must_use]
     pub fn peel_dir() -> Option<PathBuf> {
         read(|d| d.peel_dir.clone()).flatten()
     }
 
     /// The truth mask the log scores regions against, if one is given.
+    #[must_use]
     pub fn truth() -> Option<Arc<Vec<bool>>> {
         read(|d| d.truth.clone()).flatten()
     }

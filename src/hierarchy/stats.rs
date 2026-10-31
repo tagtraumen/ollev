@@ -1,8 +1,25 @@
 //! A region's colour sums and the fills fitted from them.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::disallowed_macros,
+    clippy::too_many_lines,
+))]
+
 use super::*;
 
 impl Stats {
+    #[must_use]
     pub fn pixel(c: DVec3) -> Self {
         Self {
             n: 1.,
@@ -21,6 +38,7 @@ impl Stats {
     }
 
     /// The pixel with center `p`.
+    #[must_use]
     pub fn pixel_at(c: DVec3, p: DVec2) -> Self {
         let r2 = p.length_squared();
         Self {
@@ -33,6 +51,7 @@ impl Stats {
         }
     }
 
+    #[must_use]
     pub fn add(&self, o: &Self) -> Self {
         Self {
             n: self.n + o.n,
@@ -53,6 +72,7 @@ impl Stats {
     }
 
     /// These pixels each counted `w` times, for sums of a weighted error.
+    #[must_use]
     pub fn scaled(&self, w: f64) -> Self {
         Self {
             n: self.n * w,
@@ -67,6 +87,7 @@ impl Stats {
         }
     }
 
+    #[must_use]
     pub fn sub(&self, o: &Self) -> Self {
         Self {
             n: self.n - o.n,
@@ -87,6 +108,7 @@ impl Stats {
     }
 
     /// The mean position of the pixels.
+    #[must_use]
     pub fn centroid(&self) -> DVec2 {
         if self.n < 0.5 {
             DVec2::ZERO
@@ -98,6 +120,7 @@ impl Stats {
     /// The least squares linear gradient: the affine color model over the plane reduced to the
     /// direction it changes most along. None for too few pixels, pixels on a line, or colors
     /// that do not vary with the position.
+    #[must_use]
     pub fn linear_fill(&self) -> Option<LinearFill> {
         if self.n < 4. {
             return None;
@@ -123,7 +146,7 @@ impl Stats {
         let axis = if b.abs() < 1e-15 {
             if a >= c { DVec2::X } else { DVec2::Y }
         } else {
-            let top = 0.5 * (a + c) + (0.25 * (a - c).powi(2) + b * b).sqrt();
+            let top = f64::midpoint(a, c) + (0.25 * (a - c).powi(2) + b * b).sqrt();
             DVec2::new(b, top - a).normalize()
         };
         let slope = gx * axis.x + gy * axis.y;
@@ -139,6 +162,7 @@ impl Stats {
     }
 
     /// Squared error of the pixels around `fill`.
+    #[must_use]
     pub fn sse_about_linear(&self, fill: &LinearFill) -> f64 {
         let (d, m, s) = (fill.axis, fill.color, fill.slope);
         let shift = fill.origin.dot(d);
@@ -179,6 +203,7 @@ impl Stats {
     /// The least squares radial fill: colors quadratic in the distance from the curvature-weighted
     /// extremum of each channel's model `a + b . p + c |p|^2`. None for too few pixels, no
     /// curvature, or a center beyond the pixels' extent (there the linear fill is the one).
+    #[must_use]
     pub fn radial_fill(&self) -> Option<RadialFill> {
         if self.n < 6. {
             return None;
@@ -244,6 +269,7 @@ impl Stats {
     }
 
     /// Squared error of the pixels around `fill`.
+    #[must_use]
     pub fn sse_about_radial(&self, fill: &RadialFill) -> f64 {
         let (sum_s, sum_s2, sum_cs) = self.radial_sums(fill.center);
         let (a, b) = (fill.color, fill.slope);
@@ -254,6 +280,7 @@ impl Stats {
             .max(0.)
     }
 
+    #[must_use]
     pub fn mean(&self) -> DVec3 {
         if self.n < 0.5 {
             DVec3::ZERO
@@ -263,6 +290,7 @@ impl Stats {
     }
 
     /// Squared error of the pixels around their mean.
+    #[must_use]
     pub fn sse(&self) -> f64 {
         if self.n < 0.5 {
             0.
@@ -272,6 +300,7 @@ impl Stats {
     }
 
     /// Squared error of the pixels around `color`.
+    #[must_use]
     pub fn sse_about(&self, color: DVec3) -> f64 {
         (self.squares - 2. * color.dot(self.sum) + self.n * color.length_squared()).max(0.)
     }

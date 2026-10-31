@@ -1,5 +1,20 @@
 //! A line's paint: its coverage, colour and width fitted against the target's ground.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::disallowed_macros,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::too_many_lines,
+))]
+
 use super::*;
 
 /// A window of the image: columns x0..x1, rows y0..y1.
@@ -131,7 +146,7 @@ pub(super) fn fit_paint_by(
     }
     // over a ground of one colour only the paint a C is told, not a: a faint pull toward an
     // opaque line decides it there (an artist's line is opaque), lost under a varying ground
-    let pull = 1e-4 * n as f64;
+    let pull = 1e-4 * f64::from(n);
     ata.w_axis.w += pull;
     atb.w += pull;
     if ata.determinant().abs() < 1e-12 {
@@ -197,7 +212,7 @@ pub(super) fn saving(
         let d = comp[p];
         let saved = field.residual(p, d - img.px[p]) - field.residual(p, n - img.px[p]);
         plain += saved;
-        edge += (field.weight(p, opt.edge) as f64 - 1.0) * saved;
+        edge += (f64::from(field.weight(p, opt.edge)) - 1.0) * saved;
     }
     (plain, smooth * edge)
 }
@@ -395,7 +410,7 @@ pub(super) fn target_width(
             let p = win.at(i, img.width);
             let g = ground[i];
             let o = g + a * w * (col - g);
-            gain += field.weight(p, lambda) as f64
+            gain += f64::from(field.weight(p, lambda))
                 * (field.residual(p, g - img.px[p]) - field.residual(p, o - img.px[p]));
         }
         fits.push((gain, width, n));

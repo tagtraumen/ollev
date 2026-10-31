@@ -114,7 +114,7 @@ fn loss(scene: &Scene, weights: &[Vec3]) -> f64 {
     image
         .iter()
         .zip(weights)
-        .map(|(p, w)| p.dot(*w) as f64)
+        .map(|(p, w)| f64::from(p.dot(*w)))
         .sum()
 }
 
@@ -135,9 +135,9 @@ fn check(fill_rule: FillRule) {
         perturb(&mut plus, eps);
         let mut minus = scene.clone();
         perturb(&mut minus, -eps);
-        let numeric = (loss(&plus, &weights) - loss(&minus, &weights)) / (2. * eps as f64);
-        let error = (analytic as f64 - numeric).abs()
-            / (numeric.abs().max(analytic.abs() as f64).max(0.05));
+        let numeric = (loss(&plus, &weights) - loss(&minus, &weights)) / (2. * f64::from(eps));
+        let error = (f64::from(analytic) - numeric).abs()
+            / (numeric.abs().max(f64::from(analytic.abs())).max(0.05));
         worst = worst.max(error);
         assert!(
             error < 0.05,

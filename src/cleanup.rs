@@ -2,6 +2,14 @@
 //! straight and snapped to the axes, collinear lines merged, rounded corners restored, kinks
 //! smoothed. A step is kept when error plus segment cost rises by at most a small share.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_precision_loss,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+
 use crate::tracer::Cubic;
 use glam::Vec2;
 
@@ -104,7 +112,7 @@ fn clean_shape(
 ) -> (Shape, f32) {
     let mut current = shape.clone();
     let mut error = error;
-    let total = |e: f32, s: &Shape| e as f64 + s.cost_segments() * ctx.segment_cost;
+    let total = |e: f32, s: &Shape| f64::from(e) + s.cost_segments() * ctx.segment_cost;
     let try_step = |loops: Vec<Vec<Cubic>>, current: &mut Shape, error: &mut f32| {
         if loops == current.loops {
             return;
@@ -113,7 +121,7 @@ fn clean_shape(
             .successor(loops)
             .with_corners(current.corners.clone());
         let cleaned = cost.value(&candidate.path(origin));
-        let keep = total(cleaned, &candidate) <= total(*error, current) + SLACK * *error as f64;
+        let keep = total(cleaned, &candidate) <= total(*error, current) + SLACK * f64::from(*error);
         if keep {
             *current = candidate;
             *error = cleaned;
@@ -253,11 +261,11 @@ fn snap_axes(c: &mut [Cubic], straight: &[bool]) {
         let d = c[i][3] - c[i][0];
         let j = (i + 1) % n;
         if d.x.abs() <= TOLERANCE && d.y.abs() > d.x.abs() {
-            let x = grid((c[i][0].x + c[i][3].x) / 2.);
+            let x = grid(f32::midpoint(c[i][0].x, c[i][3].x));
             move_joint(c, i, Vec2::new(x, c[i][0].y));
             move_joint(c, j, Vec2::new(x, c[i][3].y));
         } else if d.y.abs() <= TOLERANCE && d.x.abs() > d.y.abs() {
-            let y = grid((c[i][0].y + c[i][3].y) / 2.);
+            let y = grid(f32::midpoint(c[i][0].y, c[i][3].y));
             move_joint(c, i, Vec2::new(c[i][0].x, y));
             move_joint(c, j, Vec2::new(c[i][3].x, y));
         }

@@ -2,6 +2,23 @@
 //! ([`super::Candidate::holes`]): the pieces meeting a hole continue their outlines across it
 //! by their tangents, and the hole takes each piece's colour on its side of those outlines.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::disallowed_macros,
+    clippy::indexing_slicing,
+    clippy::too_many_lines,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::disallowed_methods,
+))]
+
 use crate::HashMap;
 use std::collections::VecDeque;
 
@@ -85,6 +102,7 @@ pub(super) fn components(mask: &[bool], w: usize, h: usize) -> (Vec<u32>, usize)
 /// The contour ends at the holes: every crack between two pieces outside the holes whose
 /// line runs on into a hole, its step past the show-through, with its tangent from the cracks
 /// within the reach and the colours either side; and the count of hole components.
+#[must_use]
 pub fn contour_ends(
     img: &[DVec3],
     label: &[u32],
@@ -228,6 +246,7 @@ pub fn contour_ends(
 /// The relatable pairs among `ends` on one hole each (Kellman and Shipley: a turn of at most
 /// a right angle or collinear within tolerance, the colours matching crosswise), joined by
 /// the tangent cubic staying in the holes, best first: the curves and the barrier they draw.
+#[must_use]
 pub fn pair_ends(ends: &[End], hole: &[bool], w: usize, h: usize) -> (Vec<[V2; 4]>, Vec<bool>) {
     let in_hole = |x: i64, y: i64| at(x, y, w, h).filter(|&i| hole[i]);
     let near_hole = |q: V2| -> bool {
@@ -359,6 +378,7 @@ pub fn pair_ends(ends: &[End], hole: &[bool], w: usize, h: usize) -> (Vec<[V2; 4
 /// Fills the holes from their rims by a wave that does not cross barriers, each hole pixel
 /// taking the colour its wave's piece shows near the rim; thick parts ([`thin_part`]) filled
 /// flat. `blend` pixels (a hole's anti-aliased rim) are filled alike and lend no colour.
+#[must_use]
 pub fn complete_holes_with_blend(
     img: &[DVec3],
     label: &[u32],
@@ -491,6 +511,7 @@ pub const THIN: f64 = 3.0;
 
 /// The thin parts of `hole`: what an opening by a square of half side [`THIN`] units takes
 /// off. The rest is its thick part.
+#[must_use]
 pub fn thin_part(hole: &[bool], w: usize, h: usize) -> Vec<bool> {
     let r = length_px(w, THIN);
     let thick = dilate(&deep_in(hole, w, h, r), w, h, Conn::Eight, r);

@@ -2,6 +2,16 @@
 //! object whose miss costs more than a segment steps to a finer encoding, kept where it
 //! lowers the miss.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::disallowed_macros,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+
 use std::time::Duration;
 
 use crate::model::{Fidelity, Model};
@@ -74,8 +84,8 @@ pub fn render_svg(svg: &str, width: usize, height: usize) -> Option<Vec<Vec3>> {
             .0
             .iter()
             .map(|p| {
-                let a = p[3] as u32;
-                let blend = |c: u8| ((c as u32 * a + 255 * (255 - a)) / 255) as f32 / 255.;
+                let a = u32::from(p[3]);
+                let blend = |c: u8| ((u32::from(c) * a + 255 * (255 - a)) / 255) as f32 / 255.;
                 Vec3::new(blend(p[0]), blend(p[1]), blend(p[2]))
             })
             .collect(),
@@ -116,7 +126,7 @@ impl Budget {
                 continue;
             }
             let d = (emitted[i].clamp(self.lo[i], self.hi[i]) - emitted[i]).length();
-            let over = (d - self.tolerance[i]).max(0.) as f64;
+            let over = f64::from((d - self.tolerance[i]).max(0.));
             miss[k as usize] += over * over;
         }
         miss

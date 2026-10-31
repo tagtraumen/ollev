@@ -57,7 +57,7 @@ fn sliced(mut tracing: Tracing, n: usize) -> (Model, usize) {
     let (mut asks, mut slices) = (0, 0);
     loop {
         slices += 1;
-        if let Step::Done(model) = tracing.step(every(n, &mut asks)) {
+        if let Step::Done(model) = tracing.step(every(n, &mut asks)).unwrap() {
             return (model, slices);
         }
     }
@@ -99,7 +99,7 @@ fn a_paused_trace_shows_its_scene() {
         Some(_) => ControlFlow::Break(()),
         None => ControlFlow::Continue(()),
     };
-    while let Step::Paused(p) = tracing.step(shows) {
+    while let Step::Paused(p) = tracing.step(shows).unwrap() {
         let model = p.model().expect("the scene it paused at");
         assert_eq!((model.width, model.height), (size, size));
         shown += 1;
@@ -134,12 +134,10 @@ fn partial_models_leave_the_result_alone() {
             let step = tracing.step(|p: &Progress| {
                 fresh |= p.scene.is_some();
                 every(5, &mut asks)(p)
-            });
-            let Step::Paused(p) = step else {
-                let Step::Done(model) = step else {
-                    unreachable!()
-                };
-                break model;
+            }).unwrap();
+            let p = match step {
+                Step::Paused(p) => p,
+                Step::Done(model) => break model,
             };
             assert!(p.revision() >= revision, "revisions only grow");
             revision = p.revision();
@@ -174,7 +172,7 @@ fn a_dropped_trace_is_cancelled() {
     for at in (1..20).chain((1..40).map(|k| k * asks / 40)) {
         let mut tracing = Tracing::new(&image(&rgba, size), &options).unwrap();
         let mut seen = 0;
-        assert!(matches!(tracing.step(every(at, &mut seen)), Step::Paused(_)));
+        assert!(matches!(tracing.step(every(at, &mut seen)).unwrap(), Step::Paused(_)));
         drop(tracing);
         let (mut seen, mut after) = (0, 0);
         let cancelled = trace_with(&image(&rgba, size), &options, |_| {
@@ -207,13 +205,13 @@ fn traces_interleave_and_nest() {
     let (mut asks_a, mut asks_b) = (0, 0);
     while ta.is_some() || tb.is_some() {
         if let Some(t) = &mut ta
-            && let Step::Done(model) = t.step(every(13, &mut asks_a))
+            && let Step::Done(model) = t.step(every(13, &mut asks_a)).unwrap()
         {
             got_a = Some(format!("{model:?}"));
             ta = None;
         }
         if let Some(t) = &mut tb
-            && let Step::Done(model) = t.step(every(5, &mut asks_b))
+            && let Step::Done(model) = t.step(every(5, &mut asks_b)).unwrap()
         {
             got_b = Some(format!("{model:?}"));
             tb = None;

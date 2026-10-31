@@ -2,10 +2,27 @@
 //! lattice of two steps (a grid repeat), or equal turns about a point (a circular repeat), each
 //! kept where moving the instances onto it costs less error than the transforms it saves.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::disallowed_methods,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::float_cmp,
+))]
+
 use glam::{DVec2, Vec2};
 
 use super::snap::{Site, stand_in};
 use super::{ALIGN, Repeat, Structure, Transform, overlaps, reach};
+use crate::error::TraceError;
 use crate::{Context, Scene};
 
 /// Translations on a lattice: `origin + i * a + j * b` for each point's `(i, j)`, with `b`
@@ -132,7 +149,7 @@ fn fit(points: &[Vec2], index: &[(i32, i32)], two: bool) -> Option<(Vec2, Vec2, 
     let mut ata = [[0f64; 3]; 3];
     let mut atp = [DVec2::ZERO; 3];
     for (p, &(i, j)) in points.iter().zip(index) {
-        let row = [1., i as f64, j as f64];
+        let row = [1., f64::from(i), f64::from(j)];
         for r in 0..m {
             for c in 0..m {
                 ata[r][c] += row[r] * row[c];
@@ -273,7 +290,7 @@ fn on_circle(repeat: &Repeat, reach: f32) -> Option<(Structure, Vec<(usize, Tran
         let r = Vec2::from_angle(k as f32 * step);
         let rhs = (member.1.offset - r.rotate(first.offset)).as_dvec2();
         // I - R as rows
-        let (c, s) = (r.x as f64, r.y as f64);
+        let (c, s) = (f64::from(r.x), f64::from(r.y));
         let rows = [[1. - c, s], [-s, 1. - c]];
         let rhs = [rhs.x, rhs.y];
         for r_i in 0..2 {
@@ -319,11 +336,16 @@ fn on_circle(repeat: &Repeat, reach: f32) -> Option<(Structure, Vec<(usize, Tran
 /// Moves the members (in their structure's order) next to one another in the stack at the
 /// topmost one's place, if no other shape between them overlaps one, and members that overlap
 /// are stacked in that order; whether it did.
-fn gather(scene: &mut Scene, members: &[(usize, Transform)]) -> bool {
+fn gather(scene: &mut Scene, members: &[(usize, Transform)]) -> Result<bool, TraceError> {
     let width = scene.width;
     let ids: crate::HashSet<usize> = members.iter().map(|m| m.0).collect();
-    let positions: Vec<usize> = members.iter().map(|m| scene.position(m.0)).collect();
-    let top = *positions.iter().max().expect("members");
+    let positions = members
+        .iter()
+        .map(|m| scene.position(m.0))
+        .collect::<Result<Vec<usize>, _>>()?;
+    let Some(&top) = positions.iter().max() else {
+        return Ok(false);
+    };
     for (k, &p) in positions.iter().enumerate() {
         let shape = &scene.shapes[p];
         let blocked = (p + 1..top).any(|q| {
@@ -333,13 +355,10 @@ fn gather(scene: &mut Scene, members: &[(usize, Transform)]) -> bool {
             .iter()
             .any(|&q| q < p && overlaps(shape, &scene.shapes[q], width));
         if blocked || misordered {
-            return false;
+            return Ok(false);
         }
     }
-    let mut moved: Vec<crate::Shape> = members
-        .iter()
-        .map(|m| scene.shapes[scene.position(m.0)].clone())
-        .collect();
+    let mut moved: Vec<crate::Shape> = positions.iter().map(|&p| scene.shapes[p].clone()).collect();
     let mut shapes = Vec::with_capacity(scene.shapes.len());
     for (q, shape) in std::mem::take(&mut scene.shapes).into_iter().enumerate() {
         if q == top {
@@ -350,28 +369,44 @@ fn gather(scene: &mut Scene, members: &[(usize, Transform)]) -> bool {
     }
     scene.shapes = shapes;
     scene.change();
-    true
+    Ok(true)
 }
 
 /// The repeat drawn together in the stack: with the structure its transforms show where moving
 /// the instances onto it pays, else as a list; none where the stack keeps the instances apart.
-pub(super) fn recognize(ctx: &Context, scene: &mut Scene, repeat: Repeat) -> Option<Repeat> {
-    if let Some(structured) = structured(ctx, scene, &repeat) {
-        return Some(structured);
+pub(super) fn recognize(
+    ctx: &Context,
+    scene: &mut Scene,
+    repeat: Repeat,
+) -> Result<Option<Repeat>, TraceError> {
+    if let Some(structured) = structured(ctx, scene, &repeat)? {
+        return Ok(Some(structured));
     }
-    let mut members = repeat.members.clone();
-    members.sort_by_key(|m| scene.position(m.0));
-    gather(scene, &members).then_some(Repeat { members, ..repeat })
+    let mut members = repeat
+        .members
+        .iter()
+        .map(|&m| Ok((scene.position(m.0)?, m)))
+        .collect::<Result<Vec<_>, TraceError>>()?;
+    members.sort_by_key(|&(position, _)| position);
+    let members: Vec<(usize, Transform)> = members.into_iter().map(|(_, m)| m).collect();
+    Ok(gather(scene, &members)?.then_some(Repeat { members, ..repeat }))
 }
 
 /// The repeat on the structure its transforms show, its instances moved onto it and gathered
 /// in the stack, where that pays and the stack lets them.
-fn structured(ctx: &Context, scene: &mut Scene, repeat: &Repeat) -> Option<Repeat> {
+fn structured(
+    ctx: &Context,
+    scene: &mut Scene,
+    repeat: &Repeat,
+) -> Result<Option<Repeat>, TraceError> {
     if repeat.members.len() < 3 {
-        return None;
+        return Ok(None);
     }
     let reach = reach(&repeat.prototype);
-    let (structure, placed) = on_lattice(repeat, reach).or_else(|| on_circle(repeat, reach))?;
+    let Some((structure, placed)) = on_lattice(repeat, reach).or_else(|| on_circle(repeat, reach))
+    else {
+        return Ok(None);
+    };
     let candidate = Repeat {
         structure,
         members: placed,
@@ -383,7 +418,7 @@ fn structured(ctx: &Context, scene: &mut Scene, repeat: &Repeat) -> Option<Repea
     let mut rise = 0.;
     let mut stand_ins = Vec::new();
     for &(id, t) in &candidate.members {
-        let position = scene.position(id);
+        let position = scene.position(id)?;
         let member = scene.shapes[position].clone();
         if t == current[&id] {
             continue;
@@ -393,7 +428,7 @@ fn structured(ctx: &Context, scene: &mut Scene, repeat: &Repeat) -> Option<Repea
         rise += site.change(&placed);
         stand_ins.push((position, placed));
         if rise >= saved {
-            return None;
+            return Ok(None);
         }
     }
     let kept = scene.shapes.clone();
@@ -401,10 +436,10 @@ fn structured(ctx: &Context, scene: &mut Scene, repeat: &Repeat) -> Option<Repea
         scene.shapes[position] = placed;
     }
     scene.change();
-    if !gather(scene, &candidate.members) {
+    if !gather(scene, &candidate.members)? {
         scene.shapes = kept;
         scene.change();
-        return None;
+        return Ok(None);
     }
-    Some(candidate)
+    Ok(Some(candidate))
 }

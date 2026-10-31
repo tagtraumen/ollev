@@ -2,6 +2,23 @@
 //! colour c a material's colours b are seen as `o = k b + (1 - k) c`, one homothety, fitted by
 //! one-to-one matching of density-resampled clouds alternated with least squares for k.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::disallowed_macros,
+    clippy::disallowed_methods,
+    clippy::indexing_slicing,
+    clippy::too_many_lines,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::cast_possible_wrap,
+))]
+
 use std::fmt::Write;
 
 use crate::HashMap;
@@ -34,6 +51,7 @@ pub struct Fit {
 
 impl Fit {
     /// The layer's colour, `m / (1 - k)`.
+    #[must_use]
     pub fn c(&self) -> DVec3 {
         self.m / (1.0 - self.k)
     }
@@ -42,6 +60,7 @@ impl Fit {
 /// `n` colours of `x` (weights `w`) by pixel density: systematic sampling over the colours
 /// in code order, a colour drawn as often as its pixels hold shares. Exact colours, as a
 /// bucketed mean would move each by up to a level, the residual's scale.
+#[must_use]
 pub fn sample(x: &[DVec3], w: &[f64], n: usize) -> Vec<DVec3> {
     let mut order: Vec<usize> = (0..x.len()).collect();
     order.sort_by(|&a, &b| {
@@ -68,6 +87,7 @@ pub fn sample(x: &[DVec3], w: &[f64], n: usize) -> Vec<DVec3> {
 /// The assignment of least total cost on the `n` by `m` matrix `cost` (row major, `n <= m`):
 /// per row its column, each column taken at most once. The Hungarian method with
 /// potentials, O(n^2 m).
+#[must_use]
 pub fn assign(cost: &[f64], n: usize, m: usize) -> Vec<usize> {
     debug_assert!(n <= m && cost.len() == n * m);
     let inf = f64::INFINITY;
@@ -208,6 +228,7 @@ fn icp(o: &[DVec3], b: &[DVec3], k0: f64) -> (Fit, Matched) {
 /// The fit `from` refitted at each count of [`REFINED`] in turn from the relation before,
 /// counts capped at the larger side's colours and a count no larger than the last skipped.
 /// Per count taken its fit; the last fit's matched pairs (the given ones if none is taken).
+#[must_use]
 pub fn refine(
     inside: &[DVec3],
     w_in: &[f64],
@@ -269,6 +290,7 @@ impl Clouds {
 
 /// Whether a fit reads as a layer the pin can take: [`in_range`] and the residual within
 /// [`RESIDUAL`].
+#[must_use]
 pub fn is_layer(f: &Fit, clouds: &Clouds) -> bool {
     in_range(f, clouds) && f.residual <= RESIDUAL
 }
@@ -276,6 +298,7 @@ pub fn is_layer(f: &Fit, clouds: &Clouds) -> bool {
 /// Whether a fit is a relation the pin could take: k in [`pin_grid`]'s range, c in gamut loosely
 /// (a white over the layer pushes it past), the inside cloud spread by more than the
 /// show-through (or k stays open), and the material moved past it (seen bare is no evidence).
+#[must_use]
 pub fn in_range(f: &Fit, clouds: &Clouds) -> bool {
     let g = pin_grid();
     let (lo, hi) = (g[0], g[g.len() - 1]);
@@ -331,6 +354,7 @@ pub struct Relation {
 }
 
 impl Relation {
+    #[must_use]
     pub fn c(&self) -> DVec3 {
         self.m / (1.0 - self.k)
     }
@@ -356,12 +380,14 @@ pub struct Gate {
 impl Gate {
     /// Whether some inside cluster is the image of some outside material: one pair is enough,
     /// as one material's image can carry a whole layer.
+    #[must_use]
     pub fn passes(&self) -> bool {
         !self.passing.is_empty()
     }
 
     /// One line per pair passing at [`SAMPLES`] (its residual, k and c at every count), the
     /// relation and its group, or the closest fits where none passes; levels throughout.
+    #[must_use]
     pub fn describe(&self) -> String {
         let lv = |f: &Fit| {
             format!(
@@ -454,6 +480,7 @@ fn apart(a: &Pair, b: &Pair) -> f64 {
 /// The clusters that carry a region: its materials (at least `min_material_px` pixels),
 /// largest first, until they hold half its pixels. A small cluster beside them is no
 /// evidence: a few colours of small clusters fit by chance.
+#[must_use]
 pub fn carrying(inside: &Palette) -> Vec<usize> {
     let mut out = Vec::new();
     let mut held = 0.0;
@@ -480,6 +507,7 @@ pub struct Ring {
 }
 
 impl Ring {
+    #[must_use]
     pub fn of(img: &Image, region: &[bool], rim: &[bool]) -> Self {
         let (w, h) = (img.width, img.height);
         let clear = clear_of(img);
@@ -507,6 +535,7 @@ impl Ring {
 
 /// Whether [`gate`] can pass on `inside` whatever the outside: a [`carrying`] cluster with
 /// spread to pair, or two flat ones to fix k together.
+#[must_use]
 pub fn may_pass(inside: &Palette) -> bool {
     let (mut spread, mut flat) = (0, 0);
     for ci in carrying(inside) {
@@ -527,6 +556,7 @@ pub fn may_pass(inside: &Palette) -> bool {
 /// The gate on a region: each [`carrying`] cluster against each outside material, passing
 /// pairs refitted ([`refine`]) and grouped. A `ring` adds each material as the ring sees it
 /// ([`Ring::part`]): a layer may cover only the part of a varying material next to it.
+#[must_use]
 pub fn gate(inside: &Palette, outside: &Palette, ring: Option<&Ring>) -> Gate {
     // per outside material its readings: whole, and as the ring sees it
     type Reading = (usize, bool, Vec<DVec3>, Vec<f64>, Vec<DVec3>, DVec3);
@@ -563,11 +593,17 @@ pub fn gate(inside: &Palette, outside: &Palette, ring: Option<&Ring>) -> Gate {
             let clouds = Clouds { spread, bmean };
             // the pair's relation is its closest fit from any start, at any k: a pair that fits
             // closer at a k out of the pin's range is that, not a layer the pin takes
-            let (best, best_matched) = STARTS
-                .iter()
-                .map(|&k0| icp(&o, b, k0))
-                .min_by(|a, b| a.0.residual.total_cmp(&b.0.residual))
-                .expect("the starts");
+            let [first, rest @ ..] = STARTS;
+            let (best, best_matched) = rest.iter().map(|&k0| icp(&o, b, k0)).fold(
+                icp(&o, b, first),
+                |best, fit| {
+                    if fit.0.residual.total_cmp(&best.0.residual).is_lt() {
+                        fit
+                    } else {
+                        best
+                    }
+                },
+            );
             if g.closest
                 .as_ref()
                 .is_none_or(|c| best.residual < c.3.residual)

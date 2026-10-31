@@ -2,6 +2,23 @@
 //! ([`super::region_graph`]): the pixels the relation explains bare are the layer's core, the
 //! pixels on an outside material's dichromatic polyline are that material seen bare.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::disallowed_macros,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::disallowed_methods,
+    clippy::too_many_lines,
+))]
+
 use crate::HashMap;
 
 use super::materials::{MATCH_TOL, Palette};
@@ -111,6 +128,7 @@ pub fn evidence(img: &Image, outside: &Palette, k: f64, c: DVec3, min_px: f64) -
 
 /// `inside` with its holes filled: what is not inside and not connected to the frame is
 /// enclosed.
+#[must_use]
 pub fn fill_holes(inside: &[bool], w: usize, h: usize) -> Vec<bool> {
     let n = w * h;
     let outside_mask: Vec<bool> = inside.iter().map(|&v| !v).collect();

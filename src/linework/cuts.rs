@@ -1,5 +1,20 @@
 //! Cuts: the flat areas either side of a step and their fills.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::disallowed_macros,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::too_many_lines,
+))]
+
 use super::*;
 
 /// The flat areas a cut may take: the components, 4-connected, of the pixels off every edge
@@ -150,11 +165,11 @@ pub(super) fn area_fills(img: &Image, px: &[usize]) -> (CutFill, Option<CutFill>
         DVec2::new(s.x, s.y)
     };
     let g = [slope(0), slope(1), slope(2)];
-    // one direction: the channels' slopes summed with their signs aligned to the largest
-    let big = *g
-        .iter()
-        .max_by(|a, b| a.length().total_cmp(&b.length()))
-        .unwrap();
+    // one direction: the channels' slopes summed with their signs aligned to the largest (the
+    // last of equals)
+    let big = g.iter().fold(g[0], |big, &v| {
+        if v.length().total_cmp(&big.length()).is_ge() { v } else { big }
+    });
     let dir: DVec2 = g
         .iter()
         .map(|v| if v.dot(big) < 0.0 { -*v } else { *v })

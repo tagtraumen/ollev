@@ -23,7 +23,22 @@
 //! assert!(!model.objects().is_empty());
 //! ```
 
-#![forbid(unsafe_code)]
+// Test code indexes, counts and allocates freely: the ratchets (`// Panic ratchet` in each
+// module) hold only the library's own code
+#![cfg_attr(
+    test,
+    allow(
+        clippy::arithmetic_side_effects,
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        clippy::cast_precision_loss,
+        clippy::cast_sign_loss,
+        clippy::disallowed_macros,
+        clippy::disallowed_methods,
+        clippy::float_cmp,
+        clippy::too_many_lines,
+    )
+)]
 // The lab's modules link their private parts in their docs
 #![cfg_attr(feature = "diagnostics", allow(rustdoc::private_intra_doc_links))]
 
@@ -48,6 +63,7 @@ internal!(
     diagnostics,
     economy,
     edges,
+    error,
     fill,
     glow,
     hierarchy,
@@ -80,9 +96,10 @@ pub mod model;
 pub(crate) use context::{Context, Weights, Window};
 #[cfg(feature = "diagnostics")]
 pub use diagnostics::Diagnostics;
+pub use error::{Internal, TraceError};
 /// The vector types of the model, for its callers.
 pub use glam;
-pub use input::{Detail, Image, Pixels, Stages, TraceError, TraceOptions};
+pub use input::{Detail, Image, Pixels, Stages, TraceOptions};
 pub use lower::Capabilities;
 pub use progress::{Answer, Progress};
 pub use scene::Scene;

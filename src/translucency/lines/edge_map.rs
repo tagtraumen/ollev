@@ -1,5 +1,22 @@
 //! The edge map: suppressed edges, their skeleton graph and its chains.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::disallowed_macros,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::cast_possible_truncation,
+    clippy::disallowed_methods,
+    clippy::too_many_lines,
+))]
+
 use super::{EDGE_SIGMA, TOL, ridge_radii};
 use crate::translucency::raster::{
     Conn, Image, NOISE, di_zenzo, dilate, label, length_px, line_pixels_at, map1, unit_of,
@@ -8,6 +25,7 @@ use crate::translucency::raster::{
 /// Edge pixels as gradient ridges: non-maximum suppression along the gradient by linear
 /// interpolation, hysteresis at 6 and 3 NOISE of step (a step h smoothed at sigma peaks at
 /// `h / (sigma sqrt(2 pi))` in the gradient), 8-connected.
+#[must_use]
 pub fn suppressed_edges(
     mag: &[f64],
     theta: &[f64],
@@ -53,6 +71,7 @@ pub struct EdgeMap {
     pub normal: Vec<(i32, i32)>,
 }
 
+#[must_use]
 pub fn edge_pixels(img: &Image) -> EdgeMap {
     let (w, h) = (img.width, img.height);
     let u = unit_of(w);
@@ -116,6 +135,7 @@ fn skeleton_graph(sk: &[bool], width: usize, height: usize) -> (Vec<usize>, Vec<
 /// The skeleton cut into simple paths as (y, x), end to end (a loop cut at its first pixel):
 /// junctions of three or more branches belong to no chain, a line beneath ending at the
 /// layer's edge there and linked across by continuation.
+#[must_use]
 pub fn trace_chains(
     sk: &[bool],
     width: usize,

@@ -1,6 +1,20 @@
 //! The first read of a picture: its context and region hierarchy.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::disallowed_macros,
+    clippy::indexing_slicing,
+    clippy::too_many_lines,
+))]
+
 use crate::context::Context;
+use crate::error::TraceError;
 use crate::timing::Timings;
 
 /// Share of the usual segmentation boundary cost for the leaves of the hierarchy, small enough
@@ -14,8 +28,8 @@ pub async fn analyze(
     height: usize,
     detail: f64,
     timings: &mut Timings,
-) -> (Context, super::Hierarchy) {
-    let mut ctx = Context::new(rgb, width, height, detail);
+) -> Result<(Context, super::Hierarchy), TraceError> {
+    let mut ctx = Context::new(rgb, width, height, detail)?;
     let mut params = crate::tracer::Params::with_detail(detail);
     // The segmentation only gives the leaves; the hierarchy decides what merges beyond them
     params.segment.boundary_cost *= LEAF_BOUNDARY_COST;
@@ -59,6 +73,6 @@ pub async fn analyze(
         .time("tree", async || {
             super::Hierarchy::build(labels, count, &colors, width, height).await
         })
-        .await;
-    (ctx, hierarchy)
+        .await?;
+    Ok((ctx, hierarchy))
 }

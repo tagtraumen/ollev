@@ -1,5 +1,18 @@
 //! The stack of shapes being built.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::disallowed_macros,
+    clippy::disallowed_methods,
+    clippy::float_cmp,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+
 use std::sync::{Arc, OnceLock};
 
 use crate::render::{FillRule, Gradient, Path, Subpath};
@@ -7,6 +20,7 @@ use crate::tracer::Cubic;
 use glam::{Vec2, Vec3};
 
 use crate::Window;
+use crate::error::{Invariant, TraceError};
 use kept::Kept;
 
 mod kept;
@@ -24,6 +38,7 @@ pub struct Fill {
 
 impl Fill {
     /// One opaque colour.
+    #[must_use]
     pub fn solid(color: Vec3) -> Self {
         Self {
             color,
@@ -33,6 +48,7 @@ impl Fill {
     }
 
     /// The color at `p`.
+    #[must_use]
     pub fn at(&self, p: Vec2) -> Vec3 {
         match &self.gradient {
             None => self.color,
@@ -41,11 +57,13 @@ impl Fill {
     }
 
     /// The color at the center of pixel `(x, y)`.
+    #[must_use]
     pub fn at_pixel(&self, x: usize, y: usize) -> Vec3 {
         self.at(Vec2::new(x as f32 + 0.5, y as f32 + 0.5))
     }
 
     /// The straight colour at `p` and how much of it shows: the opacity times the ramp's alpha.
+    #[must_use]
     pub fn paint(&self, p: Vec2) -> (Vec3, f32) {
         match &self.gradient {
             Some(g) if !g.is_opaque() => {
@@ -57,18 +75,21 @@ impl Fill {
     }
 
     /// [`Fill::paint`] at the center of pixel `(x, y)`.
+    #[must_use]
     pub fn paint_pixel(&self, x: usize, y: usize) -> (Vec3, f32) {
         self.paint(Vec2::new(x as f32 + 0.5, y as f32 + 0.5))
     }
 
     /// Whether the fill covers what lies below wherever it is drawn.
     #[cfg(test)]
+    #[must_use]
     pub fn is_opaque(&self) -> bool {
         self.opacity >= 1. && self.gradient.is_none_or(|g| g.is_opaque())
     }
 
     /// Whether the two fills look different: a color differs by more than half a level of 8
     /// bits in some channel, or the gradient does.
+    #[must_use]
     pub fn differs(&self, o: &Self) -> bool {
         let differ = |a: Vec3, b: Vec3| (a - b).abs().max_element() > 0.5 / 255.;
         differ(self.color, o.color)
@@ -150,6 +171,7 @@ pub struct Paint {
 
 impl Paint {
     /// The paint at image pixel `(x, y)` of the box.
+    #[must_use]
     pub fn at(&self, x: usize, y: usize) -> (Vec3, f32) {
         self.values[(y - self.at[1]) * self.at[2] + x - self.at[0]]
     }
@@ -642,6 +664,7 @@ impl Scene {
 
     /// Sets the fill of the shape at `position` in the stack (by place, since ids are not
     /// unique in every scene), counting a change where the fill looks different.
+    #[expect(clippy::large_types_passed_by_value, reason = "moved into the shape")]
     pub(crate) fn set_fill_at(&mut self, position: usize, fill: Fill) {
         if self.shapes[position].fill.differs(&fill) {
             let change = self.change();
@@ -662,15 +685,21 @@ impl Scene {
     }
 
     /// The place in the stack of the shape with `id`.
-    pub(crate) fn position(&self, id: usize) -> usize {
+    #[track_caller]
+    pub(crate) fn position(&self, id: usize) -> Result<usize, TraceError> {
         self.shapes
             .iter()
             .position(|s| s.id == id)
-            .expect("a shape of the scene")
+            .invariant("a shape of the scene")
     }
 
-    pub(crate) fn get(&self, id: usize) -> &Shape {
-        &self.shapes[self.position(id)]
+    /// The shape with `id`.
+    #[track_caller]
+    pub(crate) fn get(&self, id: usize) -> Result<&Shape, TraceError> {
+        self.shapes
+            .iter()
+            .find(|s| s.id == id)
+            .invariant("a shape of the scene")
     }
 
     /// Renders the pixels of `window` showing the shapes in `range` over `background`. The whole
@@ -683,14 +712,14 @@ impl Scene {
     ) -> Vec<Vec3> {
         if range == (0..self.shapes.len()) && background == [1.; 3] {
             let mut canvas = self.canvas.lock();
-            if canvas
-                .as_ref()
-                .is_none_or(|(current, _)| *current != self.changes)
-            {
-                let full = Window::full(self.width, self.height);
-                *canvas = Some((self.changes, Arc::new(self.render_shapes(full, range, background))));
-            }
-            let (_, pixels) = canvas.as_ref().expect("just rendered");
+            let pixels = match &mut *canvas {
+                Some((current, pixels)) if *current == self.changes => pixels,
+                canvas => {
+                    let full = Window::full(self.width, self.height);
+                    let pixels = Arc::new(self.render_shapes(full, range, background));
+                    &mut canvas.insert((self.changes, pixels)).1
+                }
+            };
             return window.pixels(self.width).map(|i| pixels[i]).collect();
         }
         self.render_shapes(window, range, background)
@@ -846,6 +875,7 @@ fn subpaths(loops: &[Vec<Cubic>], origin: Vec2) -> Vec<Subpath> {
 }
 
 /// The loops as a path for the rasterizer's coverage, painted with nothing.
+#[must_use]
 pub fn loops_path(loops: &[Vec<Cubic>]) -> Path {
     Path {
         subpaths: subpaths(loops, Vec2::ZERO),
@@ -857,12 +887,14 @@ pub fn loops_path(loops: &[Vec<Cubic>]) -> Path {
 }
 
 /// The coverage by `rule` of the pixels of the path's box within the image.
+#[must_use]
 pub fn coverage_raster(path: &Path, rule: FillRule) -> Raster {
     let [raster] = coverage_rasters(path, [rule]);
     raster
 }
 
 /// [`coverage_raster`] by each of `rules`, the path rasterized once.
+#[must_use]
 pub fn coverage_rasters<const N: usize>(path: &Path, rules: [FillRule; N]) -> [Raster; N] {
     let polys = crate::render::scene::flatten(path);
     let winding = crate::render::raster::rasterize(&polys, i32::MAX as u32, i32::MAX as u32);
@@ -884,11 +916,12 @@ pub fn coverage_rasters<const N: usize>(path: &Path, rules: [FillRule; N]) -> [R
 }
 
 /// [`coverage_raster`] blurred by a Gaussian of `sigma` pixels, over the box it reaches.
+#[must_use]
 pub fn blurred_raster(path: &Path, rule: FillRule, sigma: f32) -> Raster {
     // A frame larger than any image, so only the left and top edges cut the box
     let frame = 1 << 24;
     let polys = crate::render::scene::flatten(path);
-    let b = crate::render::blur::Blurred::new(polys, rule, sigma, frame, frame);
+    let b = crate::render::blur::Blurred::new(&polys, rule, sigma, frame, frame);
     Raster {
         x0: b.x0,
         y0: b.y0,
@@ -913,6 +946,7 @@ pub struct Raster {
 
 impl Raster {
     /// The pixels the box shares with `window`, if any.
+    #[must_use]
     pub fn overlap(&self, window: Window) -> Option<Window> {
         let (x0, y0) = (self.x0.max(window.x), self.y0.max(window.y));
         let x1 = (self.x0 + self.w).min(window.x + window.width);
@@ -926,6 +960,7 @@ impl Raster {
     }
 
     /// The coverage of image pixel `i`, zero outside the box.
+    #[must_use]
     pub fn at(&self, i: usize, width: usize) -> f32 {
         let (x, y) = (i % width, i / width);
         if x < self.x0 || y < self.y0 || x >= self.x0 + self.w || y >= self.y0 + self.h {

@@ -4,6 +4,19 @@
 //! painted with the paint made opaque, at the opacity that brings the stack up to that level.
 //! Layers of one paint stacked so composite to the level exactly, whatever lies below.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::disallowed_macros,
+    clippy::disallowed_methods,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+
 use crate::render::{FillRule, Gradient as Ramp, Stops};
 use glam::{DVec2, IVec2, Vec3};
 

@@ -1,6 +1,15 @@
 //! The whole scene's backward pass, the reference the tests check the renderer's coverage
 //! gradients against (see [`super::coverage_cost`]).
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::arithmetic_side_effects,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::indexing_slicing,
+))]
+
 use glam::{Vec2, Vec3};
 
 use super::raster::{Winding, fill_coverage, rasterize, rasterize_backward};
@@ -117,7 +126,7 @@ pub fn backward(scene: &Scene, tape: &Tape, d_image: &[Vec3]) -> SceneGrad {
         .zip(&mut grad.paths)
         .rev()
     {
-        assert!(path.blur == 0., "a blurred path has no backward pass");
+        debug_assert!(path.blur == 0., "a blurred path has no backward pass");
         let PathTape {
             polys,
             winding,

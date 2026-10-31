@@ -2,6 +2,23 @@
 //! it compares the scene with the layer (beneath traced, layer on top) against the opaque
 //! trace: [`shared_outline`] and the error under the layer weighed by `1 / k^2`.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::disallowed_macros,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::cast_possible_wrap,
+    clippy::disallowed_methods,
+    clippy::too_many_lines,
+))]
+
 use super::SHOW_THROUGH;
 use crate::{Context, Scene, Window};
 
@@ -50,25 +67,27 @@ impl LayerTerms {
 /// The materials whose images meet inside a candidate's region under its relation: the inner
 /// fit at the candidate's `k` and `m` ([`super::inner::fit_fixed`]), then [`super::rank::contact`]
 /// within [`super::rank::reach`]. The ranking's cue for a real layer, here a gate on the terms.
+#[must_use]
 pub fn meeting(ctx: &Context, candidate: &super::Candidate) -> usize {
     let img = super::raster::Image::from_target(&ctx.target, ctx.width);
     let rim = super::materials::rim_of(&img);
     let inp = super::inner::InnerInputs::new(&img, &candidate.mask, &rim, None);
-    let fit = super::inner::fit_fixed(&inp, candidate.k as f64, candidate.m.as_dvec3());
+    let fit = super::inner::fit_fixed(&inp, f64::from(candidate.k), candidate.m.as_dvec3());
     super::rank::contact(&inp, &fit, super::rank::reach(ctx.width)).meeting
 }
 
 /// The pixels of a layer's region whose colour the layer `o = k b + m` can produce from some
 /// `b` in the unit cube, to the show-through ([`super::beneath::outside_image`]): where the
 /// `1 / k` weights hold, as elsewhere the pixel is not under the layer and its error is raw.
+#[must_use]
 pub fn seen_through(ctx: &Context, candidate: &super::Candidate) -> Vec<bool> {
-    let (k, m) = (candidate.k as f64, candidate.m.as_dvec3());
+    let (k, m) = (f64::from(candidate.k), candidate.m.as_dvec3());
     candidate
         .mask
         .iter()
         .zip(ctx.target.iter())
         .map(|(&inside, c)| {
-            inside && super::beneath::outside_image(c.as_dvec3(), k, m) <= SHOW_THROUGH as f64
+            inside && super::beneath::outside_image(c.as_dvec3(), k, m) <= f64::from(SHOW_THROUGH)
         })
         .collect()
 }
@@ -82,7 +101,7 @@ pub fn error_under(ctx: &Context, scene: &Scene, mask: &[bool]) -> f64 {
         .iter()
         .enumerate()
         .filter(|(i, _)| mask[*i])
-        .map(|(i, r)| ctx.pixel_error(i, *r) as f64)
+        .map(|(i, r)| f64::from(ctx.pixel_error(i, *r)))
         .sum()
 }
 

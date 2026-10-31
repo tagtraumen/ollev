@@ -2,6 +2,27 @@
 //! `k = 1 - a`, `m = a c`, one relation for the whole shape, so it peels to `(o - m) / k`.
 //! Shading fixes the color: a shadow `o = s b` is black at `1 - s`, a highlight white.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::disallowed_macros,
+    clippy::disallowed_methods,
+    clippy::indexing_slicing,
+    clippy::too_many_lines,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+#![cfg_attr(
+    not(feature = "diagnostics"),
+    expect(
+        clippy::large_types_passed_by_value,
+        reason = "panic ratchet: remove a lint once the module is clean of it"
+    )
+)]
+
 pub mod above;
 pub mod beneath;
 pub mod boundary;
@@ -58,6 +79,7 @@ pub const SHOW_THROUGH: f32 = 4. * NOISE;
 pub const SLOPE_MIN: f32 = 0.5 / 255.;
 
 /// Whether a color lies in gamut to the noise.
+#[must_use]
 pub fn in_gamut(c: Vec3) -> bool {
     c.min_element() >= -NOISE && c.max_element() <= 1. + NOISE
 }
@@ -84,6 +106,7 @@ pub fn find_root(parent: &mut [usize], mut a: usize) -> usize {
 }
 
 /// The box `min..max` of a frame mask's set pixels, `(MAX, MIN)` where none is set.
+#[must_use]
 pub fn mask_bounds(mask: &[bool], width: usize) -> (IVec2, IVec2) {
     let (mut min, mut max) = (IVec2::MAX, IVec2::MIN);
     for (i, _) in mask.iter().enumerate().filter(|(_, v)| **v) {
@@ -97,6 +120,7 @@ pub fn mask_bounds(mask: &[bool], width: usize) -> (IVec2, IVec2) {
 /// The overlay's fill refitted by least squares of `target = k below + m` over the covered
 /// pixels `fill` already explains (others are something over the layer); kept where `below`
 /// does not vary; with `shade`, only the opacity is fitted.
+#[must_use]
 pub fn refit_fill(
     target: &[Vec3],
     below: &[Vec3],
@@ -188,6 +212,7 @@ pub struct Above {
 impl Above {
     /// The pixel with what lies above the layer taken off: the white first (it is on
     /// top), then the tint.
+    #[must_use]
     pub fn peel(&self, i: usize, p: Vec3) -> Vec3 {
         let mut p = p;
         let t = self.white.get(i).copied().unwrap_or(0.);
@@ -206,6 +231,7 @@ impl Above {
 
 impl Candidate {
     /// A shape of relation `o = k b + m` over `mask`, its pixels within `bounds`.
+    #[must_use]
     pub fn new(
         k: f32,
         m: Vec3,
@@ -235,6 +261,7 @@ impl Candidate {
     }
 
     /// What the shape is drawn with: its color at opacity `1 - k`.
+    #[must_use]
     pub fn fill(&self) -> Fill {
         let color = match self.shade {
             Some(kind) => kind.color(),
@@ -250,6 +277,7 @@ impl Candidate {
     /// The image with the shape peeled off, as 8-bit RGB: where `overlay` covers a pixel by
     /// `a`, `b = (o - a m) / (1 - a (1 - k))`, so the anti-aliased rim peels too and leaves no
     /// line a pixel wide beneath.
+    #[must_use]
     pub fn peeled(&self, ctx: &Context, overlay: &Overlay) -> Vec<u8> {
         let (width, height) = (ctx.width, ctx.height);
         let shape = crate::Shape::new(overlay.loops.clone(), overlay.fill);
@@ -298,6 +326,7 @@ impl Candidate {
     }
 
     /// The shape's outline traced from its pixels, on a frame of the given size.
+    #[must_use]
     pub fn overlay(&self, width: usize, height: usize) -> Option<Overlay> {
         let loops = crate::outline::outline_of(
             self.min,
@@ -314,6 +343,7 @@ impl Candidate {
     }
 
     /// The shape within a window of its frame, as a candidate on the window's frame.
+    #[must_use]
     pub fn crop(&self, window: crate::Window, width: usize) -> Candidate {
         let origin = IVec2::new(window.x as i32, window.y as i32);
         let mask: Vec<bool> = window.pixels(width).map(|i| self.mask[i]).collect();
@@ -735,15 +765,18 @@ async fn merge_phase(
         let mut merged = false;
         for (_, i, j) in pairs {
             let fit = {
-                let (a, b) = (groups[i].as_ref().unwrap(), groups[j].as_ref().unwrap());
+                let (Some(a), Some(b)) = (groups[i].as_ref(), groups[j].as_ref()) else {
+                    continue;
+                };
                 joint_fit(&[a, b])
             };
             let Some((k, m)) = fit else {
                 failed.insert((i, j));
                 continue;
             };
-            let b = groups[j].take().unwrap();
-            let a = groups[i].as_mut().unwrap();
+            let (Some(b), Some(a)) = (groups[j].take(), groups[i].as_mut()) else {
+                continue;
+            };
             a.k = k;
             a.m = m;
             a.members.extend(b.members);
@@ -908,7 +941,8 @@ mod tests {
             height,
             1.,
             &mut timings,
-        ));
+        ))
+        .unwrap();
         let lv = leaves::Leaves::new(&ctx.target, hierarchy.labels(), width, height);
         let found = crate::progress::finish(candidates(&ctx, &lv));
         let first = found.first().expect("a candidate");

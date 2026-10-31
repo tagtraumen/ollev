@@ -1,5 +1,16 @@
 //! Outlines of regions as cubics.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::disallowed_methods,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+
 use crate::tracer::Cubic;
 use crate::tracer::fit::FitParams;
 use crate::tracer::planar::{self, ChainUse};
@@ -28,6 +39,7 @@ const SIMPLIFY: f32 = 1.;
 
 /// The outline of hierarchy node `node` fitted with `fit`, with the positions of the sharp
 /// corners the trace found.
+#[must_use]
 pub fn outline_with(
     hierarchy: &Hierarchy,
     node: u32,

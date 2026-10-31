@@ -1,3 +1,18 @@
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::disallowed_macros,
+    clippy::float_cmp,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::cast_precision_loss,
+))]
+
 use glam::{IVec2, Vec2};
 
 /// A cubic Bézier as `[start, handle, handle, end]`.
@@ -21,6 +36,7 @@ pub struct FitParams {
 
 /// Fits a chain of pixel corners with cubics, keeping its endpoints fixed and its sharp corners
 /// sharp; also the positions of the sharp corners it kept (not the end points, fixed anyway).
+#[must_use]
 pub fn fit_chain_corners(
     points: &[IVec2],
     closed: bool,
@@ -109,6 +125,7 @@ fn fit_points_corners(
 /// Fits a chain of points with cubics, sharp at `corners` (ascending indices into `points`, none
 /// at the ends of an open chain) and smooth elsewhere. The last point of a closed chain repeats
 /// its first.
+#[must_use]
 pub fn fit_at_corners(
     points: &[Vec2],
     corners: &[usize],
@@ -217,11 +234,14 @@ pub(crate) fn fit_cubics(points: &[Vec2], t0: Vec2, t1: Vec2, tolerance: f32) ->
 }
 
 fn chord_lengths(points: &[Vec2]) -> Vec<f32> {
-    let mut u = vec![0.];
-    for w in points.windows(2) {
-        u.push(u.last().unwrap() + w[0].distance(w[1]));
-    }
-    let total = u.last().copied().unwrap_or(1.).max(1e-6);
+    let mut length = 0.;
+    let u: Vec<f32> = std::iter::once(0.)
+        .chain(points.windows(2).map(|w| {
+            length += w[0].distance(w[1]);
+            length
+        }))
+        .collect();
+    let total = length.max(1e-6);
     u.iter().map(|x| x / total).collect()
 }
 
@@ -233,6 +253,7 @@ fn bernstein(t: f32) -> [f32; 4] {
 /// Moves the handles of a cubic along its chord, as little as possible, so that their projections
 /// onto the chord lie in order between the endpoints. The curve then advances along the chord the
 /// whole way and cannot loop or cross itself, which in traced outlines is noise rather than shape.
+#[must_use]
 pub fn untangle(c: Cubic) -> Cubic {
     let chord = c[3] - c[0];
     let length_squared = chord.length_squared();
@@ -243,12 +264,13 @@ pub fn untangle(c: Cubic) -> Cubic {
     let (a, b) = (along(c[1]), along(c[2]));
     let (mut a2, mut b2) = (a.clamp(0., 1.), b.clamp(0., 1.));
     if a2 > b2 {
-        let middle = 0.5 * (a2 + b2);
+        let middle = f32::midpoint(a2, b2);
         (a2, b2) = (middle, middle);
     }
     [c[0], c[1] + (a2 - a) * chord, c[2] + (b2 - b) * chord, c[3]]
 }
 
+#[must_use]
 pub fn eval(c: &Cubic, t: f32) -> Vec2 {
     let b = bernstein(t);
     c[0] * b[0] + c[1] * b[1] + c[2] * b[2] + c[3] * b[3]
@@ -288,6 +310,7 @@ fn generate(points: &[Vec2], u: &[f32], t0: Vec2, t1: Vec2) -> Cubic {
 /// The least-squares cubic through `points` leaving the first along the unit tangent `t0` and
 /// arriving at the last against `t1`, parameters refined by `iterations` Newton steps: the best
 /// such cubic, where [`fit_cubics`] stops at the first within its tolerance.
+#[must_use]
 pub fn fit_cubic(points: &[Vec2], t0: Vec2, t1: Vec2, iterations: usize) -> Cubic {
     let n = points.len();
     let (first, last) = (points[0], points[n - 1]);

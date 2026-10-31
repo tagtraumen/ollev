@@ -3,6 +3,16 @@
 //! centred `t` of the way from the focus to the centre), clipped to the object, the outermost
 //! first, each painted with its band's colour.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_precision_loss,
+    clippy::disallowed_macros,
+    clippy::disallowed_methods,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+
 use crate::render::{FillRule, Gradient as Ramp};
 use glam::{DVec2, DVec3, Vec2};
 

@@ -1,5 +1,22 @@
 //! Links between chain ends across gaps.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::disallowed_macros,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::disallowed_methods,
+    clippy::too_many_lines,
+))]
+
 use glam::DVec2;
 
 use super::{
@@ -19,6 +36,7 @@ pub(super) fn widths_alike(a: &Chain, b: &Chain) -> bool {
 /// The cost of end `eb` of chain b continuing end `ea` of chain a: each end continued along
 /// its curve lands within half a width plus one of the other (plus its heading's uncertainty),
 /// headings within the kink tolerance, curvatures and ridge widths alike.
+#[must_use]
 pub fn link_test(a: &Chain, ea: usize, b: &Chain, eb: usize) -> Option<f64> {
     let u = a.unit;
     // the kinds may differ: under a tint a contour's soft dark rim falls below the ridge
@@ -204,6 +222,7 @@ pub(super) fn reach_of(chains: &[Chain]) -> f64 {
 
 /// Candidate links between ends of different chains, and the cover: cheapest first, each
 /// end takes one.
+#[must_use]
 pub fn find_links(chains: &[Chain], mode: LinkMode) -> Vec<Link> {
     if chains.is_empty() {
         return Vec::new();
@@ -228,6 +247,7 @@ pub fn find_links(chains: &[Chain], mode: LinkMode) -> Vec<Link> {
 
 /// [`find_links`]' candidates without the cover, by the angles test, cheapest first: a short
 /// T join can take an end from the smooth continuation, so the proposal counts every one.
+#[must_use]
 pub fn all_links(chains: &[Chain]) -> Vec<Link> {
     if chains.is_empty() {
         return Vec::new();

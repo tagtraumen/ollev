@@ -1,3 +1,19 @@
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::disallowed_macros,
+    clippy::disallowed_methods,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::cast_precision_loss,
+))]
+
 use glam::IVec2;
 
 use crate::HashMap;
@@ -16,6 +32,7 @@ pub struct Chain {
 }
 
 impl Chain {
+    #[must_use]
     pub fn is_closed(&self) -> bool {
         self.points.first() == self.points.last()
     }
@@ -128,6 +145,7 @@ impl Grid<'_> {
     }
 }
 
+#[must_use]
 pub fn build(labels: &[u32], width: usize, height: usize, region_count: usize) -> PlanarMap {
     let grid = Grid {
         labels,
@@ -150,10 +168,15 @@ pub fn build(labels: &[u32], width: usize, height: usize, region_count: usize) -
             }
             // Regular corners have exactly one other crack, which separates the same two regions
             let back = -dir;
-            dir = *DIRECTIONS
+            let Some(&next) = DIRECTIONS
                 .iter()
                 .find(|&&d| d != back && grid.is_crack(corner, d))
-                .expect("regular corner continues");
+            else {
+                // a corner that is no junction has two cracks: the chain ends here
+                debug_assert!(false, "a regular corner continues");
+                break;
+            };
+            dir = next;
         }
         Chain {
             points,

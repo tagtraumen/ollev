@@ -1,5 +1,22 @@
 //! Shading layers: shadows and highlights as black and white layers.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_precision_loss,
+    clippy::indexing_slicing,
+    clippy::too_many_lines,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::disallowed_macros,
+    clippy::disallowed_methods,
+))]
+
 use glam::{IVec3, Vec3};
 
 use super::{Graph, Support, best_cut, bin};
@@ -16,6 +33,7 @@ pub enum Shade {
 }
 
 impl Shade {
+    #[must_use]
     pub fn space(self, v: Vec3) -> Vec3 {
         match self {
             Shade::Shadow => v,
@@ -24,6 +42,7 @@ impl Shade {
     }
 
     /// The color of the layer: black or white.
+    #[must_use]
     pub fn color(self) -> Vec3 {
         match self {
             Shade::Shadow => Vec3::ZERO,
@@ -33,6 +52,7 @@ impl Shade {
 
     /// The shade a layer of color `c` at `k` is, to the noise its color is known to (a level
     /// of the image is `1 / (1 - k)` levels of it).
+    #[must_use]
     pub fn of(c: Vec3, k: f32) -> Option<Shade> {
         let margin = NOISE / (1. - k);
         [Shade::Shadow, Shade::Highlight]
@@ -115,6 +135,7 @@ pub(super) const SHADE_GROUPS: usize = 6;
 /// Shading layers: a Hough over per-channel scales (steps of 0.025) of contact points moved
 /// one way in every channel, refined by least squares through the origin, verified by the
 /// cut, each connected group a layer, scored by evidence times the mean scale.
+#[must_use]
 pub fn shading_pass(lv: &Leaves) -> Vec<Layer> {
     let graph = Graph::of(lv);
     let mut raw: Vec<(Shade, Vec3, f32)> = Vec::new();

@@ -1,6 +1,18 @@
 //! A model traced at a smaller size, scaled back to the picture's: every coordinate and length
 //! by one factor, the fidelity's per-pixel tolerance spread over the larger pixels.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(clippy::disallowed_macros, clippy::too_many_lines,))]
+
 use std::sync::Arc;
 
 use super::{Clip, Fidelity, Item, Model, Object, Paint, Structure};

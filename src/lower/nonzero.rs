@@ -3,6 +3,19 @@
 //! left, so every hole cancels the loop round it. Loops that cross have no such winding: they
 //! are turned so, or their even-odd coverage is traced into loops that do not cross.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_precision_loss,
+    clippy::disallowed_macros,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::disallowed_methods,
+))]
+
 use crate::render::FillRule;
 use glam::DVec2;
 
@@ -116,20 +129,17 @@ fn wind(loops: &[Vec<Curve>]) -> Vec<Vec<Curve>> {
     let reach = |c: &Curve| c[0].distance(c[1]) + c[1].distance(c[2]) + c[2].distance(c[3]);
     loops
         .iter()
-        .filter(|l| !l.is_empty())
-        .map(|l| {
-            let c = l
-                .iter()
-                .max_by(|a, b| reach(a).total_cmp(&reach(b)))
-                .expect("not empty");
+        .filter_map(|l| {
+            // an empty loop has no longest cubic, and is left out
+            let c = l.iter().max_by(|a, b| reach(a).total_cmp(&reach(b)))?;
             let middle = (c[0] + 3. * c[1] + 3. * c[2] + c[3]) / 8.;
             let tangent = (c[3] + c[2] - c[1] - c[0]).normalize_or(DVec2::X);
             // A hundredth of a pixel to the left
-            if filled(middle + tangent.perp() * 0.01) {
+            Some(if filled(middle + tangent.perp() * 0.01) {
                 l.clone()
             } else {
                 l.iter().rev().map(|c| [c[3], c[2], c[1], c[0]]).collect()
-            }
+            })
         })
         .collect()
 }

@@ -2,12 +2,30 @@
 //! with other things on their two sides (strands or outlines over two different grounds).
 //! The caller takes the layer's own rims out.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::disallowed_macros,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::disallowed_methods,
+    clippy::too_many_lines,
+))]
+
 use super::raster::{Conn, Image, NOISE, dilate, length_px};
 use super::vocabulary::{DIRS, colour_lines, thin_lines};
 
 /// Per pixel, whether it belongs to a thin object a line centre puts above the objects on its
 /// two sides. Thin: no pixel farther than half the widest line (4 units) from its boundary,
 /// so nowhere wider than a line. A centre with one object on both sides is a gap in it.
+#[must_use]
 pub fn thin_objects(img: &Image, leaves: &[u32]) -> Vec<bool> {
     let (w, h) = (img.width, img.height);
     let n = leaves.iter().max().map_or(0, |&l| l as usize + 1);

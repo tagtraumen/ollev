@@ -1,5 +1,22 @@
 //! Thin-line pixels and the Chebyshev distance.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::disallowed_macros,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::cast_precision_loss,
+    clippy::disallowed_methods,
+    clippy::too_many_lines,
+))]
+
 use super::{DVec3, Image};
 
 /// Thin dark ridges: per pixel the most it is darker (the channels' mean) than both pixels
@@ -11,6 +28,7 @@ pub struct LinePixels {
 }
 
 /// [`LinePixels`] with the reaches `radii` of the ridge test.
+#[must_use]
 pub fn line_pixels_at(img: &Image, radii: &[isize]) -> LinePixels {
     let (w, h) = (img.width as isize, img.height as isize);
     let l = img.luminance();
@@ -41,6 +59,7 @@ pub fn line_pixels_at(img: &Image, radii: &[isize]) -> LinePixels {
 }
 
 /// The largest channel difference.
+#[must_use]
 pub fn cheb(a: DVec3, b: DVec3) -> f64 {
     (a - b).abs().max_element()
 }

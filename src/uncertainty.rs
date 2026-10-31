@@ -2,6 +2,18 @@
 //! match the picture. The objective counts only the residual beyond it ([`excess`]); it adds the
 //! noise, half an anti-aliased or blurred edge's step, and texture's grain, in quadrature.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::disallowed_macros,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+
 use crate::edges::SIGMA;
 use crate::translucency::raster::{Image, NOISE, di_zenzo, length_px};
 
@@ -36,6 +48,7 @@ pub struct Channel {
 
 impl Channel {
     #[cfg(test)]
+    #[must_use]
     pub fn of_image(img: &Image) -> Self {
         crate::progress::finish(async {
             Self::of_parts(edge_part(img).await, grain(img).await)
@@ -60,6 +73,7 @@ impl Channel {
 /// The texture's part of the channel: how far grain and a JPEG's quantization may move each
 /// pixel, as a colour distance.
 #[cfg(feature = "diagnostics")]
+#[must_use]
 pub fn grain_of(img: &Image) -> Vec<f32> {
     crate::progress::finish(grain(img))
 }
@@ -149,7 +163,7 @@ async fn texture_part(img: &Image, reach: usize) -> Vec<f32> {
         crate::progress::poll().await;
         let median = sliding_median(&levels, w, h, reach);
         for (t, m) in total.iter_mut().zip(&median) {
-            let s = GRAIN_RANGE * *m as f64 / 255.0 / LAPLACIAN_MEDIAN;
+            let s = GRAIN_RANGE * f64::from(*m) / 255.0 / LAPLACIAN_MEDIAN;
             *t += s * s;
         }
     }
@@ -162,6 +176,7 @@ pub const BINS: usize = 16 * 255 + 1;
 /// The median of `v` over the square of radius `r` around each pixel (cut by the frame), by a
 /// histogram slid along each row (Huang's): the window's count below the running median is
 /// kept as columns leave and enter.
+#[must_use]
 pub fn sliding_median(v: &[u16], w: usize, h: usize, r: usize) -> Vec<u16> {
     let mut out = vec![0u16; w * h];
     let mut hist = vec![0u32; BINS];
@@ -287,9 +302,12 @@ impl Spread {
     pub fn new(mut t: Vec<f32>) -> Self {
         t.sort_by(f32::total_cmp);
         let (mut sum, mut sum2) = (vec![0.], vec![0.]);
+        let (mut s, mut s2) = (0., 0.);
         for &v in &t {
-            sum.push(sum.last().unwrap() + v as f64);
-            sum2.push(sum2.last().unwrap() + (v as f64) * (v as f64));
+            s += f64::from(v);
+            s2 += f64::from(v) * f64::from(v);
+            sum.push(s);
+            sum2.push(s2);
         }
         Self {
             sorted: t,
@@ -299,15 +317,18 @@ impl Spread {
     }
 
     /// The squared residual beyond the tolerances of a deviation `d` at every pixel.
+    #[must_use]
     pub fn excess(&self, d: f64) -> f64 {
-        let k = self.sorted.partition_point(|&t| (t as f64) < d);
+        let k = self.sorted.partition_point(|&t| f64::from(t) < d);
         (k as f64 * d * d - 2. * d * self.sum[k] + self.sum2[k]).max(0.)
     }
 
+    #[must_use]
     pub fn len(&self) -> usize {
         self.sorted.len()
     }
 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.sorted.is_empty()
     }
@@ -318,6 +339,7 @@ pub(crate) const ANYTHING: f32 = 1.732_050_8;
 
 /// The squared residual of a pixel beyond its tolerance `t`: the part of a colour difference
 /// (given squared, `d2`) the picture does not account for.
+#[must_use]
 pub fn excess(d2: f32, t: f32) -> f32 {
     if t <= 0. {
         return d2;
@@ -327,6 +349,7 @@ pub fn excess(d2: f32, t: f32) -> f32 {
 }
 
 /// [`excess`] in doubles.
+#[must_use]
 pub fn excess64(d2: f64, t: f64) -> f64 {
     if t <= 0. {
         return d2;
@@ -401,8 +424,8 @@ mod tests {
                 for sy in 0..4 {
                     for sx in 0..4 {
                         let (u, v) = (
-                            x as f64 + (sx as f64 + 0.5) / 4.,
-                            y as f64 + (sy as f64 + 0.5) / 4.,
+                            x as f64 + (f64::from(sx) + 0.5) / 4.,
+                            y as f64 + (f64::from(sy) + 0.5) / 4.,
                         );
                         let r = (u - 0.45 * size as f64).hypot(v - 0.5 * size as f64);
                         cover += f64::from(u8::from(r < 0.25 * size as f64)) / 16.;
@@ -433,7 +456,7 @@ mod tests {
         let trace = |rgb: &[u8]| {
             let detail = crate::tracer::auto_detail(rgb, size, size);
             let options = plan::Options::default();
-            plan::trace(rgb, size, size, detail, options)
+            plan::trace(rgb, size, size, detail, options).unwrap()
         };
         let plain = trace(&disc(size, false));
         assert_eq!(plain.shapes.len(), 2, "the ground and the disc");
@@ -451,7 +474,7 @@ mod tests {
         let t = vec![0.1, 0.5, 0.2, 0.9];
         let s = Spread::new(t.clone());
         for d in [0.0, 0.15, 0.3, 0.7, 1.2] {
-            let direct: f64 = t.iter().map(|&t| excess64(d * d, t as f64)).sum();
+            let direct: f64 = t.iter().map(|&t| excess64(d * d, f64::from(t))).sum();
             assert!(
                 (s.excess(d) - direct).abs() < 1e-9,
                 "{d}: {} {direct}",

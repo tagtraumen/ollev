@@ -1,5 +1,22 @@
 //! The colours either side of a link and the relations they solve: the witnesses.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::disallowed_macros,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::disallowed_methods,
+    clippy::too_many_lines,
+))]
+
 use glam::{DVec2, DVec3};
 
 use super::{Chain, JUNCTION_GAP, Link, TOL, bez, bez_d1, hyp, max_of};
@@ -24,6 +41,7 @@ fn deviation(v: &[DVec3], r: DVec3) -> f64 {
 /// The colors of a chain's part near end `e`, oriented along the path leaving the chain by
 /// `e`: medians over the points `skip` to `skip + window` px from the end, as rows (left,
 /// right, and the centre of a ridge), with their median deviation and the points used.
+#[must_use]
 pub fn part_colours(ch: &Chain, e: usize, window: f64, skip: f64) -> (Vec<DVec3>, f64, Vec<bool>) {
     let last = ch.length;
     let d: Vec<f64> = if e == 1 {
@@ -52,6 +70,7 @@ pub fn part_colours(ch: &Chain, e: usize, window: f64, skip: f64) -> (Vec<DVec3>
 
 /// [`part_colours`] for the part a path enters by end `e`: oriented along the path, which
 /// runs into the chain by `e` (the opposite of leaving by it).
+#[must_use]
 pub fn entry_colours(ch: &Chain, e: usize, window: f64, skip: f64) -> (Vec<DVec3>, f64, Vec<bool>) {
     let (mut rows, dev, sel) = part_colours(ch, e, window, skip);
     rows.swap(0, 1);
@@ -287,6 +306,7 @@ pub fn line_witnesses(img: &Image, chains: &[Chain], links: &[Link]) -> Vec<Witn
 /// Places along one chain where both sides step: the medians of windows before and after,
 /// `skip` clear of the place, at a local maximum of the smaller side's change above twice
 /// the windows' spread (a gradual shading spreads them too). Solved as a self link.
+#[must_use]
 pub fn step_witnesses(ch: &Chain, window: f64, skip: f64) -> Vec<Witness> {
     let a = &ch.arc;
     if ch.length < 2.0 * (window + skip) + 2.0 * ch.unit {

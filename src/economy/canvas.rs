@@ -1,6 +1,19 @@
 //! The whole scene rendered over black as the economy last saw it, read in windows and patched
 //! where a step changes the scene, so a window's error needs no render of every shape over it.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::arithmetic_side_effects,
+    clippy::cast_precision_loss,
+    clippy::disallowed_macros,
+    clippy::float_cmp,
+))]
+
 use std::sync::{Mutex, PoisonError};
 
 use glam::Vec3;
@@ -16,12 +29,14 @@ impl Canvas {
     /// shape over that window renders it.
     pub(super) fn shown(&self, scene: &Scene, window: Window) -> Vec<Vec3> {
         let mut kept = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        if kept.as_ref().is_none_or(|(at, _)| *at != scene.changes()) {
-            let full = Window::full(scene.width, scene.height);
-            let pixels = scene.render(full, 0..scene.shapes.len(), [0.; 3]);
-            *kept = Some((scene.changes(), pixels));
-        }
-        let (_, pixels) = kept.as_ref().expect("just rendered");
+        let pixels = match &mut *kept {
+            Some((at, pixels)) if *at == scene.changes() => pixels,
+            kept => {
+                let full = Window::full(scene.width, scene.height);
+                let pixels = scene.render(full, 0..scene.shapes.len(), [0.; 3]);
+                &mut kept.insert((scene.changes(), pixels)).1
+            }
+        };
         window.pixels(scene.width).map(|i| pixels[i]).collect()
     }
 

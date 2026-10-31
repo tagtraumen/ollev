@@ -1,6 +1,17 @@
 //! The gap profiler, for the log: the longest stretches between two checkpoints, which bound
 //! how far a slice runs past its budget.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::cast_precision_loss,
+))]
+
 use std::panic::Location;
 use std::time::Duration;
 

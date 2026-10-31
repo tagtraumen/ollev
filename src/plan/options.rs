@@ -1,6 +1,15 @@
 //! What a level of the plan traces with.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::arithmetic_side_effects,
+    clippy::cast_precision_loss,
+    clippy::indexing_slicing,
+    clippy::too_many_lines,
+))]
 /// What varies between the picture's level and the levels beneath its peeled layers.
+
 #[derive(Clone, Copy, Debug)]
 pub struct Options {
     /// The families are proposed, gated and decided whole after the opaque trace of the first
@@ -16,6 +25,7 @@ pub struct Options {
 
 impl Options {
     /// A trace at the detail slider's `tolerance`.
+    #[must_use]
     pub fn new(tolerance: f64) -> Self {
         Self {
             acceptance: true,

@@ -2,11 +2,29 @@
 //! (under a real layer several do), read per pixel; ties go to the inner score times the
 //! pixels times `fresh` ([`Evidence::key`]).
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::disallowed_macros,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::disallowed_methods,
+    clippy::too_many_lines,
+))]
+
 use super::inner::{Class, InnerFit, InnerInputs};
 use super::raster::{Conn, DVec3, SHOW_THROUGH, dilate};
 
 /// The reach within which two images count as meeting: 3 px at 330 (outlines and
 /// anti-aliased rims lie between the images).
+#[must_use]
 pub fn reach(width: usize) -> usize {
     super::raster::length_px(width, 3.0)
 }
@@ -14,6 +32,7 @@ pub fn reach(width: usize) -> usize {
 /// Per pixel the counted material whose image the layer alone explains there, `None`
 /// elsewhere: an uncounted material is the counted one whose image is nearest, when within
 /// the show-through.
+#[must_use]
 pub fn material_labels(inp: &InnerInputs, fit: &InnerFit) -> Vec<Option<usize>> {
     let counted: Vec<usize> = fit.materials.iter().map(|m| m.0).collect();
     let to: Vec<Option<usize>> = (0..inp.bmean.len())
@@ -57,6 +76,7 @@ pub struct Contact {
 
 /// Per pair of counted materials the pixels of each one's image within `reach` of the
 /// other's.
+#[must_use]
 pub fn contact(inp: &InnerInputs, fit: &InnerFit, reach: usize) -> Contact {
     contact_of(&material_labels(inp, fit), inp.width, inp.height, reach)
 }
@@ -64,6 +84,7 @@ pub fn contact(inp: &InnerInputs, fit: &InnerFit, reach: usize) -> Contact {
 /// [`contact`] counting only the materials that continue out of the region: some of the
 /// image lies within `reach` of an outside pixel of the material's own colour, the beneath
 /// running on past the layer's edge. One pixel is enough, so the rule has no size.
+#[must_use]
 pub fn contact_continued(inp: &InnerInputs, fit: &InnerFit, reach: usize) -> Contact {
     let (w, h) = (inp.width, inp.height);
     let labels = continued_labels(
@@ -152,12 +173,14 @@ pub struct Evidence {
 impl Evidence {
     /// The order: the materials whose images meet, then the inner score times pixels times
     /// `fresh`.
+    #[must_use]
     pub fn key(&self) -> (usize, f64) {
         (self.contact.meeting, self.score_px * self.fresh)
     }
 }
 
 /// Indices of `ev` from the first-ranked family to the last (ties in their order).
+#[must_use]
 pub fn order(ev: &[Evidence]) -> Vec<usize> {
     let mut idx: Vec<usize> = (0..ev.len()).collect();
     idx.sort_by(|&a, &b| {

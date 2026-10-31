@@ -1,5 +1,22 @@
 //! The gradient models a node can be drawn with: linear, radial and multi-stop ramps.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::disallowed_macros,
+    clippy::disallowed_methods,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::cast_possible_wrap,
+    clippy::too_many_lines,
+))]
+
 use super::*;
 
 /// A color varying with the squared distance from a center: `color + slope * |p - center|^2`,
@@ -12,6 +29,7 @@ pub struct RadialFill {
 }
 
 impl RadialFill {
+    #[must_use]
     pub fn at(&self, p: DVec2) -> DVec3 {
         self.color + self.slope * p.distance_squared(self.center)
     }
@@ -28,6 +46,7 @@ pub struct LinearFill {
 }
 
 impl LinearFill {
+    #[must_use]
     pub fn at(&self, p: DVec2) -> DVec3 {
         self.color + self.slope * (p - self.origin).dot(self.axis)
     }
@@ -52,6 +71,7 @@ pub struct RampFill {
 }
 
 impl RampFill {
+    #[must_use]
     pub fn at(&self, p: DVec2) -> DVec3 {
         let p = p.as_vec2();
         self.gradient
@@ -144,7 +164,7 @@ impl RampFill {
     fn interior(&self, hierarchy: &Hierarchy, leaf: u32, most: u32) -> (u32, f64) {
         let (w, n) = (hierarchy.width(), hierarchy.colors.len());
         let h = n / w;
-        let limit = 2. * crate::translucency::NOISE as f64;
+        let limit = 2. * f64::from(crate::translucency::NOISE);
         let inside = |i: usize| {
             let (x, y) = (i % w, i / w);
             x > 0
@@ -186,6 +206,7 @@ impl RampFill {
     }
 
     /// The ramp with the errors of the leaves of `node` around it tabled.
+    #[expect(clippy::large_types_passed_by_value, reason = "moved into the ramp")]
     fn tabled(hierarchy: &Hierarchy, node: u32, from: Vec3, gradient: Gradient) -> Self {
         let mut ramp = Self {
             from,
@@ -221,7 +242,7 @@ impl RampFill {
         knots.extend(
             stops
                 .iter()
-                .map(|(o, c)| (o as f64, glam::Vec4::from(c).truncate().as_dvec3())),
+                .map(|(o, c)| (f64::from(o), glam::Vec4::from(c).truncate().as_dvec3())),
         );
         knots.push((1., Vec3::from(self.gradient.to_rgb()).as_dvec3()));
         let flat = |color: DVec3| LinearFill {
@@ -286,6 +307,7 @@ impl RampFill {
 
     /// The squared error of the pixels of `node` around the ramp: from the table where the
     /// node lies within the one the ramp was fitted to, leaf by leaf otherwise.
+    #[must_use]
     pub fn sse(&self, hierarchy: &Hierarchy, node: u32) -> f64 {
         let (lo, hi) = hierarchy.leaf_ranks(node);
         let top = self.lo + self.errors.len() as u32 - 1;

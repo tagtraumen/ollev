@@ -1,5 +1,17 @@
 //! The plan: a dynamic program over the region tree that decides every shape before fitting.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::disallowed_macros,
+    clippy::disallowed_methods,
+    clippy::indexing_slicing,
+    clippy::too_many_lines,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+
 use super::*;
 
 /// A node the plan draws, in the color of what it shows, on top of the drawn node `parent`
@@ -71,7 +83,7 @@ impl<'a> Planner<'a> {
             .nodes
             .iter()
             .map(|n| {
-                (n.perimeter as f64 / PIXELS_PER_SEGMENT + n.frame as f64 / FRAME_PER_SEGMENT)
+                (f64::from(n.perimeter) / PIXELS_PER_SEGMENT + f64::from(n.frame) / FRAME_PER_SEGMENT)
                     .max(MIN_SEGMENTS)
             })
             .collect();
@@ -294,19 +306,22 @@ impl<'a> Planner<'a> {
             })
             .map(Model::Radial);
         // The options' costs, the node's own outline aside
-        let mut options = match children {
+        // the flat fill first, always an option
+        let (first, mut options) = match children {
             None => {
-                let mut options = vec![(self.beyond(node, self.err(node).sse()), mean)];
+                let first = (self.beyond(node, self.err(node).sse()), mean);
+                let mut options = Vec::new();
                 for m in [&linear, &radial].into_iter().flatten() {
                     options.push((gradient + self.sse_about(node, m), m.clone()));
                 }
-                options
+                (first, options)
             }
             Some([a, b]) => {
                 // A part's gradient taken over costs the gradient, like the node's own
                 let (model_a, model_b) = (&self.model[a as usize], &self.model[b as usize]);
                 let paint = |m: &Model| if m.painted() { gradient } else { 0. };
-                let mut options = vec![(self.parts(a, b, &mean), mean)];
+                let first = (self.parts(a, b, &mean), mean);
+                let mut options = Vec::new();
                 for (part, other, model) in [(a, b, model_a), (b, a, model_b)] {
                     if !matches!(model, Model::Ramp(_)) {
                         options.push((
@@ -318,10 +333,10 @@ impl<'a> Planner<'a> {
                 for m in [&linear, &radial].into_iter().flatten() {
                     options.push((gradient + self.parts(a, b, m), m.clone()));
                 }
-                options
+                (first, options)
             }
         };
-        let cheapest = options.iter().map(|o| o.0).fold(f64::INFINITY, f64::min);
+        let cheapest = options.iter().map(|o| o.0).fold(first.0, f64::min);
         if let Some(f) = fitted
             && gradient + stop < cheapest
             && let Some(ramp) = self.ramps[node as usize]
@@ -356,7 +371,7 @@ impl<'a> Planner<'a> {
         // Where the circle shades the node, the radial as painted (linear in the radius,
         // stretched into an ellipse where that fits), its shading paying within the leaves as
         // the circle's does
-        let cheapest = options.iter().map(|o| o.0).fold(f64::INFINITY, f64::min);
+        let cheapest = options.iter().map(|o| o.0).fold(first.0, f64::min);
         if let Some(Model::Radial(f)) = &radial
             && gradient < cheapest
             && let Some(ellipse) = self.ellipses[node as usize]
@@ -385,17 +400,21 @@ impl<'a> Planner<'a> {
                 options.push((paint + rest, m));
             }
         }
-        let (cost, model) = options
-            .into_iter()
-            .min_by(|x, y| x.0.total_cmp(&y.0))
-            .expect("an option");
+        // the first of the cheapest
+        let (cost, model) = options.into_iter().fold(first, |best, option| {
+            if option.0.total_cmp(&best.0).is_lt() {
+                option
+            } else {
+                best
+            }
+        });
         (own + cost, model)
     }
 
     /// Chooses the nodes to draw: the `background` always, and every node cheaper drawn than
     /// left to its nearest drawn ancestor, each in the mean colour of what it shows. Parents
     /// come before their children, larger siblings first.
-    pub(super) async fn plan(&mut self, background: u32) -> Vec<Drawn> {
+    pub(super) async fn plan(&mut self, background: u32) -> Result<Vec<Drawn>, TraceError> {
         let root = self.hierarchy.root;
         let mut plan = Vec::new();
         {
@@ -485,7 +504,7 @@ impl<'a> Planner<'a> {
         // image lies on the background without being part of it)
         let mut shown: Vec<Stats> = plan.iter().map(|d| *self.stats(d.node)).collect();
         for k in (1..plan.len()).rev() {
-            let parent = plan[k].parent.expect("only the background has no parent");
+            let parent = plan[k].parent.invariant("a parent for all but the background")?;
             if self.hierarchy.within(plan[k].node, plan[parent].node) {
                 shown[parent] = shown[parent].sub(self.stats(plan[k].node));
             }
@@ -496,7 +515,7 @@ impl<'a> Planner<'a> {
             }
         }
 
-        plan
+        Ok(plan)
     }
 }
 
@@ -504,7 +523,7 @@ impl<'a> Planner<'a> {
 fn mean_squares(hierarchy: &Hierarchy, t: &[f32]) -> Vec<f64> {
     let mut sums = vec![0f64; hierarchy.nodes.len()];
     for (i, &t) in t.iter().enumerate() {
-        sums[hierarchy.leaf(i) as usize] += (t * t) as f64;
+        sums[hierarchy.leaf(i) as usize] += f64::from(t * t);
     }
     // Children come before their parents in the node order
     for node in 0..hierarchy.nodes.len() {

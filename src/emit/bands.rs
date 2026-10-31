@@ -5,6 +5,14 @@
 //! (a terminator) or one blurred stroke (a ridge) where it is one, 4 and 8 bands of equal colour
 //! change under a blur of half the narrowest, and 32 exact bands.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::indexing_slicing,
+    clippy::too_many_lines,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+
 use std::fmt::Write;
 
 use crate::model::{Geometry, Object};
@@ -66,7 +74,8 @@ pub fn write(
                 "M{:.2} {:.2}L{}L{:.2} {:.2}",
                 start.x,
                 start.y,
-                &open[1..],
+                // the curves' own move-to dropped (none for no curves)
+                open.strip_prefix('M').unwrap_or(&open),
                 end.x,
                 end.y
             ),

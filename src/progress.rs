@@ -3,6 +3,13 @@
 //! checkpoint between two polls; a callback that breaks leaves the trace suspended there, to be
 //! resumed by the next [`drive`] (or dropped, which cancels it). No executor and no waker.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_precision_loss,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+
 use std::cell::RefCell;
 use std::future::Future;
 use std::ops::ControlFlow;
@@ -12,6 +19,7 @@ use std::pin::Pin;
 use std::task::Poll;
 
 use crate::Scene;
+use crate::error::{Invariant, TraceError};
 use crate::model::{Fidelity, Model};
 
 #[cfg(feature = "diagnostics")]
@@ -199,7 +207,7 @@ pub(crate) fn drive<F: Future + ?Sized>(
             }
             return Poll::Ready(value);
         }
-        assert!(
+        debug_assert!(
             place.track.asked,
             "a trace suspends only at its checkpoints"
         );
@@ -212,11 +220,14 @@ pub(crate) fn drive<F: Future + ?Sized>(
 /// Runs `trace` to its end in one slice, hearing nothing.
 pub fn finish<F: Future>(trace: F) -> F::Output {
     let mut trace = std::pin::pin!(trace);
-    match drive(trace.as_mut(), &mut Place::default(), &mut |_| {
-        ControlFlow::Continue(())
-    }) {
-        Poll::Ready(value) => value,
-        Poll::Pending => unreachable!("a callback that never breaks"),
+    let mut place = Place::default();
+    // the callback never breaks, so the first drive is the last
+    loop {
+        if let Poll::Ready(value) =
+            drive(trace.as_mut(), &mut place, &mut |_| ControlFlow::Continue(()))
+        {
+            return value;
+        }
     }
 }
 
@@ -284,20 +295,25 @@ impl Future for Ask {
 pub(crate) struct Show {
     ask: Ask,
     scene: Option<Scene>,
-    show: bool,
+    /// Whether the host sees the scene.
+    visible: bool,
 }
 
 impl Future for Show {
-    type Output = Scene;
+    type Output = Result<Scene, TraceError>;
 
-    fn poll(mut self: Pin<&mut Self>, _: &mut std::task::Context) -> Poll<Scene> {
-        let Self { ask, scene, show } = &mut *self;
-        let mut shown = if *show { scene.take() } else { None };
+    fn poll(mut self: Pin<&mut Self>, _: &mut std::task::Context) -> Poll<Self::Output> {
+        let Self {
+            ask,
+            scene,
+            visible,
+        } = &mut *self;
+        let mut shown = if *visible { scene.take() } else { None };
         let poll = ask.ask(&mut shown);
         if shown.is_some() {
             *scene = shown;
         }
-        poll.map(|()| scene.take().expect("the scene shown"))
+        poll.map(|()| scene.take().invariant("the scene shown handed back"))
     }
 }
 
@@ -400,6 +416,6 @@ pub(crate) fn scene(scene: Scene, show: bool) -> Show {
     Show {
         ask: ask(Set::Nothing),
         scene: Some(scene),
-        show,
+        visible: show,
     }
 }

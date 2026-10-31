@@ -1,5 +1,22 @@
 //! Filters as scipy computes them: correlation, Gaussian, Sobel, interpolation.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::disallowed_macros,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::disallowed_methods,
+    clippy::too_many_lines,
+))]
+
 use super::{DVec3, Image, np_sum};
 
 /// scipy's reflect extension ("d c b a | a b c d") of an index into a line of `n`.
@@ -17,6 +34,7 @@ pub(super) fn reflect(mut i: isize, n: isize) -> usize {
 
 /// scipy's `correlate1d` in reflect mode along `axis` (0 the rows' direction, y; 1 x) of
 /// a `width` x `height` plane, with the kernel's symmetry folded as `NI_Correlate1D`.
+#[must_use]
 pub fn correlate1d(
     src: &[f64],
     width: usize,
@@ -103,9 +121,19 @@ fn line<'a>(
     }
 }
 
+/// The derivative of the Gaussian a filter takes along an axis: scipy's orders 0 and 1.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Order {
+    /// The Gaussian itself, order 0.
+    Smooth,
+    /// Its first derivative, order 1.
+    Slope,
+}
+
 /// scipy's `_gaussian_kernel1d(sigma, order, radius)` reversed, as `gaussian_filter1d`
-/// correlates with it; orders 0 and 1.
-pub fn gaussian_weights(sigma: f64, order: usize) -> Vec<f64> {
+/// correlates with it.
+#[must_use]
+pub fn gaussian_weights(sigma: f64, order: Order) -> Vec<f64> {
     let radius = (4.0 * sigma + 0.5) as isize;
     let sigma2 = sigma * sigma;
     let phi: Vec<f64> = (-radius..=radius)
@@ -114,30 +142,31 @@ pub fn gaussian_weights(sigma: f64, order: usize) -> Vec<f64> {
     let total = np_sum(&phi);
     let phi: Vec<f64> = phi.iter().map(|p| p / total).collect();
     let kernel: Vec<f64> = match order {
-        0 => phi,
-        1 => (-radius..=radius)
+        Order::Smooth => phi,
+        Order::Slope => (-radius..=radius)
             .zip(&phi)
             .map(|(x, p)| (0.0 + x as f64 * (-1.0 / sigma2)) * p)
             .collect(),
-        _ => unimplemented!("Gaussian derivatives above the first"),
     };
     kernel.into_iter().rev().collect()
 }
 
 /// scipy's `gaussian_filter(plane, sigma, order=(order_y, order_x))`: along y, then x.
+#[must_use]
 pub fn gaussian_filter(
     src: &[f64],
     width: usize,
     height: usize,
     sigma: f64,
-    order_y: usize,
-    order_x: usize,
+    order_y: Order,
+    order_x: Order,
 ) -> Vec<f64> {
     let a = correlate1d(src, width, height, 0, &gaussian_weights(sigma, order_y));
     correlate1d(&a, width, height, 1, &gaussian_weights(sigma, order_x))
 }
 
 /// scipy's `sobel(plane, axis)`.
+#[must_use]
 pub fn sobel(src: &[f64], width: usize, height: usize, axis: usize) -> Vec<f64> {
     let a = correlate1d(src, width, height, axis, &[-1.0, 0.0, 1.0]);
     correlate1d(&a, width, height, 1 - axis, &[1.0, 2.0, 1.0])
@@ -145,6 +174,7 @@ pub fn sobel(src: &[f64], width: usize, height: usize, axis: usize) -> Vec<f64> 
 
 /// The gradient magnitude: per channel the Sobel gradient's length, the largest
 /// over the channels, over 8 (a unit step gives 8).
+#[must_use]
 pub fn gradient_magnitude(img: &Image) -> Vec<f64> {
     let (w, h) = (img.width, img.height);
     let mut g = vec![0.0f64; img.len()];
@@ -161,6 +191,7 @@ pub fn gradient_magnitude(img: &Image) -> Vec<f64> {
 
 /// Di Zenzo's color gradient at `sigma`: the magnitude and the direction across the edge
 /// in radians.
+#[must_use]
 pub fn di_zenzo(img: &Image, sigma: f64) -> (Vec<f64>, Vec<f64>) {
     let key = (sigma.to_bits(), img.width, img.height, digest(&img.px));
     (*remembered(&ZENZO, key, || di_zenzo_of(img, sigma))).clone()
@@ -231,8 +262,8 @@ fn di_zenzo_of(img: &Image, sigma: f64) -> (Vec<f64>, Vec<f64>) {
     let (mut j0, mut j1, mut j2) = (vec![0.0f64; n], vec![0.0f64; n], vec![0.0f64; n]);
     for c in 0..3 {
         let ch = img.channel(c);
-        let gx = gaussian_filter(&ch, w, h, sigma, 0, 1);
-        let gy = gaussian_filter(&ch, w, h, sigma, 1, 0);
+        let gx = gaussian_filter(&ch, w, h, sigma, Order::Smooth, Order::Slope);
+        let gy = gaussian_filter(&ch, w, h, sigma, Order::Slope, Order::Smooth);
         for i in 0..n {
             j0[i] += gx[i] * gx[i];
             j1[i] += gy[i] * gy[i];
@@ -243,7 +274,7 @@ fn di_zenzo_of(img: &Image, sigma: f64) -> (Vec<f64>, Vec<f64>) {
     let mut theta = vec![0.0; n];
     for i in 0..n {
         let (tr, df) = (j0[i] + j1[i], j0[i] - j1[i]);
-        let lam = 0.5 * (tr + (df * df + 4.0 * (j2[i] * j2[i])).sqrt());
+        let lam = f64::midpoint(tr, (df * df + 4.0 * (j2[i] * j2[i])).sqrt());
         mag[i] = lam.max(0.0).sqrt();
         theta[i] = 0.5 * (2.0 * j2[i]).atan2(df);
     }
@@ -262,6 +293,7 @@ pub(super) fn axis_weights(cc: f64, len: usize) -> ([usize; 2], [f64; 2]) {
 }
 
 /// scipy's `map_coordinates(plane, [[y], [x]], order=1, mode="nearest")`.
+#[must_use]
 pub fn map1(plane: &[f64], width: usize, height: usize, x: f64, y: f64) -> f64 {
     let (iy, wy) = axis_weights(y, height);
     let (ix, wx) = axis_weights(x, width);

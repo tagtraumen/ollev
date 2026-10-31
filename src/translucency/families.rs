@@ -2,6 +2,24 @@
 //! mask, the pinned relation as `k` and color, decided by the plan's objective. They are read
 //! after the opaque trace, whose shapes serve as units.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::disallowed_macros,
+    clippy::disallowed_methods,
+    clippy::float_cmp,
+    clippy::indexing_slicing,
+    clippy::too_many_lines,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::cast_possible_wrap,
+))]
+
 use glam::Vec3;
 
 use super::boundary::{continuity as continuous, open_beyond};
@@ -206,16 +224,16 @@ pub async fn ranked_candidates(
     // pinned family: shapes, not leaves, which blur breaks into thin slivers
     let shapes_thin = std::sync::OnceLock::new();
     let shapes_thin = async || {
-        if shapes_thin.get().is_none() {
-            let labels = shape_labels(scene, width, height);
-            crate::progress::poll().await;
-            let (shapes, _mixed) = super::mixed::clean_labels(&labels, &img, width, height);
-            crate::progress::poll().await;
-            let thin = super::above::thin_objects(&img, &shapes);
-            crate::progress::poll().await;
-            let _ = shapes_thin.set((shapes, thin));
+        if let Some(found) = shapes_thin.get() {
+            return found;
         }
-        shapes_thin.get().expect("set above")
+        let labels = shape_labels(scene, width, height);
+        crate::progress::poll().await;
+        let (shapes, _mixed) = super::mixed::clean_labels(&labels, &img, width, height);
+        crate::progress::poll().await;
+        let thin = super::above::thin_objects(&img, &shapes);
+        crate::progress::poll().await;
+        shapes_thin.get_or_init(|| (shapes, thin))
     };
     let reach = rank::reach(width);
     let top: Vec<(usize, &Family)> = families.iter().take(FAMILIES).enumerate().collect();
@@ -539,6 +557,7 @@ pub async fn ranked_candidates(
 
 /// Whether two candidates are one relation: k at one step of the pin's grid, the colour
 /// within the matcher's tolerance.
+#[must_use]
 pub fn same_relation(a: &Candidate, b: &Candidate) -> bool {
     let step = (inner::pin_grid()[1] - inner::pin_grid()[0]) as f32;
     (a.k - b.k).abs() < step / 2.
@@ -565,6 +584,7 @@ fn outside_of<'a>(
 /// How far `fit` moves its main material's image (widest channel) from where the growth
 /// relation `k`, `c` maps it: the pin should choose along that relation's line of solutions,
 /// a move past the show-through is a different reading. Infinite where it counts no material.
+#[must_use]
 pub fn line_apart(
     inp: &InnerInputs,
     fit: &inner::InnerFit,

@@ -2,6 +2,16 @@
 //! is linear in each knot's alpha and premultiplied colour, so for fixed geometry and stops it
 //! is one least squares solve, then held to `0 <= a <= 1` and to colours that can be painted.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::disallowed_macros,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+
 use crate::render::{Gradient, Stops};
 use glam::{Vec2, Vec3};
 
@@ -105,7 +115,7 @@ fn solve(
         for s in samples {
             let (k, w0, w1) = hat(offsets, gradient.t(s.p));
             let (target, below) = (s.target.as_dvec3(), s.below.as_dvec3());
-            let ws = [(k, w0 as f64), (k + 1, w1 as f64)];
+            let ws = [(k, f64::from(w0)), (k + 1, f64::from(w1))];
             match alphas {
                 // target - below (1 - A) = P, A known
                 Some(a) => {
@@ -227,7 +237,7 @@ pub fn with_alpha(samples: &[Over], fill: &Fill, stop_cost: f32, clear_end: bool
     Some(Fill {
         color: colours[0],
         gradient: Some(out),
-        opacity: (fill.opacity as f64 * opacity) as f32,
+        opacity: (f64::from(fill.opacity) * opacity) as f32,
     })
 }
 

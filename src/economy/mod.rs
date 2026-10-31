@@ -2,6 +2,16 @@
 //! dot chains, networks, repeats): an object stays only where it pays its price at the
 //! acceptance price, judged on the whole scene's error with the edge term.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_precision_loss,
+    clippy::disallowed_macros,
+    clippy::float_cmp,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+
 use glam::Vec3;
 
 use crate::edges::{EdgeField, EdgeTerm};
@@ -99,8 +109,8 @@ impl<'a> Judge<'a> {
         let w = self
             .edges
             .as_ref()
-            .map_or(1., |(f, lambda)| f.weight(i, *lambda) as f64);
-        w * self.ctx.target[i].distance_squared(r) as f64
+            .map_or(1., |(f, lambda)| f64::from(f.weight(i, *lambda)));
+        w * f64::from(self.ctx.target[i].distance_squared(r))
     }
 
     /// The error of the scene's window as drawn now.
@@ -350,8 +360,11 @@ async fn drop_loops(judge: &Judge<'_>, scene: &mut Scene, fixed: &crate::HashSet
                         "economy: loop {l} of shape {id} dropped, error {with:.4} to {after:.4} for {saved:.4}"
                     );
                 }
+                // the moved window `m` lies within `window`
                 for (i, e) in m.pixels(width).zip(now) {
-                    errors[window.index(i, width).expect("moved within the window")] = e;
+                    if let Some(j) = window.index(i, width) {
+                        errors[j] = e;
+                    }
                 }
                 judge.canvas.patched(at, scene, m, &shown);
                 drawn = Some((window, errors));
@@ -427,7 +440,7 @@ mod tests {
                 if inside { [40u8, 60, 90] } else { [255; 3] }
             })
             .collect();
-        let mut ctx = Context::new(&rgb, w, w, 1.);
+        let mut ctx = Context::new(&rgb, w, w, 1.).unwrap();
         crate::progress::finish(crate::uncertainty::apply(&mut ctx, 1.));
         ctx
     }

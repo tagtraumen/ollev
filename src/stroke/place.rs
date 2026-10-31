@@ -1,5 +1,22 @@
 //! A proposal fitted in the scene: each cap, the join, the thick remainder.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::disallowed_macros,
+    clippy::indexing_slicing,
+    clippy::too_many_lines,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::disallowed_methods,
+))]
+
 use super::*;
 
 /// What [`fit_at`] fits: the error, the strokes with their fills, the thick remainder of a
@@ -98,8 +115,8 @@ pub(super) fn thick_remainder(
     let left = |i: usize| -> bool {
         let (x, y) = (i % ctx.width, i / ctx.width);
         let (bx, by) = (
-            x as i64 - top_left.x as i64 + 1,
-            y as i64 - top_left.y as i64 + 1,
+            x as i64 - i64::from(top_left.x) + 1,
+            y as i64 - i64::from(top_left.y) + 1,
         );
         bx >= 0
             && by >= 0
@@ -260,7 +277,7 @@ pub(super) async fn fit_proposal(
             (!candidate.outline().is_empty()).then_some((candidate, 1.))
         })
         .collect();
-    let (mut error, mut stroke) = fit_screened(cost, origin, candidates, |e, _| e as f64).await?;
+    let (mut error, mut stroke) = fit_screened(cost, origin, candidates, |e, _| f64::from(e)).await?;
     crate::progress::poll().await;
     let cap_moves = moves(stroke.cap);
     if stroke.corners.iter().any(|&c| c) {
@@ -284,7 +301,7 @@ pub(super) async fn fit_proposal(
     // The centerline is simplified like an outline, kept while the error rises by less than
     // the segments saved cost, from two starts per tolerance since the optimizer's basin is
     // narrow: a fresh fit of the crossings, and the current centerline simplified and polished
-    let total = |e: f32, segments: usize| e as f64 + segments as f64 * ctx.segment_cost;
+    let total = |e: f32, segments: usize| f64::from(e) + segments as f64 * ctx.segment_cost;
     for tolerance in SIMPLIFY_TOLERANCES {
         crate::progress::poll().await;
         let mut candidates: Vec<Stroke> = Vec::new();

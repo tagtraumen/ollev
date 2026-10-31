@@ -2,6 +2,24 @@
 //! opaque lies over the layer, though the layer runs on beneath, so the region's outline is
 //! continued across those parts.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::disallowed_macros,
+    clippy::float_cmp,
+    clippy::indexing_slicing,
+    clippy::too_many_lines,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::disallowed_methods,
+))]
+
 use super::completion::{
     End, V2, add, components, contour_ends, cross, dot, mul, norm, pair_ends, sub,
 };
@@ -30,6 +48,7 @@ pub struct Report {
 /// The region carried under `parts`: its contour ends at the parts ([`contour_ends`], and with
 /// `lines` [`junction_ends`]) paired across a part and joined by tangent cubics as barriers; a
 /// piece they cut off, bounded by counterpart curves and the region alone, joins the extent.
+#[must_use]
 pub fn carry_under(
     region: &[bool],
     parts: &[bool],
@@ -74,7 +93,7 @@ pub fn carry_under(
         .iter()
         .map(|&r| if r { DVec3::ONE } else { DVec3::ZERO })
         .collect();
-    let label: Vec<u32> = region.iter().map(|&r| r as u32).collect();
+    let label: Vec<u32> = region.iter().map(|&r| u32::from(r)).collect();
     let (mut ends, _) = contour_ends(&picture, &label, &parts, w, h);
     if let Some((lines, objects)) = lines {
         let (part_of, _) = components(&parts, w, h);
@@ -160,7 +179,7 @@ pub fn carry_under(
             continue;
         };
         links.push((a.min(b), a.max(b)));
-        curve_px.push(Vec::new());
+        let mut px = Vec::new();
         let eval = |t: f64| -> V2 {
             let u = 1.0 - t;
             [
@@ -182,13 +201,13 @@ pub fn carry_under(
                 let i = y as usize * w + x as usize;
                 closed[i] = true;
                 if barrier[i] {
-                    curve_px.last_mut().unwrap().push(i);
+                    px.push(i);
                 } else if !parts[i] {
                     // the pairing draws a sample outside the parts onto the part pixels
                     // beside it (see pair_ends): those are this curve's too
                     for j in neighbours4(i, w, h) {
                         if barrier[j] {
-                            curve_px.last_mut().unwrap().push(j);
+                            px.push(j);
                         }
                     }
                 }
@@ -206,10 +225,11 @@ pub fn carry_under(
                 closed[i] = true;
                 if parts[i] {
                     barrier[i] = true;
-                    curve_px.last_mut().unwrap().push(i);
+                    px.push(i);
                 }
             }
         }
+        curve_px.push(px);
     }
     let used = |p: [f64; 2]| report.curves.iter().any(|c| (c[0] == p) || (c[3] == p));
     let mut starts: Vec<[f64; 2]> = Vec::new();
@@ -241,19 +261,19 @@ pub fn carry_under(
             starts.push(e.p);
             let a = piece_at(e.p).unwrap_or(b);
             links.push((a.min(b), a.max(b)));
-            curve_px.push(Vec::new());
-            for i in ray {
+            for &i in &ray {
                 barrier[i] = true;
-                curve_px.last_mut().unwrap().push(i);
             }
+            let mut px = ray;
             // and the ray sealed to the region behind its end, as the curves are
             for i in behind(e.p, mul(e.d, -1.0)) {
                 closed[i] = true;
                 if parts[i] {
                     barrier[i] = true;
-                    curve_px.last_mut().unwrap().push(i);
+                    px.push(i);
                 }
             }
+            curve_px.push(px);
         }
     }
     // the curves' ends, where a cut-off piece meets the region's outline: the pixels of the
@@ -385,6 +405,7 @@ pub fn carry_under(
 /// The region's contour ends where the grain line outside it changes from X to Y: if the X/Y
 /// boundary continues X's stretch (chords over the reach), X occludes and Y's stretch ends
 /// there, and conversely; neither collinear is the region's own corner, no end.
+#[must_use]
 pub fn junction_ends(
     region: &[bool],
     lines: &[u32],

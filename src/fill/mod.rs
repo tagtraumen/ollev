@@ -2,6 +2,23 @@
 //! gradient where that removes enough of the error to be worth one more thing to describe,
 //! with stops between its ends where each removes enough more.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::disallowed_macros,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+#![cfg_attr(
+    not(feature = "diagnostics"),
+    expect(
+        clippy::large_types_passed_by_value,
+        reason = "panic ratchet: remove a lint once the module is clean of it"
+    )
+)]
+
 use crate::render::{Gradient, MAX_STOPS, Stops};
 use glam::{DVec3, Vec2, Vec3};
 
@@ -45,6 +62,7 @@ pub struct Costs {
 
 impl Costs {
     /// The costs at `segment_cost` per segment.
+    #[must_use]
     pub fn at(segment_cost: f64) -> Self {
         Self {
             gradient: (GRADIENT_SEGMENTS * segment_cost) as f32,
@@ -55,6 +73,7 @@ impl Costs {
     }
 
     /// What `fill` costs on top of one color.
+    #[must_use]
     pub fn of(&self, fill: &Fill) -> f32 {
         let Some(g) = &fill.gradient else {
             return 0.;
@@ -74,13 +93,15 @@ impl Costs {
 }
 
 /// The segments `fill` costs on top of one color, see [`Costs`].
+#[must_use]
 pub fn cost_segments(fill: &Fill) -> f64 {
-    Costs::at(1.).of(fill) as f64
+    f64::from(Costs::at(1.).of(fill))
 }
 
 /// How deep a rim to leave out of a fit, given the shape's pixel count per depth (the last
 /// index for those beyond [`RIM`]): as deep as [`RIM`] while [`RIM_SHARE`] of the pixels
 /// remain, one pixel at least.
+#[must_use]
 pub fn erosion(counts: &[usize]) -> usize {
     let total = counts.iter().sum::<usize>() as f32;
     (1..=RIM)
@@ -92,6 +113,7 @@ pub fn erosion(counts: &[usize]) -> usize {
 /// The fill for `samples` (pixel centers and colors) and its error over them: `solid` unless a
 /// linear or radial gradient, with paying stops and focus, lowers the error (beyond `tolerance`)
 /// by more than `costs`. A gradient spans `extent`, the whole shape's pixels (empty: samples).
+#[must_use]
 pub fn fit(
     samples: &[(Vec2, Vec3)],
     tolerance: &[f32],
@@ -156,6 +178,7 @@ pub fn fit(
 
 /// The least squares radial gradient fitting `samples`, its centre searched from `start` and
 /// its radius where the colours stop changing, spanning `extent`.
+#[must_use]
 pub fn concentric(samples: &[(Vec2, Vec3)], start: Vec2, extent: &[Vec2]) -> Option<Fill> {
     if samples.len() < 4 {
         return None;
@@ -243,7 +266,7 @@ fn linear(samples: &[(Vec2, Vec3)], centroid: Vec2, mean: Vec3, extent: &[Vec2])
     } else if b.abs() < 1e-12 {
         Vec2::Y
     } else {
-        let top = 0.5 * (a + c) + (0.25 * (a - c).powi(2) + b * b).sqrt();
+        let top = f32::midpoint(a, c) + (0.25 * (a - c).powi(2) + b * b).sqrt();
         Vec2::new(b, top - a).normalize()
     };
     let slope = gx * axis.x + gy * axis.y;

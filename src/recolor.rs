@@ -2,8 +2,20 @@
 //! (see [`crate::fill::fit`]), or is removed where the shapes below show them about as well
 //! for less than its segments and fill cost.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::indexing_slicing,
+    clippy::too_many_lines,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+
 use glam::{Vec2, Vec3};
 
+use crate::error::{TraceError, area, filled, with_capacity};
 use crate::hierarchy::Stats;
 use crate::{Context, Raster, Scene};
 
@@ -25,17 +37,17 @@ fn coverage<'a>(scene: &'a Scene, clipped: &'a [Option<Raster>], k: usize) -> &'
 
 /// Fills every shape, from the top down, with what the pixels it shows ask for, or removes it
 /// where the shapes below show them about as well for less than it costs.
-pub async fn recolor(ctx: &Context, scene: &mut Scene) {
+pub async fn recolor(ctx: &Context, scene: &mut Scene) -> Result<(), TraceError> {
     let (width, height) = (ctx.width, ctx.height);
     // A clipped shape's coverage times its clip's, the clip coming before it
-    let mut clipped: Vec<Option<Raster>> = Vec::with_capacity(scene.shapes.len());
+    let mut clipped: Vec<Option<Raster>> = with_capacity(scene.shapes.len())?;
     for shape in &scene.shapes {
-        let own = shape.clip.map(|clip| {
-            let clip = coverage(scene, &clipped, scene.position(clip));
+        let own = shape.clip.map(|clip| -> Result<Raster, TraceError> {
+            let clip = coverage(scene, &clipped, scene.position(clip)?);
             let r = shape.raster();
             let w = (r.x0 + r.w).min(width).saturating_sub(r.x0);
             let h = (r.y0 + r.h).min(height).saturating_sub(r.y0);
-            Raster {
+            Ok(Raster {
                 x0: r.x0,
                 y0: r.y0,
                 w,
@@ -43,14 +55,14 @@ pub async fn recolor(ctx: &Context, scene: &mut Scene) {
                 values: in_image(r, width, height)
                     .map(|(i, v)| v * clip.at(i, width))
                     .collect(),
-            }
+            })
         });
-        clipped.push(own);
+        clipped.push(own.transpose()?);
     }
     let target = |i: usize| ctx.target[i].as_dvec3();
     // The coverage of the kept shapes above the one at hand, per pixel
-    let mut above = vec![0f32; width * height];
-    let mut keep = vec![true; scene.shapes.len()];
+    let mut above = filled(0f32, area(width, height, 1)?)?;
+    let mut keep = filled(true, scene.shapes.len())?;
     for k in (0..scene.shapes.len()).rev() {
         crate::progress::poll().await;
         // Pixels the shape shows, and those it shows without anti-aliasing, which give the color
@@ -144,7 +156,7 @@ pub async fn recolor(ctx: &Context, scene: &mut Scene) {
             };
             let error = |i: usize, c: Vec3| {
                 let d2 = ctx.distance_squared(ctx.target[i], c);
-                crate::uncertainty::excess(d2, ctx.tolerance_at(i)) as f64
+                f64::from(crate::uncertainty::excess(d2, ctx.tolerance_at(i)))
             };
             let saving: f64 = shown
                 .iter()
@@ -191,6 +203,7 @@ pub async fn recolor(ctx: &Context, scene: &mut Scene) {
     if keep.iter().any(|&k| !k) {
         scene.change();
     }
+    Ok(())
 }
 
 /// Per pixel of the box `[x0, y0, x1, y1)`, how many squares about it of radius 0 to `rim`

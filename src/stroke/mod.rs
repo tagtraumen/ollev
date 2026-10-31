@@ -2,6 +2,26 @@
 //! from its skeleton (the centerline), the distance to the outline (the width), and caps and
 //! joins chosen by rendering each kind. It costs its centerline's segments and one for the width.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::disallowed_macros,
+    clippy::disallowed_methods,
+    clippy::indexing_slicing,
+    clippy::too_many_lines,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+#![cfg_attr(
+    not(feature = "diagnostics"),
+    expect(
+        clippy::large_types_passed_by_value,
+        reason = "panic ratchet: remove a lint once the module is clean of it"
+    )
+)]
+
 use crate::render::coverage_cost::CoverageCost;
 use crate::render::{FillRule, Path, Subpath};
 use crate::tracer::Cubic;
@@ -104,6 +124,7 @@ const ARC_STEPS: usize = 16;
 impl Stroke {
     /// The stroke's cost in segments: the centerline's, one for the width, and one per dash
     /// and gap pair of the pattern.
+    #[must_use]
     pub fn segments(&self) -> usize {
         self.centerline.len()
             + 1
@@ -341,6 +362,7 @@ impl Stroke {
     /// The outline as loops filled nonzero: one strip per dash (see [`Stroke::strip`]), which
     /// does not fold where the centerline bends tighter than half the width, since there it
     /// runs through the centerline point and its winding sums the two segments' quads.
+    #[must_use]
     pub fn outline(&self) -> Vec<Vec<Cubic>> {
         self.geometry(None)
             .1
@@ -350,6 +372,7 @@ impl Stroke {
     }
 
     /// The shape this stroke paints, with `fill`.
+    #[must_use]
     pub fn shape(&self, fill: Fill) -> Shape {
         let mut shape = Shape::new(self.outline(), fill);
         shape.stroke = Some(self.clone());

@@ -2,11 +2,21 @@
 //! colour of what they show) and which are left to their nearest drawn ancestor, by colour error
 //! plus segment cost; the chosen shapes are then fitted parents first, on top of what is drawn.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_precision_loss,
+    clippy::indexing_slicing,
+    clippy::too_many_lines,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+
 use crate::tracer::Cubic;
 use glam::{DVec2, DVec3, Vec2, Vec3};
 
 use crate::cleanup::clean_in;
 use crate::complete::{Completion, complete};
+use crate::error::{Invariant, TraceError, filled};
 use crate::hierarchy::{Hierarchy, LinearFill, RadialFill, RampFill, Stats};
 use crate::outline::outline_with;
 use crate::recolor::recolor;
@@ -64,8 +74,14 @@ fn peeled_edge(mask: &[bool], width: usize, height: usize, above: Option<&[bool]
 
 /// Traces an RGB image at a detail level, in one slice (for the lab and the tests).
 #[cfg(any(test, feature = "diagnostics"))]
-pub fn trace(rgb: &[u8], width: usize, height: usize, detail: f64, options: Options) -> Scene {
-    trace_with_layer(rgb, width, height, detail, options).0
+pub fn trace(
+    rgb: &[u8],
+    width: usize,
+    height: usize,
+    detail: f64,
+    options: Options,
+) -> Result<Scene, TraceError> {
+    trace_with_layer(rgb, width, height, detail, options).map(|(scene, _)| scene)
 }
 
 /// [`trace`], with the translucent candidate the top level accepted, if any: its region, k
@@ -77,27 +93,28 @@ pub fn trace_with_layer(
     height: usize,
     detail: f64,
     options: Options,
-) -> (Scene, Option<crate::translucency::Candidate>) {
+) -> Result<(Scene, Option<crate::translucency::Candidate>), TraceError> {
     crate::progress::finish(traced(rgb, width, height, detail, options))
 }
 
 /// [`trace_with_layer`] with its checkpoints (see [`crate::progress`]), showing the host the
 /// picture's scene as it grows.
+#[expect(clippy::large_futures, reason = "the trace is one future, boxed once by `Tracing`")]
 pub(crate) async fn traced(
     rgb: &[u8],
     width: usize,
     height: usize,
     detail: f64,
     options: Options,
-) -> (Scene, Option<crate::translucency::Candidate>) {
+) -> Result<(Scene, Option<crate::translucency::Candidate>), TraceError> {
     let mut timings = Timings::default();
     let start = crate::timing::Clock::now();
     // First looks for the host while the picture's own first scene is seconds away
     if crate::progress::driven() {
-        crate::preview::preview(rgb, width, height, detail).await;
+        crate::preview::preview(rgb, width, height, detail).await?;
     }
     let (mut ctx, hierarchy) =
-        crate::hierarchy::analyze(rgb, width, height, detail, &mut timings).await;
+        crate::hierarchy::analyze(rgb, width, height, detail, &mut timings).await?;
     timings
         .time("uncertainty", async || {
             crate::uncertainty::apply(&mut ctx, options.tolerance).await;
@@ -118,7 +135,7 @@ pub(crate) async fn traced(
         &mut timings,
         true,
     )
-    .await;
+    .await?;
     // The kept layer is the shape with the highest layer index, not the scene's last shape,
     // which the level's own passes may put after it
     let top = layer.as_ref().and_then(|_| {
@@ -186,9 +203,9 @@ pub(crate) async fn traced(
     if options.stages.instancing {
         timings
             .time("instancing", async || {
-                crate::instancing::instance(&target, &mut scene).await;
+                crate::instancing::instance(&target, &mut scene).await
             })
-            .await;
+            .await?;
     }
     // Objects that do not pay their price once grouped, judged on the whole scene
     let economy = timings
@@ -213,8 +230,8 @@ pub(crate) async fn traced(
     });
     timings.report(&format!("plan {:.1?}", start.elapsed()));
     crate::progress::snapshot(&scene);
-    scene = crate::progress::scene(scene, true).await;
-    (scene, layer)
+    scene = crate::progress::scene(scene, true).await?;
+    Ok((scene, layer))
 }
 
 /// Whether two shapes cover a pixel in common, by any coverage (an anti-aliased rim
@@ -234,6 +251,7 @@ fn overlaps(a: &Shape, b: &Shape, width: usize) -> bool {
 /// Whether a mark of an accepted layer pays: its gain must exceed its cubics plus one segment
 /// (for its width, or a lens's opacity and blur) at the price per segment. The one keep rule
 /// of the layer's marks (see [`crate::translucency::vocabulary::Keep`]).
+#[must_use]
 pub fn keep_mark(mark: &crate::translucency::vocabulary::Mark, segment_cost: f64) -> bool {
     mark.gain > (mark.cubics.len() as f64 + 1.) * segment_cost
 }
@@ -336,12 +354,12 @@ async fn trace_level(
     levels: bool,
     timings: &mut Timings,
     show: bool,
-) -> Scene {
+) -> Result<Scene, TraceError> {
     Box::pin(trace_level_layer(
         ctx, hierarchy, detail, options, edge, levels, timings, show,
     ))
     .await
-    .0
+    .map(|(scene, _)| scene)
 }
 
 /// [`trace_level`], with the candidate this level's scene keeps as a translucent layer on top
@@ -356,7 +374,7 @@ async fn trace_level_layer(
     levels: bool,
     timings: &mut Timings,
     show: bool,
-) -> (Scene, Option<crate::translucency::Candidate>) {
+) -> Result<(Scene, Option<crate::translucency::Candidate>), TraceError> {
     let (width, height) = (ctx.width, ctx.height);
     ctx.pull = crate::refine::HANDLE_PULL;
     // A level's own image (the beneath of a peeled layer) has its own uncertainty
@@ -400,7 +418,7 @@ async fn trace_level_layer(
     for _ in 0..ROUNDS {
         plan = timings
             .time("plan", async || planner.plan(background).await)
-            .await;
+            .await?;
         // Outlines are traced once per node
         for drawn in &plan[1..] {
             crate::progress::poll().await;
@@ -430,7 +448,7 @@ async fn trace_level_layer(
     // the occluded outline under the sibling is fitted at the later weight
     let order = draw_order(&under);
     let rank = {
-        let mut rank = vec![0; plan.len()];
+        let mut rank = filled(0, plan.len())?;
         for (r, &k) in order.iter().enumerate() {
             rank[k] = r;
         }
@@ -441,11 +459,11 @@ async fn trace_level_layer(
         .time("fills", async || fit_fills(&ctx, hierarchy, &plan).await)
         .await;
     let mut scene = Scene::with_background(width, height, fills[0]);
-    scene = crate::progress::scene(scene, show).await;
+    scene = crate::progress::scene(scene, show).await?;
     crate::progress::stage("draw").await;
     let mut dropped = 0;
     // The scene id each plan entry got, or that of its nearest drawn ancestor if it was dropped
-    let mut ids: Vec<usize> = vec![0; plan.len()];
+    let mut ids: Vec<usize> = filled(0, plan.len())?;
     // The plan index of each scene id
     let mut planned: HashMap<usize, usize> = HashMap::default();
     planned.insert(0, 0);
@@ -549,7 +567,7 @@ async fn trace_level_layer(
             let segments = shape.cost_segments();
             // Whether the shape is drawn at all is priced at the acceptance's price
             let (accept, path) = (ctx.accept_cost(), ctx.accept_path_cost());
-            let gain = (place.before - error) as f64 - segments * accept - path;
+            let gain = f64::from(place.before - error) - segments * accept - path;
             if best.as_ref().is_none_or(|(g, _, _)| gain > *g) {
                 best = Some((gain, position, shape));
             }
@@ -566,13 +584,13 @@ async fn trace_level_layer(
                 );
             }
             dropped += 1;
-            ids[k] = ids[drawn.parent.expect("not the background")];
+            ids[k] = ids[drawn.parent.invariant("a parent for all but the background")?];
             continue;
         };
         let id = scene.insert(position, shape);
         ids[k] = id;
         planned.insert(id, k);
-        scene = crate::progress::scene(scene, show).await;
+        scene = crate::progress::scene(scene, show).await?;
     }
     if crate::diagnostics::log() {
         eprintln!("plan: {dropped} planned shapes did not pay once fitted");
@@ -655,7 +673,7 @@ async fn trace_level_layer(
             })
             .await
             .min(error);
-        if (error - before) as f64 <= (segments - shape.cost_segments()) * cost {
+        if f64::from(error - before) <= (segments - shape.cost_segments()) * cost {
             let change = scene.change();
             scene.shapes.insert(
                 position,
@@ -677,7 +695,7 @@ async fn trace_level_layer(
     crate::progress::stage("shapes").await;
     timings
         .time("recolor", async || recolor(&ctx, &mut scene).await)
-        .await;
+        .await?;
     timings
         .time("settle", async || settle(&ctx, &mut scene).await)
         .await;
@@ -696,7 +714,7 @@ async fn trace_level_layer(
         }
     }
     if !levels || !options.stages.translucency {
-        return (scene, None);
+        return Ok((scene, None));
     }
     crate::progress::stage("families").await;
     // No layer is proposed where no contour runs on under a tint: the families and the
@@ -713,7 +731,7 @@ async fn trace_level_layer(
         .await
     {
         level_log(format_args!("no contour runs on under a tint"));
-        return (scene, None);
+        return Ok((scene, None));
     }
     // A candidate is peeled, the beneath traced by these same steps and the shape put back on
     // top; most likely first, each decided in its window ([`decide_in_window`]), the first kept
@@ -749,7 +767,7 @@ async fn trace_level_layer(
     let whole = if whole_families.is_empty() {
         None
     } else {
-        Some(decide_whole(&ctx, &scene, whole_families, edge, detail, nested, timings).await)
+        Some(decide_whole(&ctx, &scene, whole_families, edge, detail, nested, timings).await?)
     };
     // A family is accepted on its gate's evidence, the objective only ordering the families
     // (see [`decide_whole`]); but not where its drawing errs by more than the opaque trace's
@@ -805,7 +823,7 @@ async fn trace_level_layer(
             .time("window", async || {
                 decide_in_window(&ctx, &candidate, &peeled, detail, options, edge).await
             })
-            .await;
+            .await?;
         let verdict = window.map(|v| v.keeps());
         if let Some(v) = window {
             level_log(format_args!(
@@ -828,8 +846,7 @@ async fn trace_level_layer(
         #[cfg(feature = "diagnostics")]
         if let Some(dir) = crate::diagnostics::peel_dir() {
             let level = std::fs::read_dir(&dir)
-                .map(|d| d.filter(|e| e.is_ok()).count())
-                .unwrap_or(0);
+                .map_or(0, |d| d.flatten().count());
             let mut ppm = format!("P6\n{width} {height}\n255\n").into_bytes();
             ppm.extend_from_slice(&peeled);
             let _ = std::fs::write(dir.join(format!("peel-{level}.ppm")), ppm);
@@ -840,7 +857,7 @@ async fn trace_level_layer(
         let with = beneath_with(
             &ctx, &scene, &candidate, edge, overlay, &peeled, detail, nested, true, timings, show,
         )
-        .await;
+        .await?;
         crate::progress::nest(false);
         // Under a layer cost the margin takes the layer's terms (see
         // [`crate::translucency::cost`]); the plain objective otherwise
@@ -898,7 +915,7 @@ async fn trace_level_layer(
             #[cfg(feature = "diagnostics")]
             if let Some(dir) = crate::diagnostics::mask_dir() {
                 let n = std::fs::read_dir(&dir)
-                    .map(|d| {
+                    .map_or(0, |d| {
                         d.filter(|e| {
                             e.as_ref().is_ok_and(|e| {
                                 e.file_name().to_string_lossy().ends_with(".pgm")
@@ -906,8 +923,7 @@ async fn trace_level_layer(
                             })
                         })
                         .count()
-                    })
-                    .unwrap_or(0);
+                    });
                 let mut pgm = format!("P5\n{width} {height}\n255\n").into_bytes();
                 pgm.extend(candidate.mask.iter().map(|m| if *m { 255 } else { 0 }));
                 let _ = std::fs::write(dir.join(format!("layer-{n}.pgm")), pgm);
@@ -923,9 +939,9 @@ async fn trace_level_layer(
                     let _ = std::fs::write(dir.join(format!("holes-{n}.pgm")), pgm);
                 }
             }
-            (with, Some(candidate))
+            Ok((with, Some(candidate)))
         }
-        _ => (scene, None),
+        _ => Ok((scene, None)),
     }
 }
 

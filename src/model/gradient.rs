@@ -2,6 +2,23 @@
 //! stops ([`Gradient::stops`]). The tracer's own form is kept inside, for the model's render
 //! and the SVG emitter, so both stay exact.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::cast_precision_loss,
+        clippy::disallowed_macros,
+        clippy::indexing_slicing,
+        clippy::too_many_lines,
+    )
+)]
+
 use crate::render::Gradient as Ramp;
 use glam::{DVec2, Vec2, Vec3};
 
@@ -65,6 +82,10 @@ pub struct Gradient {
 
 impl Gradient {
     /// The tracer's gradient `ramp` starting from the opaque colour `from`.
+    #[expect(
+        clippy::large_types_passed_by_value,
+        reason = "moved into the gradient"
+    )]
     pub(crate) fn new(from: Vec3, ramp: Ramp) -> Self {
         Self { from, ramp }
     }

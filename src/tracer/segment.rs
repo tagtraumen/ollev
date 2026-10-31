@@ -1,3 +1,20 @@
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::disallowed_macros,
+    clippy::float_cmp,
+    clippy::indexing_slicing,
+    clippy::too_many_lines,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+))]
+
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 
@@ -20,6 +37,7 @@ pub struct Moments {
 }
 
 impl Moments {
+    #[must_use]
     pub fn pixel(x: f64, y: f64, c: DVec3) -> Self {
         Self {
             n: 1.,
@@ -195,6 +213,7 @@ pub struct Segmentation {
 /// Connected regions of pixels with exactly the same color, the cheapest start for
 /// [`segment_seeded`] since no merge can split them. Returns the label per pixel and the number
 /// of regions.
+#[must_use]
 pub fn equal_color_regions(rgb: &[u8], width: usize, height: usize) -> (Vec<u32>, usize) {
     let color = |i: usize| &rgb[3 * i..3 * i + 3];
     let mut parent: Vec<u32> = (0..(width * height) as u32).collect();
@@ -320,11 +339,11 @@ async fn merge(
         let boundary = ra.neighbors[&b];
         match criterion {
             Criterion::Contrast => {
-                boundary.contrast / boundary.len as f64 - params.contrast * params.contrast
+                boundary.contrast / f64::from(boundary.len) - params.contrast * params.contrast
             }
             Criterion::Energy => {
                 let merged = energy(&ra.moments.add(&rb.moments), params);
-                merged - ra.energy - rb.energy - params.boundary_cost * boundary.len as f64
+                merged - ra.energy - rb.energy - params.boundary_cost * f64::from(boundary.len)
             }
         }
     };

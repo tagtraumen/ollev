@@ -3,6 +3,16 @@
 //! pattern the centerline starts, every dash takes the caps); a dash of no length is the cap
 //! alone, a dot for a round cap and a square for a square one.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_precision_loss,
+    clippy::disallowed_macros,
+    clippy::disallowed_methods,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+
 use glam::DVec2;
 
 use crate::model::{Cap, Curve, Geometry, Object, StrokeGeometry};

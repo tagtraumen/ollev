@@ -115,7 +115,9 @@ fn model() -> Model {
             ..fill(Vec::new(), solid(0.2, 0.2, 0.2))
         },
     ];
-    let price = crate::Context::new(&vec![255; 3 * w * h], w, h, 1.).segment_cost;
+    let price = crate::Context::new(&vec![255; 3 * w * h], w, h, 1.)
+        .unwrap()
+        .segment_cost;
     Model {
         width: w,
         height: h,
@@ -197,7 +199,7 @@ fn excess(model: &Model, lowered: &Model) -> f64 {
                 }
             }
             let e = got[y * w + x];
-            let over = ((e.clamp(lo, hi) - e).length() - NOISE as f32).max(0.) as f64;
+            let over = f64::from(((e.clamp(lo, hi) - e).length() - NOISE as f32).max(0.));
             sum += over * over;
         }
     }
@@ -286,16 +288,16 @@ fn a_memo_lowers_as_lower_does() {
     for host in [graphite, Capabilities::NONE] {
         let want = format!("{:?}", lower(&model, &host).0);
         let memo = std::sync::Mutex::new(Memo::default());
-        let quick = lower_kept(&model, &host, &mut lock(&memo), true);
+        let quick = lower_kept(&model, host, &mut lock(&memo), true);
         assert_eq!(uses(&quick, host), Vec::<&str>::new());
         crate::progress::finish(keep(&model, &host, &memo));
         for _ in 0..2 {
-            let kept = lower_kept(&model, &host, &mut lock(&memo), false);
+            let kept = lower_kept(&model, host, &mut lock(&memo), false);
             assert_eq!(format!("{kept:?}"), want);
         }
         let want = format!("{:?}", lower(&reversed, &host).0);
         for quick in [false, true] {
-            let kept = lower_kept(&reversed, &host, &mut lock(&memo), quick);
+            let kept = lower_kept(&reversed, host, &mut lock(&memo), quick);
             assert_eq!(format!("{kept:?}"), want);
         }
     }

@@ -1,5 +1,22 @@
 //! The exact score of a relation between two palettes: the matcher.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::disallowed_macros,
+    clippy::indexing_slicing,
+    clippy::too_many_lines,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::disallowed_methods,
+))]
+
 use std::cell::OnceCell;
 
 use glam::DVec3;
@@ -49,6 +66,7 @@ pub struct Matcher<'a> {
 }
 
 impl<'a> Matcher<'a> {
+    #[must_use]
     pub fn new(
         inside: &'a Palette,
         outside: &'a Palette,
@@ -305,6 +323,7 @@ impl<'a> Matcher<'a> {
 }
 
 /// Whether the relation's color lies in gamut to the noise over the show-through.
+#[must_use]
 pub fn in_gamut_c(k: f64, m: DVec3) -> bool {
     let c = m / (1.0 - k);
     let margin = NOISE / (1.0 - k);

@@ -1,12 +1,23 @@
 //! The host's entry: a trace run in time slices ([`Tracing`]), or to its end ([`trace`],
 //! [`trace_with`]).
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::float_cmp,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::Poll;
 
-use crate::input::{Detail, Image, TraceError, TraceOptions};
+use crate::error::{TraceError, area};
+use crate::input::{Detail, Image, TraceOptions};
 use crate::lower::Capabilities;
 use crate::model::{Fidelity, Model};
 use crate::progress::{Answer, Place, Progress};
@@ -15,7 +26,9 @@ use crate::progress::{Answer, Place, Progress};
 ///
 /// # Errors
 ///
-/// [`TraceError::Empty`] or [`TraceError::Size`] where the image is not one to trace.
+/// [`TraceError::Empty`], [`TraceError::Size`] or [`TraceError::TooLarge`] where the image is
+/// not one to trace, [`TraceError::OutOfMemory`] where an allocation is refused, and
+/// [`TraceError::Internal`] where the tracer finds a bug of its own.
 pub fn trace(image: &Image, options: &TraceOptions) -> Result<Model, TraceError> {
     trace_with(image, options, |_| ())
 }
@@ -31,7 +44,7 @@ pub fn trace_with<A: Answer>(
     options: &TraceOptions,
     mut progress: impl FnMut(&Progress) -> A,
 ) -> Result<Model, TraceError> {
-    match Tracing::new(image, options)?.step(|p| progress(p).flow()) {
+    match Tracing::new(image, options)?.step(|p| progress(p).flow())? {
         Step::Done(model) => Ok(model),
         Step::Paused(_) => Err(TraceError::Cancelled),
     }
@@ -61,7 +74,7 @@ pub fn trace_with<A: Answer>(
 ///         } else {
 ///             std::ops::ControlFlow::Break(())
 ///         }
-///     }) {
+///     })? {
 ///         ollev::Step::Paused(progress) => {
 ///             // show progress.stage, progress.fraction, progress.model()
 ///         }
@@ -69,13 +82,17 @@ pub fn trace_with<A: Answer>(
 ///     }
 /// };
 /// assert!(!model.objects().is_empty());
+/// # Ok::<(), ollev::TraceError>(())
 /// ```
 pub struct Tracing {
-    trace: Option<Pin<Box<dyn Future<Output = Model> + Send>>>,
+    trace: Option<Trace>,
     place: Place,
     #[cfg(feature = "diagnostics")]
     diagnostics: crate::Diagnostics,
 }
+
+/// The trace itself, suspended at a checkpoint between two steps.
+type Trace = Pin<Box<dyn Future<Output = Result<Model, TraceError>> + Send>>;
 
 // A host may move a trace between threads between two steps
 const _: fn() = || {
@@ -98,16 +115,18 @@ impl Tracing {
     /// # Errors
     ///
     /// As [`trace`].
+    #[expect(clippy::large_futures, reason = "the trace is one future, boxed here")]
     pub fn new(image: &Image, options: &TraceOptions) -> Result<Self, TraceError> {
         let (rgb, alpha) = crate::input::pixels8(image, options.matte)?;
         let (w, h) = (image.width, image.height);
         // Over the budget, the picture is traced at the size that holds it, one scale both ways
         let (rgb, tw, th, scale) = match options.max_pixels.map(|most| most.max(1)) {
-            Some(most) if w * h > most => {
-                let tw = ((w as f64 * (most as f64 / (w * h) as f64).sqrt()) as usize).max(1);
+            Some(most) if area(w, h, 1)? > most => {
+                let pixels = area(w, h, 1)? as f64;
+                let tw = ((w as f64 * (most as f64 / pixels).sqrt()) as usize).max(1);
                 let s = w as f64 / tw as f64;
                 let th = ((h as f64 / s).round() as usize).max(1);
-                (crate::input::downsampled(&rgb, w, h, tw, th, s), tw, th, s)
+                (crate::input::downsampled(&rgb, w, h, tw, th, s)?, tw, th, s)
             }
             _ => (rgb, w, h, 1.),
         };
@@ -139,7 +158,7 @@ impl Tracing {
         let place = Place::new(finish.clone());
         Ok(Self {
             trace: Some(Box::pin(async move {
-                let scene = crate::plan::traced(&rgb, tw, th, detail, plan).await.0;
+                let scene = crate::plan::traced(&rgb, tw, th, detail, plan).await?.0;
                 finish.finished(&scene).await
             })),
             place,
@@ -152,11 +171,15 @@ impl Tracing {
     /// or the trace is done. A host with a clock gives each slice a budget: a callback that
     /// breaks once the time is up.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// When stepped again after [`Step::Done`].
-    pub fn step<A: Answer>(&mut self, mut progress: impl FnMut(&Progress) -> A) -> Step<'_> {
-        let trace = self.trace.as_mut().expect("a trace not yet done");
+    /// As [`trace`] where the trace fails, and [`TraceError::Finished`] when stepped again
+    /// after [`Step::Done`] or an error.
+    pub fn step<A: Answer>(
+        &mut self,
+        mut progress: impl FnMut(&Progress) -> A,
+    ) -> Result<Step<'_>, TraceError> {
+        let trace = self.trace.as_mut().ok_or(TraceError::Finished)?;
         let mut callback = |p: &Progress| progress(p).flow();
         let place = &mut self.place;
         #[cfg(feature = "diagnostics")]
@@ -168,9 +191,9 @@ impl Tracing {
         match poll {
             Poll::Ready(model) => {
                 self.trace = None;
-                Step::Done(model)
+                model.map(Step::Done)
             }
-            Poll::Pending => Step::Paused(self.place.progress()),
+            Poll::Pending => Ok(Step::Paused(self.place.progress())),
         }
     }
 }
@@ -209,14 +232,19 @@ impl Finish {
     /// lowered quickly (see [`crate::lower`]).
     pub(crate) fn partial(&self, model: Model, fidelity: Option<&Fidelity>) -> Model {
         let model = self.sized(model, fidelity);
-        crate::lower::lower_kept(&model, &self.host, &mut crate::lower::lock(&self.memo), true)
+        crate::lower::lower_kept(&model, self.host, &mut crate::lower::lock(&self.memo), true)
     }
 
     /// The trace's result in the host's form, its objects lowered one per checkpoint.
-    async fn finished(&self, scene: &crate::Scene) -> Model {
+    async fn finished(&self, scene: &crate::Scene) -> Result<Model, TraceError> {
         let model = self.sized(scene.model(), None);
         crate::lower::keep(&model, &self.host, &self.memo).await;
-        crate::lower::lower_kept(&model, &self.host, &mut crate::lower::lock(&self.memo), false)
+        Ok(crate::lower::lower_kept(
+            &model,
+            self.host,
+            &mut crate::lower::lock(&self.memo),
+            false,
+        ))
     }
 }
 

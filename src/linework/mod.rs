@@ -2,6 +2,17 @@
 //! along its centreline, a step a cut that splits the shape spanning it, each kept when its
 //! gain, edges weighted, exceeds its price.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::disallowed_macros,
+    clippy::indexing_slicing,
+    clippy::too_many_lines,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+
 use glam::{DMat3, DMat4, DVec2, DVec3, DVec4};
 
 use crate::edges::{EdgeField, REACH, SIGMA, edges_of, line_centres};
@@ -383,7 +394,7 @@ mod tests {
                 }
             })
             .collect();
-        let ctx = crate::Context::new(&rgb8(&px), w, h, 1.0);
+        let ctx = crate::Context::new(&rgb8(&px), w, h, 1.0).unwrap();
         let mut scene = crate::Scene::with_background(w, h, skin.as_vec3());
         let field = EdgeField::of_target(&ctx.target, w, h);
         let out = crate::progress::finish(into_scene(
@@ -421,7 +432,7 @@ mod tests {
                 }
             })
             .collect();
-        let ctx = crate::Context::new(&rgb8(&px), w, h, 1.0);
+        let ctx = crate::Context::new(&rgb8(&px), w, h, 1.0).unwrap();
         let mut scene = crate::Scene::with_background(w, h, skin.as_vec3());
         // the line's darkness over a band seven pixels wide
         let band = skin + (dark - skin) / 7.0;
@@ -469,7 +480,7 @@ mod tests {
                 }
             })
             .collect();
-        let ctx = crate::Context::new(&rgb8(&px), w, h, 1.0);
+        let ctx = crate::Context::new(&rgb8(&px), w, h, 1.0).unwrap();
         let mut scene = crate::Scene::with_background(w, h, skin.as_vec3());
         let layer = crate::Shape::new(
             rectangle(0.0, 0.0, w as f32, 20.0),

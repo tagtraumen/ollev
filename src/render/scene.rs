@@ -1,3 +1,15 @@
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::disallowed_macros,
+    clippy::float_cmp,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+
 use glam::{Mat2, Vec2, Vec3};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -48,6 +60,7 @@ impl Stops {
     };
 
     /// Opaque stops of the colours `stops`, see [`Stops::new`].
+    #[must_use]
     pub fn opaque(stops: &[(f32, [f32; 3])]) -> Self {
         let rgba: Vec<(f32, [f32; 4])> = stops
             .iter()
@@ -57,36 +70,44 @@ impl Stops {
     }
 
     /// Whether every stop is opaque.
+    #[must_use]
     pub fn is_opaque(&self) -> bool {
         self.iter().all(|(_, c)| c[3] == 1.)
     }
 
-    /// The stops `stops`, which must be at most [`MAX_STOPS`]; offsets are clamped to `0..=1`
-    /// and sorted.
+    /// The stops `stops`, of which the first [`MAX_STOPS`] are kept; offsets are clamped to
+    /// `0..=1` and sorted.
+    #[must_use]
     pub fn new(stops: &[(f32, [f32; 4])]) -> Self {
-        assert!(stops.len() <= MAX_STOPS, "{} stops", stops.len());
-        let mut sorted = stops.to_vec();
+        debug_assert!(stops.len() <= MAX_STOPS, "{} stops", stops.len());
+        let mut sorted: Vec<_> = stops.iter().take(MAX_STOPS).copied().collect();
         sorted.sort_by(|a, b| a.0.total_cmp(&b.0));
         let mut out = Self::NONE;
-        for (k, (offset, color)) in sorted.into_iter().enumerate() {
-            out.offsets[k] = offset.clamp(0., 1.);
-            out.colors[k] = color;
+        for ((offset, color), (o, c)) in sorted
+            .iter()
+            .zip(out.offsets.iter_mut().zip(&mut out.colors))
+        {
+            *o = offset.clamp(0., 1.);
+            *c = *color;
         }
-        out.len = stops.len() as u8;
+        out.len = sorted.len() as u8;
         out
     }
 
+    #[must_use]
     pub fn len(&self) -> usize {
         self.len as usize
     }
 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
 
     /// The offset and colour of stop `k`.
+    #[must_use]
     pub fn get(&self, k: usize) -> (f32, [f32; 4]) {
-        assert!(k < self.len());
+        debug_assert!(k < self.len());
         (self.offsets[k], self.colors[k])
     }
 
@@ -155,6 +176,7 @@ pub enum Gradient {
 const FOCAL_STEP: f32 = 1e-2;
 
 impl Gradient {
+    #[must_use]
     pub fn to(&self) -> [f32; 4] {
         match self {
             Gradient::Linear { to, .. }
@@ -171,6 +193,7 @@ impl Gradient {
         }
     }
 
+    #[must_use]
     pub fn stops(&self) -> &Stops {
         match self {
             Gradient::Linear { stops, .. }
@@ -188,12 +211,14 @@ impl Gradient {
     }
 
     /// The end colour without its alpha.
+    #[must_use]
     pub fn to_rgb(self) -> [f32; 3] {
         let [r, g, b, _] = self.to();
         [r, g, b]
     }
 
     /// Whether the end and every stop are opaque, so the ramp paints opaque colour throughout.
+    #[must_use]
     pub fn is_opaque(&self) -> bool {
         self.to()[3] == 1. && self.stops().is_opaque()
     }
@@ -216,6 +241,7 @@ impl Gradient {
     /// The ramp from `from` (opaque) at 0 through the stops to the end colour at 1, at `t`,
     /// interpolated in premultiplied colour; a piece of one alpha interpolates straight colour,
     /// which is the same.
+    #[must_use]
     pub fn ramp(&self, from: Vec3, t: f32) -> RampPoint {
         let n = self.stops().len() + 2;
         let knot = |k| self.knot(from, k);
@@ -251,6 +277,7 @@ impl Gradient {
     }
 
     /// The straight colour at `t` of the ramp starting from `from`.
+    #[must_use]
     pub fn color(&self, from: Vec3, t: f32) -> Vec3 {
         if self.stops().is_empty() && self.to()[3] == 1. {
             from.lerp(Vec3::from(self.to_rgb()), t)
@@ -262,6 +289,7 @@ impl Gradient {
     /// The stops (offset, straight colour, alpha) that draw this premultiplied ramp in a renderer
     /// interpolating straight colour: a transparent knot takes its neighbours' colours, and a
     /// piece changing alpha and colour is split to within half a level of 8 bits.
+    #[must_use]
     pub fn svg_stops(&self, from: Vec3) -> Vec<(f32, Vec3, f32)> {
         let n = self.stops().len() + 2;
         let knots: Vec<(f32, Vec3, f32)> = (0..n).map(|k| self.knot(from, k)).collect();
@@ -291,6 +319,7 @@ impl Gradient {
     }
 
     /// The straight colour and the alpha at `t` of the ramp starting from `from`.
+    #[must_use]
     pub fn rgba(&self, from: Vec3, t: f32) -> (Vec3, f32) {
         if self.is_opaque() {
             return (self.color(from, t), 1.);
@@ -319,6 +348,7 @@ impl Gradient {
         }
     }
 
+    #[must_use]
     pub fn t(&self, p: Vec2) -> f32 {
         self.unclamped(p).clamp(0., 1.)
     }
@@ -326,6 +356,7 @@ impl Gradient {
     /// The derivative of `t` at `p` by the geometry, as a gradient of the same kind (`to` and
     /// stops zero), zero where `t` is clamped. A radial focus is differentiated numerically, and
     /// so is the rest of a radial gradient with one; a path gradient's curve is not.
+    #[must_use]
     pub fn d_t(&self, p: Vec2) -> Gradient {
         let t = self.unclamped(p);
         let inside = t > 0. && t < 1.;
@@ -435,11 +466,13 @@ impl Gradient {
                 *transform += *m * k;
             }
             (Gradient::Path { .. }, Gradient::Path { .. }) => {}
-            _ => unreachable!("gradients of different kinds"),
+            // a derivative is of its gradient's kind (`d_t`, `zeroed`)
+            _ => debug_assert!(false, "gradients of different kinds"),
         }
     }
 
     /// A gradient of the same kind with all parameters zero.
+    #[must_use]
     pub fn zeroed(&self) -> Gradient {
         match self {
             Gradient::Linear { .. } => Gradient::Linear {
@@ -483,16 +516,20 @@ impl Gradient {
     /// gives it, an off-center focus as `fx` and `fy`.
     #[cfg(feature = "svg")]
     pub fn svg(&self, id: usize, from: [f32; 3], color: impl Fn([f32; 3]) -> String) -> String {
+        use std::fmt::Write;
+        // writing to a string does not fail
         let mut stops = String::new();
         if self.is_opaque() {
             stops = format!("<stop offset=\"0\" stop-color=\"{}\"/>", color(from));
             for (offset, [r, g, b, _]) in self.stops().iter() {
-                stops += &format!(
+                let _ = write!(
+                    stops,
                     "<stop offset=\"{offset:.4}\" stop-color=\"{}\"/>",
                     color([r, g, b])
                 );
             }
-            stops += &format!(
+            let _ = write!(
+                stops,
                 "<stop offset=\"1\" stop-color=\"{}\"/>",
                 color(self.to_rgb())
             );
@@ -503,7 +540,8 @@ impl Gradient {
                 } else {
                     String::new()
                 };
-                stops += &format!(
+                let _ = write!(
+                    stops,
                     "<stop offset=\"{offset:.4}\" stop-color=\"{}\"{opacity}/>",
                     color(c.to_array())
                 );
@@ -601,7 +639,7 @@ fn split_piece(
         let alpha = a.2 + (b.2 - a.2) * u;
         ((a.1 * a.2).lerp(b.1 * b.2, u) / alpha, alpha)
     };
-    let mid = 0.5 * (u0 + u1);
+    let mid = f32::midpoint(u0, u1);
     let (c, alpha) = at(mid);
     let straight = at(u0).0.lerp(at(u1).0, 0.5);
     if depth >= 6 || ((c - straight) * alpha).abs().max_element() <= 0.5 / 255. {
@@ -641,6 +679,7 @@ fn focal_t(p: Vec2, center: Vec2, focus: Vec2, radius: f32) -> f32 {
 impl Path {
     /// The paint's straight colour and its ramp's alpha at `p` (the path's opacity aside), and
     /// the gradient parameter `t` they were interpolated at.
+    #[must_use]
     pub fn paint(&self, p: Vec2) -> (glam::Vec3, f32, f32) {
         let [r, g, b, _] = self.color;
         let from = glam::Vec3::new(r, g, b);
@@ -699,6 +738,7 @@ const TOLERANCE: f32 = 0.2;
 /// Flattens each subpath to a closed polyline. The subdivision count is picked from the current
 /// control points but the resulting points are linear in them, so gradients flow through the
 /// Bernstein weights while the topology of the polyline stays fixed for this step.
+#[must_use]
 pub fn flatten(path: &Path) -> Vec<Vec<FlatPoint>> {
     path.subpaths
         .iter()
@@ -731,6 +771,7 @@ pub fn flatten(path: &Path) -> Vec<Vec<FlatPoint>> {
 }
 
 /// The colour `rgb`, opaque.
+#[must_use]
 pub fn opaque([r, g, b]: [f32; 3]) -> [f32; 4] {
     [r, g, b, 1.]
 }

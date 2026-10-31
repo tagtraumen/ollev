@@ -2,6 +2,16 @@
 //! flattened polyline, negative inside a closed chain (even-odd), and for an open one on the
 //! side its end rays and a box walked clockwise close.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+
 use glam::Vec2;
 
 /// The most cubics a path gradient's curve has.
@@ -35,12 +45,14 @@ fn eval(c: &[Vec2; 4], t: f32) -> Vec2 {
 
 impl Contour {
     /// The closed chain of `cubics`, at most [`MAX_CUBICS`]; `None` when empty or longer.
+    #[must_use]
     pub fn new(cubics: &[[Vec2; 4]]) -> Option<Self> {
         Self::chain(cubics, true)
     }
 
     /// The open chain of `cubics`, its sides closed by the box from `min` to `max`, which
     /// holds the chain.
+    #[must_use]
     pub fn open(cubics: &[[Vec2; 4]], min: Vec2, max: Vec2) -> Option<Self> {
         let mut c = Self::chain(cubics, false)?;
         let line = c.polyline();
@@ -162,20 +174,24 @@ impl Contour {
         })
     }
 
+    #[must_use]
     pub fn len(&self) -> usize {
         self.cubics as usize
     }
 
     #[cfg(feature = "diagnostics")]
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.cubics == 0
     }
 
+    #[must_use]
     pub fn is_closed(&self) -> bool {
         self.closed
     }
 
     /// An open chain's closure (see [`Contour::open`]), empty for a closed one.
+    #[must_use]
     pub fn closure(&self) -> &[Vec2] {
         &self.closure[..self.closure_len as usize]
     }
@@ -186,6 +202,7 @@ impl Contour {
 
     /// The signed distance from `p`: negative inside a closed chain, on the closed side of an
     /// open one, by the even-odd rule.
+    #[must_use]
     pub fn distance(&self, p: Vec2) -> f32 {
         let line = self.polyline();
         let (mut best, mut inside) = (f32::INFINITY, false);

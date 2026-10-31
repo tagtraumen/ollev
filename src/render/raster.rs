@@ -1,3 +1,16 @@
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::disallowed_macros,
+    clippy::float_cmp,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+
 use glam::Vec2;
 
 use crate::render::dual::{Dual, Real};
@@ -23,6 +36,7 @@ pub(crate) enum Column {
 
 /// Converts the winding of a pixel to its coverage under the fill rule, along with the derivative
 /// d coverage / d winding used in the backward pass.
+#[must_use]
 pub fn fill_coverage(winding: f32, rule: FillRule) -> (f32, f32) {
     match rule {
         // Doubly wound regions are saturated, so they have no gradient
@@ -145,6 +159,7 @@ pub(crate) fn pixel_box(polys: &[Vec<FlatPoint>], width: i32, height: i32) -> Op
     (x1 > x0 && y1 > y0).then_some([x0, x1, y0, y1])
 }
 
+#[must_use]
 pub fn rasterize(polys: &[Vec<FlatPoint>], width: u32, height: u32) -> Winding {
     let Some([x0, x1, y0, y1]) = pixel_box(polys, width as i32, height as i32) else {
         return Winding::default();
@@ -193,6 +208,7 @@ pub fn rasterize(polys: &[Vec<FlatPoint>], width: u32, height: u32) -> Winding {
 }
 
 /// Backpropagates `d_winding` (laid out like `winding.values`) to the flattened points.
+#[must_use]
 pub fn rasterize_backward(
     polys: &[Vec<FlatPoint>],
     winding: &Winding,

@@ -1,5 +1,22 @@
 //! Cubics fitted to point chains.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_precision_loss,
+    clippy::disallowed_macros,
+    clippy::disallowed_methods,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::too_many_lines,
+))]
+
 use glam::DVec2;
 
 use super::Bezier;
@@ -23,6 +40,7 @@ pub(super) fn dot(a: DVec2, b: DVec2) -> f64 {
 }
 
 /// A point of the cubic at t.
+#[must_use]
 pub fn bez(c: &Bezier, t: f64) -> DVec2 {
     let u = 1.0 - t;
     u.powf(3.0) * c[0]
@@ -32,6 +50,7 @@ pub fn bez(c: &Bezier, t: f64) -> DVec2 {
 }
 
 /// The cubic's first derivative at t.
+#[must_use]
 pub fn bez_d1(c: &Bezier, t: f64) -> DVec2 {
     let u = 1.0 - t;
     ((3.0 * u) * u) * (c[1] - c[0])
@@ -40,6 +59,7 @@ pub fn bez_d1(c: &Bezier, t: f64) -> DVec2 {
 }
 
 /// The cubic's second derivative at t.
+#[must_use]
 pub fn bez_d2(c: &Bezier, t: f64) -> DVec2 {
     (6.0 * (1.0 - t)) * ((c[2] - 2.0 * c[1]) + c[0]) + (6.0 * t) * ((c[3] - 2.0 * c[2]) + c[1])
 }
@@ -58,7 +78,7 @@ pub(super) fn arc_of(p: &[DVec2]) -> Vec<f64> {
 
 pub(super) fn chord_params(p: &[DVec2]) -> Vec<f64> {
     let d = arc_of(p);
-    let last = *d.last().unwrap();
+    let last = d.last().copied().unwrap_or(0.0);
     if last > 0.0 {
         d.iter().map(|v| v / last).collect()
     } else {
@@ -166,6 +186,7 @@ pub(super) fn rows_mean2(rows: &[DVec2]) -> DVec2 {
 /// Schneider's fit: one cubic by least squares along the end tangents, parameters improved
 /// by Newton steps; where it misses a point by more than `tol`, split at the worst point and
 /// fit each half.
+#[must_use]
 pub fn fit_cubics(p: &[DVec2], tol: f64) -> Vec<Bezier> {
     if p.len() < 2 {
         return Vec::new();
@@ -207,6 +228,7 @@ pub(super) fn fit(p: &[DVec2], t1: DVec2, t2: DVec2, tol: f64, depth: usize) -> 
 }
 
 /// An open polyline smoothed by [1, 2, 1] / 4 inside (a pixel chain's staircase).
+#[must_use]
 pub fn smooth_open(p: &[DVec2]) -> Vec<DVec2> {
     let mut q = p.to_vec();
     for i in 1..p.len().saturating_sub(1) {
@@ -216,6 +238,7 @@ pub fn smooth_open(p: &[DVec2]) -> Vec<DVec2> {
 }
 
 /// The signed curvature of the cubic at t (positive turning left).
+#[must_use]
 pub fn curvature(c: &Bezier, t: f64) -> f64 {
     let (d1, d2) = (bez_d1(c, t), bez_d2(c, t));
     let v = hyp(d1);

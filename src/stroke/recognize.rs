@@ -1,5 +1,21 @@
 //! Every shape that is a band replaced by the stroke it draws, where that pays.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_precision_loss,
+    clippy::disallowed_macros,
+    clippy::indexing_slicing,
+    clippy::too_many_lines,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::disallowed_methods,
+))]
+
 use super::*;
 
 /// How many positions down the stack a stroke is tried at, below the shapes it overlaps.
@@ -115,7 +131,7 @@ fn fill_under(
     }
     let window = Place::new(ctx, &base, &framed, j, MARGIN)?;
     let total = |shapes: &[Shape]| {
-        window.error_of(ctx, shapes) as f64
+        f64::from(window.error_of(ctx, shapes))
             + shapes.iter().map(Shape::cost_segments).sum::<f64>() * ctx.segment_cost
     };
     let (under_total, chosen_total) = (total(&under), total(chosen));
@@ -169,7 +185,7 @@ pub async fn recognize(ctx: &Context, hierarchy: &Hierarchy, scene: &mut Scene) 
                 positions.push(j);
             }
         }
-        let total = |error: f32, segments: f64| error as f64 + segments * ctx.segment_cost;
+        let total = |error: f32, segments: f64| f64::from(error) + segments * ctx.segment_cost;
         // the shape's own error as the cost reads it, and as the context measures it
         // rendered (a network's lines in their own colours are measured rendered)
         let mut free: Option<(f32, f32)> = None;
@@ -266,7 +282,7 @@ pub async fn recognize(ctx: &Context, hierarchy: &Hierarchy, scene: &mut Scene) 
         let beyond = strokes
             .iter()
             .any(|(s, _)| draws_beyond(hierarchy, &shape, s, &bridges, ctx.width, ctx.height));
-        let accepted = gain > 0. && !beyond;
+        let accepted = gain > 0. && !beyond && !strokes.is_empty();
         if !accepted {
             scene.shapes.insert(k, shape);
             scene.change();
@@ -299,7 +315,10 @@ pub async fn recognize(ctx: &Context, hierarchy: &Hierarchy, scene: &mut Scene) 
         // beside it, in the same place, and what they leave of the shape goes over them
         let count = strokes.len() + usize::from(remainder.is_some());
         let mut strokes = strokes.into_iter();
-        let (first, fill) = strokes.next().expect("a stroke");
+        // accepted, so there is a stroke
+        let Some((first, fill)) = strokes.next() else {
+            continue;
+        };
         let mut replaced = Shape {
             id: shape.id,
             clip: shape.clip,

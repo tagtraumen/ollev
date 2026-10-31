@@ -2,6 +2,19 @@
 //! clip): one smooth cubic bridging each free stretch, and the circle, ellipse or rounded
 //! rectangle matching the stretches that show, compete with the outline as fitted.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::disallowed_macros,
+    clippy::disallowed_methods,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+
 use crate::tracer::Cubic;
 use crate::tracer::fit::eval;
 use crate::tracer::primitives::Primitive;
@@ -35,7 +48,7 @@ pub fn complete(
     let window = place.window;
     let origin = window.origin();
     let is_free = place.free_at(ctx);
-    let total = |error: f32, shape: &Shape| error as f64 + shape.cost_segments() * ctx.segment_cost;
+    let total = |error: f32, shape: &Shape| f64::from(error) + shape.cost_segments() * ctx.segment_cost;
 
     let mut error = cost.value(&shape.path(origin));
     let mut proposals = Vec::new();
@@ -323,7 +336,7 @@ mod tests {
         let (w, h) = (40usize, 40usize);
         let inside = |i: usize| {
             let (x, y) = ((i % w) as f32 + 0.5, (i / w) as f32 + 0.5);
-            ((10.0..30.0).contains(&x) && (12.0..28.0).contains(&y)) as u8 as f32
+            f32::from(u8::from((10.0..30.0).contains(&x) && (12.0..28.0).contains(&y)))
         };
         let a = vec![1f32; w * h];
         let b: Vec<f32> = (0..w * h).map(|i| -2. * inside(i)).collect();

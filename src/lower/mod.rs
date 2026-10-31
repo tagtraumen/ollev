@@ -8,6 +8,15 @@
 //! shapes traced from the object's coverage ([`layers`]); dashes cut into strokes ([`dashes`]);
 //! even-odd loops wound for the nonzero rule ([`nonzero`]).
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::disallowed_macros,
+    clippy::disallowed_methods,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+
 use crate::model::{Clip, Item, Model, Object};
 pub(crate) use memo::Memo;
 
@@ -26,6 +35,7 @@ mod tests;
 /// What a host draws beyond filled and stroked cubic paths painted with a solid colour or a
 /// linear or centred radial gradient, at an opacity. Every feature off is lowered.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[expect(clippy::struct_excessive_bools, reason = "independent features of a host")]
 pub struct Capabilities {
     /// Fills by the even-odd rule; without, loops are wound for the nonzero rule.
     pub even_odd: bool,
@@ -113,21 +123,26 @@ impl std::fmt::Display for Report {
 
 /// The model in what `host` draws, and what it took.
 #[cfg(any(test, feature = "diagnostics"))]
+#[cfg_attr(
+    not(feature = "diagnostics"),
+    expect(clippy::trivially_copy_pass_by_ref, reason = "the lab tools' signature")
+)]
+#[must_use]
 pub fn lower(model: &Model, host: &Capabilities) -> (Model, Report) {
     let mut report = Report::default();
-    let model = lowered(model, host, &mut report, None);
+    let model = lowered(model, *host, &mut report, None);
     (model, report)
 }
 
 /// The model in what `host` draws, each object lowered once in the life of `memo`; `quick`
 /// for a preview, which takes the cheap form of each rewrite an object has not had yet.
-pub(crate) fn lower_kept(model: &Model, host: &Capabilities, memo: &mut Memo, quick: bool) -> Model {
+pub(crate) fn lower_kept(model: &Model, host: Capabilities, memo: &mut Memo, quick: bool) -> Model {
     lowered(model, host, &mut Report::default(), Some((memo, quick)))
 }
 
 /// The model before its objects are lowered: without clips, the drawing's own clip goes onto
 /// every object, so instances are drawn out.
-fn prepared(model: &Model, host: &Capabilities) -> Model {
+fn prepared(model: &Model, host: Capabilities) -> Model {
     let mut out = model.clone();
     if !host.clips
         && let Some(top) = out.clip.take()
@@ -147,11 +162,11 @@ fn prepared(model: &Model, host: &Capabilities) -> Model {
 /// [`lower`], measuring each rewrite's miss for the report where no memo keeps the objects.
 fn lowered(
     model: &Model,
-    host: &Capabilities,
+    host: Capabilities,
     report: &mut Report,
     memo: Option<(&mut Memo, bool)>,
 ) -> Model {
-    if *host == Capabilities::ALL {
+    if host == Capabilities::ALL {
         return model.clone();
     }
     let mut out = prepared(model, host);
@@ -191,9 +206,9 @@ pub(crate) async fn keep(model: &Model, host: &Capabilities, memo: &std::sync::M
     if *host == Capabilities::ALL {
         return;
     }
-    let mut out = prepared(model, host);
+    let mut out = prepared(model, *host);
     let mut report = Report::default();
-    let mut lowering = Lowering::new(model, host, std::mem::take(&mut out.clips), &mut report);
+    let mut lowering = Lowering::new(model, *host, std::mem::take(&mut out.clips), &mut report);
     lowering.measure = false;
     let base = lowering.clips.len();
     lock(memo).begin(&lowering);
@@ -306,9 +321,9 @@ struct Lowering<'a> {
 }
 
 impl<'a> Lowering<'a> {
-    fn new(model: &Model, host: &Capabilities, clips: Vec<Clip>, report: &'a mut Report) -> Self {
+    fn new(model: &Model, host: Capabilities, clips: Vec<Clip>, report: &'a mut Report) -> Self {
         Lowering {
-            host: *host,
+            host,
             measure: true,
             quick: false,
             width: model.width,

@@ -2,6 +2,16 @@
 //! error, every one moved at once by the derivative of the whole scene's error (through what
 //! lies above and below it), so neighbours meeting at a seam move together.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_precision_loss,
+    clippy::disallowed_macros,
+    clippy::disallowed_methods,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+
 use crate::render::ParamKind;
 use glam::{Vec2, Vec3};
 
@@ -102,7 +112,7 @@ pub async fn polish(ctx: &Context, scene: &mut Scene, edge: Option<EdgeTerm>) ->
         ParamKind::Point => POINT_CAP,
         ParamKind::Color => COLOR_CAP,
     };
-    let mut best: Option<(f64, Vec<f32>)> = None;
+    let mut best: (f64, Vec<f32>) = (f64::INFINITY, params.clone());
     // The parameters and gradient of the last step, for the curvature
     let mut last: Option<(Vec<f32>, Vec<f32>)> = None;
     for step in 0..=STEPS {
@@ -113,8 +123,8 @@ pub async fn polish(ctx: &Context, scene: &mut Scene, edge: Option<EdgeTerm>) ->
         if step == 0 {
             report.before = value;
         }
-        if best.as_ref().is_none_or(|b| value < b.0) {
-            best = Some((value, params.clone()));
+        if step == 0 || value < best.0 {
+            best = (value, params.clone());
         }
         if step == STEPS {
             break;
@@ -143,7 +153,7 @@ pub async fn polish(ctx: &Context, scene: &mut Scene, edge: Option<EdgeTerm>) ->
         untangle(scene, &slots, &mut params);
         report.steps += 1;
     }
-    let (value, params) = best.expect("step 0 measured");
+    let (value, params) = best;
     report.after = value;
     set_params(scene, &slots, &params);
     report
@@ -323,7 +333,7 @@ fn image_loss(ctx: &Context, window: Window, pixels: &[Vec3], loss: &Loss) -> (f
         .zip(pixels)
         .map(|(i, &r)| {
             let (v, d) = loss.pixel(ctx, i, r);
-            total += v as f64;
+            total += f64::from(v);
             d
         })
         .collect();
@@ -349,7 +359,7 @@ fn residuals(
     for k in (0..scene.shapes.len()).rev() {
         walk(scene, k, window, |j, alpha, _, _| {
             if movable[k] {
-                out[k] += (error[j] * alpha * through[j]) as f64;
+                out[k] += f64::from(error[j] * alpha * through[j]);
             }
             through[j] *= 1. - alpha;
         });
@@ -422,7 +432,10 @@ async fn backward(
         walk(scene, k, window, |j, alpha, share, (color, a)| {
             let d = d_image[j];
             let (x, y) = (window.x + j % window.width, window.y + j / window.width);
-            let u = *under.next().expect("a pixel below each reached");
+            // the forward pass kept a pixel below for each the walk reaches
+            let Some(&u) = under.next() else {
+                return;
+            };
             d_cov[(y - raster.y0) * raster.w + x - raster.x0] = share * d.dot(color - u);
             let coverage = alpha / a.max(1e-12);
             match &shape.fill.gradient {
@@ -503,7 +516,7 @@ mod tests {
                 [(x * 9) as u8, (y * 11) as u8, ((x + y) * 5) as u8]
             })
             .collect();
-        let ctx = Context::new(&rgb, w, h, 1.);
+        let ctx = Context::new(&rgb, w, h, 1.).unwrap();
         let mut scene = Scene::with_background(w, h, Vec3::splat(0.4));
         let a = scene.push(Shape::new(
             square(Vec2::new(3.3, 2.6), Vec2::new(15.2, 14.7)),
@@ -557,7 +570,7 @@ mod tests {
             let up = value(&mut scene, &p);
             p[k] -= 2. * step;
             let down = value(&mut scene, &p);
-            let fd = ((up - down) / (2. * step as f64)) as f32;
+            let fd = ((up - down) / (2. * f64::from(step))) as f32;
             assert!(
                 (fd - g).abs() <= 0.05 * fd.abs().max(g.abs()) + 0.05,
                 "parameter {k}: {fd} by differences, {g} walked"

@@ -1,5 +1,22 @@
 //! The inner layers above the layer: the white by opening, the tints, the full fit.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::disallowed_macros,
+    clippy::indexing_slicing,
+    clippy::too_many_lines,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::cast_possible_wrap,
+    clippy::disallowed_methods,
+))]
+
 use crate::HashMap;
 
 use super::{
@@ -17,6 +34,7 @@ pub struct OpenedWhite {
 
 /// The opening's width: wider than the white highlights' cores, narrower than the
 /// beneath's flat tones (5 px at the unit's reference width, 7 at twice it).
+#[must_use]
 pub fn opening_width(width: usize) -> usize {
     2 * crate::translucency::raster::unit_of(width).ceil() as usize + 3
 }
@@ -24,6 +42,7 @@ pub fn opening_width(width: usize) -> usize {
 /// A white of varying opacity above the layer, against the beneath a grey opening of the
 /// peel estimates (the white only brightens; outside the region held white). Per pixel t
 /// solves `o = (1 - t) d + t`, kept in (0.02, 0.9] within twice the tolerance, with interior.
+#[must_use]
 pub fn white_by_opening(inp: &InnerInputs, op: &Open, k: f64, m: DVec3) -> OpenedWhite {
     let (w, h) = (inp.width, inp.height);
     let size = opening_width(w);
@@ -136,6 +155,7 @@ pub fn white_by_opening(inp: &InnerInputs, op: &Open, k: f64, m: DVec3) -> Opene
 /// A tint above the layer, and per distinct color its fit: the homothety from the layer's
 /// images to the colors nothing else explains, by votes `mL = o - kL d` per kL in 0.5 to
 /// 0.96 (opacity up to a half), the best cells refitted and scored by pixels explained.
+#[must_use]
 pub fn fit_tint(inp: &InnerInputs, op: &Open, taken: &[PixelFit]) -> Option<(Tint, Vec<PixelFit>)> {
     let tol = MATCH_TOL;
     let cell = 2.0 * tol;
@@ -238,6 +258,7 @@ pub fn fit_tint(inp: &InnerInputs, op: &Open, taken: &[PixelFit]) -> Option<(Tin
 /// The inner layers at a pinned relation: the layer alone, the white ([`white_by_opening`])
 /// and up to `tints` tints, each fitted on the colors left (a color is the white's when most
 /// of its pixels are).
+#[must_use]
 pub fn fit_full(inp: &InnerInputs, k: f64, m: DVec3, tints: usize) -> InnerFit {
     let op = open_at(inp, k, m);
     let mut pc = classify_colors(inp, &op, k, m, false);

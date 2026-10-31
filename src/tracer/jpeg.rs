@@ -2,6 +2,20 @@
 //! frequencies to multiples of a quantization step, so differences within half a step (ringing,
 //! blocking) are noise rather than detail.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_precision_loss,
+    clippy::disallowed_macros,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+))]
+
 use glam::{Mat3, Vec3};
 
 /// The standard quantization tables of the JPEG specification (libjpeg), in natural order, which
@@ -46,7 +60,7 @@ fn table(base: &[u16; 64], quality: u32) -> [f32; 64] {
     } else {
         200 - 2 * quality
     };
-    base.map(|b| ((b as u32 * scale + 50) / 100).clamp(1, 255) as f32)
+    base.map(|b| ((u32::from(b) * scale + 50) / 100).clamp(1, 255) as f32)
 }
 
 /// The orthonormal 8x8 DCT basis, which is what JPEG uses: `basis[k][n]`.
@@ -122,7 +136,7 @@ fn planes(rgb: &[u8], width: usize, height: usize, matrix: Mat3) -> [Plane; 3] {
         .as_chunks::<3>()
         .0
         .iter()
-        .map(|c| Vec3::new(c[0] as f32, c[1] as f32, c[2] as f32) / 255.)
+        .map(|c| Vec3::new(f32::from(c[0]), f32::from(c[1]), f32::from(c[2])) / 255.)
         .collect();
     std::array::from_fn(|c| Plane {
         values: colors.iter().map(|&p| (matrix * p)[c]).collect(),
@@ -170,6 +184,7 @@ fn quality_of(
 
 /// Detects JPEG compression in RGB pixels (8 bits per channel, row-major), or `None` when the
 /// image shows no sign of it.
+#[must_use]
 pub fn detect(rgb: &[u8], width: usize, height: usize) -> Option<Jpeg> {
     if width < 16 || height < 16 {
         return None;
@@ -220,6 +235,7 @@ impl Jpeg {
     /// The spread of the compression's error per pixel of `rgb`, as an RGB distance in `0..1`:
     /// each kept frequency adds `q / sqrt(12)` spread over its block's 64 pixels (frequencies
     /// rounded to zero are left out), carried to RGB by the inverse color transform.
+    #[must_use]
     pub fn spread(&self, rgb: &[u8], width: usize, height: usize) -> Vec<f32> {
         let from = to_ycc().inverse();
         let b = basis();

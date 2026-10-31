@@ -2,6 +2,23 @@
 //! as a white or black of per-pixel opacity or a tint over the layer's image. An inner layer
 //! moves an image only toward its own color, so it pins k where one material would not.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::disallowed_macros,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::disallowed_methods,
+    clippy::too_many_lines,
+))]
+
 use crate::HashMap;
 
 use super::materials::{
@@ -64,6 +81,7 @@ pub struct Tint {
 
 #[cfg(feature = "diagnostics")]
 impl Tint {
+    #[must_use]
     pub fn c(&self) -> DVec3 {
         self.m / (1.0 - self.k)
     }
@@ -112,6 +130,7 @@ impl InnerInputs {
     /// The pin's palettes (shared colors dropped from the inside palette, which only
     /// proposes m) and the region's pixels off the rims. `layer`, when given, are pixels
     /// taken out of the outside.
+    #[must_use]
     pub fn new(img: &Image, region: &[bool], rim: &[bool], layer: Option<&[bool]>) -> Self {
         let open: Option<Vec<bool>> = layer.map(|l| l.iter().map(|v| !v).collect());
         let (pi, po) = region_palettes(img, region, rim, true, open.as_deref());

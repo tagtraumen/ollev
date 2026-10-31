@@ -1,6 +1,18 @@
 //! Finding shapes alike: each outline is resampled about its centroid, candidates are paired by
 //! their perimeter over size and their fill, and confirmed by aligning the outlines.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::disallowed_macros,
+    clippy::disallowed_methods,
+    clippy::float_cmp,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+
 use crate::tracer::fit::eval;
 use glam::Vec2;
 

@@ -1,5 +1,20 @@
 //! The objective in its parts, the decision in a window, and the layer put on top.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::disallowed_macros,
+    clippy::indexing_slicing,
+    clippy::too_many_lines,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::cast_precision_loss,
+))]
+
 use super::*;
 
 /// The plan's objective over a scene in its parts: the squared color error, the segments
@@ -13,6 +28,7 @@ pub struct Parts {
 }
 
 impl Parts {
+    #[must_use]
     pub fn total(&self) -> f64 {
         self.error + self.cost
     }
@@ -29,7 +45,7 @@ pub fn parts(ctx: &Context, scene: &Scene) -> Parts {
         .map(|s| s.cost_segments() * ctx.segment_cost + ctx.path_cost)
         .sum();
     Parts {
-        error: error as f64,
+        error: f64::from(error),
         segments: scene.shapes.iter().map(Shape::cost_segments).sum(),
         paths: scene.shapes.len(),
         cost,
@@ -61,7 +77,7 @@ pub(super) async fn decide_in_window(
     detail: f64,
     options: Options,
     above: Option<&[bool]>,
-) -> Option<WindowVerdict> {
+) -> Result<Option<WindowVerdict>, TraceError> {
     let (width, height) = (ctx.width, ctx.height);
     let mut window = Window::around(
         candidate.min.as_vec2(),
@@ -74,7 +90,7 @@ pub(super) async fn decide_in_window(
         // A nested level decides even a large candidate in a window, since its whole traces
         // only recurse
         if crate::progress::depth() == 0 {
-            return None;
+            return Ok(None);
         }
         window = densest_quarter(&candidate.mask, width, height);
     }
@@ -90,11 +106,14 @@ pub(super) async fn decide_in_window(
         .flat_map(|c| (*c * 255.).round().to_array().map(|v| v as u8))
         .collect();
     // The same picture as the whole image, so the same costs and tolerances
-    let trace = async |rgb: Vec<u8>, edge: Option<&[bool]>, peel: bool| -> (Context, Scene) {
+    let trace = async |rgb: Vec<u8>,
+                       edge: Option<&[bool]>,
+                       peel: bool|
+           -> Result<(Context, Scene), TraceError> {
         let mut timings = Timings::default();
         let (mut c, h) =
             crate::hierarchy::analyze(&rgb, window.width, window.height, detail, &mut timings)
-                .await;
+                .await?;
         c.segment_cost = ctx.segment_cost;
         c.path_cost = ctx.path_cost;
         c.frame = ctx.frame;
@@ -110,15 +129,17 @@ pub(super) async fn decide_in_window(
             &mut timings,
             false,
         )
-        .await;
-        (c, scene)
+        .await?;
+        Ok((c, scene))
     };
     let cropped = candidate.crop(window, width);
     let above: Option<Vec<bool>> = above.map(|e| window.pixels(width).map(|i| e[i]).collect());
     let edge = peeled_edge(&cropped.mask, window.width, window.height, above.as_deref());
-    let (local, plain) = trace(crop(&original), None, false).await;
-    let (_, mut with) = trace(crop(peeled), Some(&edge), true).await;
-    let overlay = cropped.overlay(window.width, window.height)?;
+    let (local, plain) = trace(crop(&original), None, false).await?;
+    let (_, mut with) = trace(crop(peeled), Some(&edge), true).await?;
+    let Some(overlay) = cropped.overlay(window.width, window.height) else {
+        return Ok(None);
+    };
     append_overlay(
         &local,
         &mut with,
@@ -127,13 +148,13 @@ pub(super) async fn decide_in_window(
         None,
         options.stages.primitives,
     );
-    Some(WindowVerdict {
+    Ok(Some(WindowVerdict {
         with: parts(&local, &with),
         plain: parts(&local, &plain),
         discount: shading_discount(&local, candidate),
         terms: LayerTerms::measure(&local, &with, &plain, &cropped),
         segment_cost: local.segment_cost,
-    })
+    }))
 }
 
 /// The window of half the image's width and height holding most of `mask`'s pixels, the
@@ -181,11 +202,13 @@ pub struct WindowVerdict {
 
 impl WindowVerdict {
     /// Whether the window keeps the shape: the scene with it explains the window for less.
+    #[must_use]
     pub fn keeps(&self) -> bool {
         self.margin() < 0.
     }
 
     /// The objective with the shape minus without it in the window.
+    #[must_use]
     pub fn margin(&self) -> f64 {
         margin(
             &self.with,
@@ -212,7 +235,7 @@ pub(super) fn margin(
         return (with.total() - discount) - without.total();
     }
     // an error of the beneath reaches the raster `k` times smaller
-    let k = (terms.k as f64).max(1e-3);
+    let k = f64::from(terms.k).max(1e-3);
     let w = 1. / (k * k) - 1.;
     let credit = terms.shared * segment_cost;
     let (under_with, under_without) = (terms.seen_with, terms.seen_without);

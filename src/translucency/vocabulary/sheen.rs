@@ -1,8 +1,26 @@
 //! The white over the layer as blurred lenses clipped to it.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::disallowed_macros,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::disallowed_methods,
+    clippy::too_many_lines,
+))]
+
 use glam::{DVec2, DVec3};
 
 use super::paint::gain_of;
+use crate::translucency::raster::Order;
 use super::{
     Bezier, FIT_TOL, Image, Lens, Mark, NOISE, Options, Win, fit_cubics, flatten,
     gaussian_filter, hysteresis, line_chains, map1, normals, unit_of,
@@ -10,6 +28,7 @@ use super::{
 
 /// The opacity of a white over the composite that brings it to the image per pixel:
 /// o = (1 - t) d + t, t by least squares over the channels, in [0, 1], 0 off the region.
+#[must_use]
 pub fn white_target(img: &Image, comp: &[DVec3], region: &[bool]) -> Vec<f64> {
     (0..img.len())
         .map(|i| {
@@ -26,8 +45,9 @@ pub fn white_target(img: &Image, comp: &[DVec3], region: &[bool]) -> Vec<f64> {
 /// Bright ridges of a plane at scale s: the strength the most negative Hessian eigenvalue
 /// of its smoothing times s squared, the centres those at least as strong as their
 /// neighbours across the ridge.
+#[must_use]
 pub fn bright_ridges(field: &[f64], width: usize, height: usize, s: f64) -> (Vec<f64>, Vec<bool>) {
-    let f = gaussian_filter(field, width, height, s, 0, 0);
+    let f = gaussian_filter(field, width, height, s, Order::Smooth, Order::Smooth);
     let (w, h) = (width as isize, height as isize);
     let at = |y: isize, x: isize| f[(y.clamp(0, h - 1) * w + x.clamp(0, w - 1)) as usize];
     let n = field.len();
@@ -64,6 +84,7 @@ pub fn bright_ridges(field: &[f64], width: usize, height: usize, s: f64) -> (Vec
 
 /// The outline of a lens along a centreline: its width at the middle, tapering to points at
 /// both ends as a half sine of the arc length, fitted to the lines' tolerance.
+#[must_use]
 pub fn lens_outline(centre: &[DVec2], width: f64, tol: f64) -> Vec<Bezier> {
     let mut arc = vec![0.0];
     for s in centre.windows(2) {
@@ -109,7 +130,7 @@ pub(super) fn lens_alpha(
         blur: sigma as f32,
     };
     let polys = crate::render::scene::flatten(&path);
-    let b = crate::render::blur::Blurred::new(polys, path.fill_rule, path.blur, win.w(), win.h());
+    let b = crate::render::blur::Blurred::new(&polys, path.fill_rule, path.blur, win.w(), win.h());
     let g = (0..win.len())
         .map(|i| f64::from(b.at(i % win.w(), i / win.w())) * clip(win.at(i, img_w)))
         .collect();

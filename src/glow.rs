@@ -3,6 +3,18 @@
 //! shredded into flat bands or folded into a frame-sized gradient; this pass asks of each ground
 //! whether its flat colour plus glows fitted from its residual lowers the error plus price.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::disallowed_macros,
+    clippy::indexing_slicing,
+    clippy::too_many_lines,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+
 use glam::{Vec2, Vec3};
 
 use crate::fill::{Costs, Over, concentric, ellipse_transform, stretch, with_alpha};
@@ -40,7 +52,7 @@ fn ground_colour(ctx: &Context, pixels: &[usize]) -> Option<Vec3> {
         *counts.entry(key(ctx.target[i])).or_default() += 1;
     }
     let mode = counts.into_iter().max_by_key(|&(k, n)| (n, k))?.0;
-    let mode = Vec3::from(mode.map(|v| v as f32 / 255.));
+    let mode = Vec3::from(mode.map(|v| f32::from(v) / 255.));
     let near: Vec<Vec3> = pixels
         .iter()
         .map(|&i| ctx.target[i])
@@ -332,7 +344,7 @@ async fn propose(
     let room: f64 = std::iter::once(k)
         .chain(members.iter().copied())
         .flat_map(|m| bands.pixels[m].iter())
-        .map(|&i| plain(ctx, i, now[i]) as f64)
+        .map(|&i| f64::from(plain(ctx, i, now[i])))
         .sum::<f64>()
         + members
             .iter()
@@ -369,13 +381,13 @@ async fn propose(
     let mut found: Vec<(f64, Vec<usize>)> = pieces(&residual, w, h)
         .into_iter()
         .map(|p| {
-            let mass: f64 = p.iter().map(|&i| plain(ctx, i, ground) as f64).sum();
+            let mass: f64 = p.iter().map(|&i| f64::from(plain(ctx, i, ground))).sum();
             (mass, p)
         })
         // A glow explains a piece the flat ground leaves, and pays where the scene misses it
         // now or draws it with bands of its own
         .filter(|(m, p)| {
-            let missed: f64 = p.iter().map(|&i| plain(ctx, i, now[i]) as f64).sum();
+            let missed: f64 = p.iter().map(|&i| f64::from(plain(ctx, i, now[i]))).sum();
             *m > least && (missed > least || p.iter().any(|&i| bands.owner[i] as usize != k))
         })
         .collect();
@@ -440,7 +452,7 @@ async fn propose(
         .filter(|&m| {
             let change: f64 = bands.pixels[m]
                 .iter()
-                .map(|&i| (plain(ctx, i, under[i]) - plain(ctx, i, now[i])) as f64)
+                .map(|&i| f64::from(plain(ctx, i, under[i]) - plain(ctx, i, now[i])))
                 .sum();
             !dots && change < price(ctx, &scene.shapes[m], costs)
         })
@@ -531,7 +543,7 @@ async fn propose(
     }
     let window = Window::around(min, max, 1., w, h);
     let render = |scene: &Scene| scene.render(window, 0..scene.shapes.len(), [0.; 3]);
-    let before = plain_error(ctx, window, &render(scene)) as f64
+    let before = f64::from(plain_error(ctx, window, &render(scene)))
         + std::iter::once(k)
             .chain(removed.iter().copied())
             .map(|m| price(ctx, &scene.shapes[m], costs))
@@ -564,7 +576,7 @@ async fn propose(
         );
     }
     let cost = |scene: &Scene, new: usize| {
-        plain_error(ctx, window, &render(scene)) as f64
+        f64::from(plain_error(ctx, window, &render(scene)))
             + (at..=at + new)
                 .map(|j| price(ctx, &scene.shapes[j], costs))
                 .sum::<f64>()
@@ -650,7 +662,7 @@ mod tests {
                 at(p).to_array().map(|x| (x * 255.).round() as u8)
             })
             .collect();
-        let ctx = Context::new(&rgb, w, w, 1.);
+        let ctx = Context::new(&rgb, w, w, 1.).unwrap();
         let mut scene = Scene::with_background(w, w, ground);
         for k in 0..4 {
             let r = 30. * (1. - k as f32 / 4.);
@@ -693,7 +705,7 @@ mod tests {
             .iter()
             .flat_map(|v| v.to_array().map(|x| (x * 255.).round() as u8))
             .collect();
-        let ctx = Context::new(&rgb, w, w, 1.);
+        let ctx = Context::new(&rgb, w, w, 1.).unwrap();
         let mut scene = Scene::with_background(w, w, ground);
         assert_eq!(crate::progress::finish(glow_scene(&ctx, &mut scene)), 1);
         assert_eq!(scene.shapes.len(), 2);

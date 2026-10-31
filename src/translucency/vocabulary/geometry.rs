@@ -1,5 +1,22 @@
 //! Outlines and polylines: crack loops, smoothing, resampling, a polyline's coverage.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::disallowed_macros,
+    clippy::disallowed_methods,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::too_many_lines,
+))]
+
 use glam::DVec2;
 
 use super::{Bezier, bez, fit_cubics};
@@ -7,6 +24,7 @@ use super::{Bezier, bez, fit_cubics};
 /// The outline of a mask as closed loops through the midpoints of the cracks between pixels
 /// in and out (SVG units), the mask on each loop's left (y down); pixels touching only
 /// diagonally are kept apart.
+#[must_use]
 pub fn crack_loops(mask: &[bool], width: usize, height: usize) -> Vec<Vec<DVec2>> {
     let inside = |x: isize, y: isize| {
         x >= 0
@@ -98,6 +116,7 @@ pub fn crack_loops(mask: &[bool], width: usize, height: usize) -> Vec<Vec<DVec2>
 
 /// A closed loop smoothed along its arc by a Gaussian of `s` (the cracks' staircase is the
 /// grid's, not the shape's).
+#[must_use]
 pub fn smooth_loop(p: &[DVec2], s: f64) -> Vec<DVec2> {
     let n = p.len();
     if n < 3 || s <= 0.0 {
@@ -121,6 +140,7 @@ pub fn smooth_loop(p: &[DVec2], s: f64) -> Vec<DVec2> {
 
 /// A closed loop as cubics: cut into four arcs that share their ends (the open fit takes a
 /// loop whose ends coincide for a point), each fitted.
+#[must_use]
 pub fn fit_loop(p: &[DVec2], tol: f64) -> Vec<Bezier> {
     let n = p.len();
     if n < 4 {
@@ -137,6 +157,7 @@ pub fn fit_loop(p: &[DVec2], tol: f64) -> Vec<Bezier> {
 }
 
 /// A closed polyline resampled at a spacing along its arc, back to its start.
+#[must_use]
 pub fn resample(p: &[DVec2], step: f64) -> Vec<DVec2> {
     let mut pts = p.to_vec();
     if !pts.is_empty() {
@@ -178,6 +199,7 @@ pub(super) fn normals(p: &[DVec2]) -> Vec<DVec2> {
 }
 
 /// Points along cubics, about one every half pixel.
+#[must_use]
 pub fn flatten(cubics: &[Bezier]) -> Vec<DVec2> {
     let mut out = Vec::new();
     for c in cubics {

@@ -1,8 +1,26 @@
 //! What the tracer optimizes: the image, how to measure error against it, and what a segment
 //! costs in units of that error.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+#![cfg_attr(
+    not(feature = "diagnostics"),
+    expect(
+        clippy::unused_self,
+        reason = "panic ratchet: remove a lint once the module is clean of it"
+    )
+)]
+
 use glam::{DVec3, Vec2, Vec3};
 
+use crate::error::{TraceError, with_capacity};
 use crate::hierarchy::Stats;
 
 #[derive(Clone)]
@@ -49,17 +67,18 @@ const SEGMENT_COST: f64 = 0.5;
 
 impl Context {
     /// A context for the RGB image `rgb` at the detail level `detail`.
-    pub fn new(rgb: &[u8], width: usize, height: usize, detail: f64) -> Self {
-        let target = rgb
-            .as_chunks::<3>()
-            .0
-            .iter()
-            .map(|c| Vec3::new(c[0] as f32, c[1] as f32, c[2] as f32) / 255.)
-            .collect::<Vec<_>>()
-            .into();
+    pub fn new(rgb: &[u8], width: usize, height: usize, detail: f64) -> Result<Self, TraceError> {
+        let pixels = rgb.as_chunks::<3>().0;
+        let mut target = with_capacity(pixels.len())?;
+        target.extend(
+            pixels
+                .iter()
+                .map(|&[r, g, b]| Vec3::new(f32::from(r), f32::from(g), f32::from(b)) / 255.),
+        );
+        let target = std::sync::Arc::new(target);
         let segment_cost =
             SEGMENT_COST * (width * height) as f64 / (128. * 128.) / (detail * detail);
-        Self {
+        Ok(Self {
             width,
             height,
             target,
@@ -72,16 +91,18 @@ impl Context {
             accept: None,
             unmixed: None,
             free: None,
-        }
+        })
     }
 
     /// What drawing the pixels of `stats` in their mean saves over showing `under`.
+    #[must_use]
     pub fn saving(&self, stats: &Stats, under: DVec3) -> f64 {
         stats.sse_about(under) - stats.sse()
     }
 
     /// The error of `rendered`, the pixels of `window` in RGB: the one place that decides what
     /// counts as error.
+    #[must_use]
     pub fn error(&self, window: Window, rendered: &[Vec3]) -> f32 {
         window
             .pixels(self.width)
@@ -92,6 +113,7 @@ impl Context {
 
     /// The error of pixel `i` showing `rendered` (RGB): its weight times the squared residual
     /// beyond its tolerance.
+    #[must_use]
     pub fn pixel_error(&self, i: usize, rendered: Vec3) -> f32 {
         let (w, target) = self.weighted_target(i);
         w * crate::uncertainty::excess(
@@ -101,31 +123,37 @@ impl Context {
     }
 
     /// The price of a segment for whether a planned shape is drawn at all.
+    #[must_use]
     pub fn accept_cost(&self) -> f64 {
         self.accept.map_or(self.segment_cost, |a| a.0)
     }
 
     /// The price of a path for whether a planned shape is drawn at all.
+    #[must_use]
     pub fn accept_path_cost(&self) -> f64 {
         self.accept.map_or(self.path_cost, |a| a.1)
     }
 
     /// How far pixel `i` may deviate before it counts as error, 0 without a tolerance.
+    #[must_use]
     pub fn tolerance_at(&self, i: usize) -> f32 {
         self.tolerance.as_ref().map_or(0., |t| t[i])
     }
 
     /// The squared difference between two RGB colors.
+    #[must_use]
     pub fn distance_squared(&self, a: Vec3, b: Vec3) -> f32 {
         a.distance_squared(b)
     }
 
     /// A color from the hierarchy's statistics as a shape's.
+    #[must_use]
     pub fn rgb(&self, color: DVec3) -> Vec3 {
         color.as_vec3()
     }
 
     /// Whether pixel `i` is left out of the error, so a shape is free to show anything there.
+    #[must_use]
     pub fn is_free(&self, i: usize) -> bool {
         self.weights.as_ref().is_some_and(|w| {
             w.masked_color.is_none()
@@ -136,6 +164,7 @@ impl Context {
     }
 
     /// How much pixel `i` counts and what it should show.
+    #[must_use]
     pub fn weighted_target(&self, i: usize) -> (f32, Vec3) {
         let target = self.target[i];
         let Some(weights) = &self.weights else {
@@ -204,6 +233,7 @@ pub struct Window {
 
 impl Window {
     /// The pixels touched by the box from `min` to `max`, grown by `margin`, clipped to the image.
+    #[must_use]
     pub fn around(min: Vec2, max: Vec2, margin: f32, width: usize, height: usize) -> Self {
         let x0 = ((min.x - margin).floor().max(0.) as usize).min(width);
         let y0 = ((min.y - margin).floor().max(0.) as usize).min(height);
@@ -217,14 +247,17 @@ impl Window {
         }
     }
 
+    #[must_use]
     pub fn origin(&self) -> Vec2 {
         Vec2::new(self.x as f32, self.y as f32)
     }
 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.width == 0 || self.height == 0
     }
 
+    #[must_use]
     pub fn intersects(&self, min: Vec2, max: Vec2) -> bool {
         min.x < (self.x + self.width) as f32
             && min.y < (self.y + self.height) as f32
@@ -233,6 +266,7 @@ impl Window {
     }
 
     /// The whole image as a window.
+    #[must_use]
     pub fn full(width: usize, height: usize) -> Self {
         Self {
             x: 0,
@@ -243,6 +277,7 @@ impl Window {
     }
 
     /// The position of image pixel `i` in the window, if it lies within.
+    #[must_use]
     pub fn index(&self, i: usize, image_width: usize) -> Option<usize> {
         let (x, y) = (i % image_width, i / image_width);
         (x >= self.x && y >= self.y && x < self.x + self.width && y < self.y + self.height)
@@ -250,6 +285,7 @@ impl Window {
     }
 
     /// The position in the window of the pixel holding point `p`, if it lies within.
+    #[must_use]
     pub fn cell(&self, p: Vec2) -> Option<usize> {
         let (x, y) = (p.x.floor() - self.x as f32, p.y.floor() - self.y as f32);
         (x >= 0. && y >= 0. && (x as usize) < self.width && (y as usize) < self.height)

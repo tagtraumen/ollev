@@ -43,12 +43,12 @@ own scenes as they grow. It is cheap enough to ask for every second or two, sinc
 lowered for an earlier call is kept; `progress.revision()` tells when the scene changed.
 
 ```rust
-let mut tracing = ollev::Tracing::new(&image, &ollev::TraceOptions::default()).unwrap();
+let mut tracing = ollev::Tracing::new(&image, &ollev::TraceOptions::default())?;
 let model = loop {
     let end = now() + 0.1; // the host's clock, in seconds
     match tracing.step(|_| {
         if now() < end { std::ops::ControlFlow::Continue(()) } else { std::ops::ControlFlow::Break(()) }
-    }) {
+    })? {
         // where it paused: stage, fraction, and the latest scene kept for showing
         // (`progress.model()`, in the form the finished trace returns)
         ollev::Step::Paused(progress) => continue,
@@ -56,6 +56,8 @@ let model = loop {
     }
 };
 ```
+
+We strive to reduce panics throughout the library. If you encounter panics through either programming logic errors or failed allocations please report them.
 
 `TraceOptions` holds:
 

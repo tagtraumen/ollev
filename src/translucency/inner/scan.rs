@@ -1,5 +1,22 @@
 //! The pin: the k scan and its rows.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::disallowed_methods,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::disallowed_macros,
+    clippy::indexing_slicing,
+    clippy::too_many_lines,
+))]
+
 use super::{
     DVec3, InnerFit, InnerInputs, MATCH_TOL, Matcher, NOISE, arange, cheb, fit_at_score,
     fit_fixed, in_gamut_c, vote_cells,
@@ -32,7 +49,9 @@ pub async fn scan(
         }
         let leads = score.is_some_and(|s| rows.iter().filter_map(|r| r.score).all(|b| s >= b));
         if leads {
-            rows.iter_mut().for_each(|r| r.fit = None);
+            for r in &mut rows {
+                r.fit = None;
+            }
         }
         rows.push(ScanRow {
             k,
@@ -77,6 +96,7 @@ pub(super) fn row_best(inp: &InnerInputs, mts: &[Matcher], k: f64) -> Option<(DV
 }
 
 /// The pin's k grid: 0.30 to 0.90 by 0.01.
+#[must_use]
 pub fn pin_grid() -> Vec<f64> {
     arange(0.30, 0.905, 0.01)
 }
@@ -84,6 +104,7 @@ pub fn pin_grid() -> Vec<f64> {
 /// The pin's k grid at a coarse step, every fifth k of [`pin_grid`] (0.30 to 0.90 by 0.05): a
 /// first look at whether any relation of the grid explains the region as a layer at all (see
 /// [`crate::translucency::families::ranked_candidates`]), whose rows the pin then reuses.
+#[must_use]
 pub fn coarse_grid() -> Vec<f64> {
     pin_grid().into_iter().step_by(5).collect()
 }
@@ -118,17 +139,16 @@ async fn pin_over(inp: &InnerInputs, mut grid: Vec<f64>, done: Vec<ScanRow>) -> 
     let (mut lead, mut best): (Option<f64>, Option<InnerFit>) = (None, None);
     for (k, done) in rows {
         crate::progress::poll().await;
-        let (score, fit) = match done {
-            Some(row) => (row.score, row.fit),
+        let (score, fit) = if let Some(row) = done {
+            (row.score, row.fit)
+        } else {
             // a row of the rest scored without its record, its fit built only where it takes
             // the lead: the score is the fit's, bit for bit (`the_score_alone_matches_the_fit`),
             // so the rows that do not lead need none
-            None => {
-                let fit = row_best(inp, &mts, k)
-                    .filter(|&(_, s)| lead.is_none_or(|b| s >= b))
-                    .map(|(m, _)| fit_fixed(inp, k, m));
-                (fit.as_ref().map(|f| f.score), fit)
-            }
+            let fit = row_best(inp, &mts, k)
+                .filter(|&(_, s)| lead.is_none_or(|b| s >= b))
+                .map(|(m, _)| fit_fixed(inp, k, m));
+            (fit.as_ref().map(|f| f.score), fit)
         };
         if let Some(s) = score
             && lead.is_none_or(|b| s >= b)

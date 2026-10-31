@@ -1,6 +1,23 @@
 //! The region stage: a relation grown into regions by a frontier from the seed pixels, and
 //! each verified on its own boundary.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::disallowed_macros,
+    clippy::indexing_slicing,
+    clippy::too_many_lines,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::disallowed_methods,
+))]
+
 use glam::{IVec2, Vec3};
 
 use super::leaves::{Leaves, components};
@@ -110,6 +127,7 @@ const CLOSE: f32 = 3.;
 /// The shape's pixels for `o = k b + m` grown from its seed leaves where a pixel is nearer its
 /// leaf's plane through the relation than the plane itself; gaps to [`CLOSE`] px closed, what it
 /// encloses joined unless it shows a colour of a leaf reaching the open image (a hole).
+#[must_use]
 pub fn grow_pixels(lv: &Leaves, target: &[Vec3], seeds: &[bool], k: f32, m: Vec3) -> Vec<bool> {
     let (width, height) = (lv.width, lv.height);
     let mut mask = vec![false; width * height];
@@ -263,6 +281,7 @@ pub struct Region {
 }
 
 impl Region {
+    #[must_use]
     pub fn kept(&self) -> bool {
         self.share && self.show && self.interior
     }
@@ -271,6 +290,7 @@ impl Region {
 /// The connected parts a relation grows (`pair_fits`), each refitted over its boundary pairs and
 /// kept where most pairs fit, their backgrounds spread past the noise and it has an interior;
 /// with `shade` only the scale of a black or white relation is refitted.
+#[must_use]
 pub fn regions_of(
     lv: &Leaves,
     target: &[Vec3],

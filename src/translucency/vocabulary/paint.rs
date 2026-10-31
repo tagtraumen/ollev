@@ -1,5 +1,22 @@
 //! A line's paint and width fitted over the composite, and its gain.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_precision_loss,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::disallowed_macros,
+    clippy::disallowed_methods,
+    clippy::too_many_lines,
+))]
+
 use glam::{DVec2, DVec3};
 
 use super::{
@@ -19,7 +36,7 @@ pub(super) fn gain_of(
     tol: Option<&[f32]>,
 ) -> f64 {
     let err = |p: usize, d: DVec3| {
-        crate::uncertainty::excess64(d.length_squared(), tol.map_or(0., |t| t[p] as f64))
+        crate::uncertainty::excess64(d.length_squared(), tol.map_or(0., |t| f64::from(t[p])))
     };
     let mut g = 0.0;
     for (i, &a) in alpha.iter().enumerate() {
@@ -202,9 +219,11 @@ pub(super) async fn stroke_runs(
         .step_by(step)
         .map(|a| (a, (a + step + 1).min(n)))
         .collect();
-    if pieces.len() > 1 && pieces[pieces.len() - 1].1 - pieces[pieces.len() - 1].0 < step / 2 + 1 {
-        let last = pieces.pop().unwrap();
-        pieces.last_mut().unwrap().1 = last.1;
+    if let [.., before, last] = pieces.as_mut_slice()
+        && last.1 - last.0 < step / 2 + 1
+    {
+        before.1 = last.1;
+        pieces.pop();
     }
     let net = |f: &Fit| f.gain - cost * f.cubics.len() as f64;
     let mut runs: Vec<(usize, usize, Fit)> = Vec::new();

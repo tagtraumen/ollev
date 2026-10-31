@@ -2,6 +2,20 @@
 //! that the scene shows in another colour, chained as its strokes are and drawn on top, the
 //! shapes beneath refitted, kept where the objective at the acceptance price falls.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::disallowed_macros,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::disallowed_methods,
+))]
+
 use glam::Vec3;
 
 use crate::economy::Judge;
@@ -40,7 +54,7 @@ fn shaped(stats: &crate::hierarchy::Stats) -> Option<(Vec2, Vec2, f32, f32)> {
         p[1] / n - c.x * c.y,
         p[2] / n - c.y * c.y,
     );
-    let half = (xx + yy) / 2.;
+    let half = f64::midpoint(xx, yy);
     let root = (((xx - yy) / 2.).powi(2) + xy * xy).sqrt();
     let (l1, l2) = (half + root, (half - root).max(0.));
     // a run of k pixels has the variance (k^2 - 1) / 12
@@ -438,7 +452,7 @@ fn refit_under(ctx: &Context, scene: &mut Scene, k: usize, tolerances: &[f32]) -
             );
             let after = place.error(ctx, &refitted);
             let saved = (shape.cost_segments() - refitted.cost_segments()) * ctx.segment_cost;
-            (after - before) as f64 <= saved
+            f64::from(after - before) <= saved
         }
         None => false,
     };
@@ -491,7 +505,7 @@ mod tests {
             }
         }
         let detail = crate::tracer::auto_detail(&rgb, w, h);
-        let scene = plan::trace(&rgb, w, h, detail, plan::Options::default());
+        let scene = plan::trace(&rgb, w, h, detail, plan::Options::default()).unwrap();
         let dashed = scene
             .shapes
             .iter()

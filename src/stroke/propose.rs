@@ -1,5 +1,19 @@
 //! A stroke proposed from a skeleton chain: the edges either side, width, caps and corners.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::disallowed_macros,
+    clippy::disallowed_methods,
+    clippy::indexing_slicing,
+    clippy::too_many_lines,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+
 use super::*;
 
 /// The band's edges as the image shows them: per window pixel, how much of the shape's fill
@@ -334,7 +348,7 @@ pub(super) fn propose(skeleton: &Skeleton, edges: &Edges) -> Option<Proposal> {
         } else {
             return Some(0.);
         };
-        Some(wide_turns[i]? - (wide_turns[a]? + wide_turns[b]?) / 2.)
+        Some(wide_turns[i]? - f32::midpoint(wide_turns[a]?, wide_turns[b]?))
     };
     let score: Vec<f32> = (0..n)
         .map(|i| match excess(i) {

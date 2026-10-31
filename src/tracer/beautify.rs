@@ -1,8 +1,24 @@
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_precision_loss,
+    clippy::disallowed_macros,
+    clippy::disallowed_methods,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+))]
+
 use glam::Vec2;
 
 use crate::tracer::Cubic;
 use crate::tracer::fit::{eval, fit_cubics};
 
+#[must_use]
 pub fn beautify_chain(chain: &[Cubic], tolerance: f32, corner_angle: f32) -> Vec<Cubic> {
     let corners: Vec<bool> = (0..chain.len())
         .map(|i| {
@@ -17,6 +33,7 @@ pub fn beautify_chain(chain: &[Cubic], tolerance: f32, corner_angle: f32) -> Vec
 
 /// [`beautify_chain`] with the corners given: `corners[i]` says whether the joint at the start
 /// of `chain[i]` is one.
+#[must_use]
 pub fn beautify_chain_at(chain: &[Cubic], corners: &[bool], tolerance: f32) -> Vec<Cubic> {
     let mut out = Vec::with_capacity(chain.len());
     for piece in split_at(chain, corners) {

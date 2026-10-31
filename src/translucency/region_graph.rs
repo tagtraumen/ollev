@@ -2,6 +2,23 @@
 //! pixels read the other way (layer, inner layer above it, or an outside material seen bare),
 //! a boundary per pixel of length by how little contour it lies on, times the unit.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_precision_loss,
+    clippy::disallowed_macros,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::disallowed_methods,
+    clippy::too_many_lines,
+))]
+
 use crate::HashMap;
 use std::collections::VecDeque;
 
@@ -68,6 +85,7 @@ pub struct Reading {
 /// The [`Reading`] of the relation `k`, `c` over the materials of `outside`, with `tints` the
 /// colours of the tints the pin found above the layer (each a further corner of the
 /// triangles); none when `outside` has no material.
+#[must_use]
 pub fn classes(
     img: &Image,
     outside: &Palette,
@@ -131,6 +149,7 @@ pub fn classes(
 /// The cost per pixel of length of a boundary on the crack between `i` and `j`: the unit, falling
 /// with the step in show-throughs (0.61 at one, 0.14 at two), the step read one pixel further out
 /// on each side, so an anti-aliased step counts fully and a crack along an edge's band does not.
+#[must_use]
 pub fn crack_cost(img: &Image, i: usize, j: usize) -> f64 {
     let (w, h) = (img.width, img.height);
     let u = unit_of(w);
@@ -160,6 +179,7 @@ pub fn crack_cost(img: &Image, i: usize, j: usize) -> f64 {
 /// The layer's region under `k`, `c` over the materials of `outside` with the pin's `tints`,
 /// the minimum cut over `leaves` ([`classes`], [`from_graph`]); `min_px` is a material's least
 /// pixels at this width. Empty where `outside` has no material.
+#[must_use]
 pub fn region(
     img: &Image,
     outside: &Palette,
@@ -269,7 +289,10 @@ impl Flow {
                         }
                         // a dead end: never visited again in this phase
                         level[v] = u32::MAX;
-                        let e = path.pop().expect("a path to retreat along");
+                        // away from the source, the path leads back to it
+                        let Some(e) = path.pop() else {
+                            break false;
+                        };
                         v = self.to[e ^ 1];
                         it[v] = self.next[it[v]];
                     }
@@ -290,6 +313,7 @@ impl Flow {
 /// The layer's region from the pixels' [`Class`]es over the graph of `nodes` (a leaf per
 /// pixel): the minimum cut, then its pieces holding a core piece of `min_px`, holes filled.
 /// The frame counts as seen bare: the layer is a thing in the picture.
+#[must_use]
 pub fn from_graph(reading: &Reading, nodes: &[u32], img: &Image, min_px: f64) -> Vec<bool> {
     let (w, h) = (img.width, img.height);
     let n = w * h;

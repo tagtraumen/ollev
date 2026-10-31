@@ -2,6 +2,16 @@
 //! target edge (Di Zenzo steps and thin lines, grown by the anti-aliasing reach) weigh more.
 //! Weights scale by the image's unit.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::disallowed_macros,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+
 use glam::{DVec2, Vec3};
 
 use crate::hierarchy::Hierarchy;
@@ -55,6 +65,7 @@ thread_local! {
 }
 
 /// The suppressed edges of an image at `sigma`.
+#[must_use]
 pub fn edges_of(img: &Image, sigma: f64) -> Vec<bool> {
     let key = (sigma.to_bits(), img.width, img.height, digest(&img.px));
     (*remembered(&EDGES, key, || {
@@ -65,6 +76,7 @@ pub fn edges_of(img: &Image, sigma: f64) -> Vec<bool> {
 }
 
 /// The centres of an image's thin lines of any colour at the unit `u`.
+#[must_use]
 pub fn line_centres(img: &Image, u: f64) -> Vec<bool> {
     let key = (u.to_bits(), img.width, img.height, digest(&img.px));
     (*remembered(&CENTRES, key, || {
@@ -75,6 +87,7 @@ pub fn line_centres(img: &Image, u: f64) -> Vec<bool> {
 }
 
 /// The step edges and the thin lines of an image.
+#[must_use]
 pub fn edges_and_lines(img: &Image) -> Vec<bool> {
     let key = (img.width, img.height, digest(&img.px));
     (*remembered(&LINES, key, || edges_and_lines_of(img))).clone()
@@ -90,6 +103,7 @@ fn edges_and_lines_of(img: &Image) -> Vec<bool> {
 }
 
 impl EdgeField {
+    #[must_use]
     pub fn of_target(target: &[Vec3], width: usize, height: usize) -> Self {
         let img = Image::from_target(target, width);
         let edges = edges_and_lines(&img);
@@ -108,12 +122,14 @@ impl EdgeField {
 
     /// The squared residual `d` at pixel `i` beyond the pixel's tolerance (all of it without
     /// one), see [`crate::uncertainty::excess`].
+    #[must_use]
     pub fn residual(&self, i: usize, d: glam::DVec3) -> f64 {
-        let t = self.tolerance.as_ref().map_or(0., |t| t[i] as f64);
+        let t = self.tolerance.as_ref().map_or(0., |t| f64::from(t[i]));
         crate::uncertainty::excess64(d.length_squared(), t)
     }
 
     /// The fit's weight per pixel.
+    #[must_use]
     pub fn weight(&self, i: usize, lambda: f64) -> f32 {
         (1.0 + lambda * self.unit * self.strength[i]) as f32
     }
@@ -122,6 +138,7 @@ impl EdgeField {
 /// The edge-weighted region sums: per node, the statistics of its pixels on the
 /// edge band weighted by `lambda * unit`, so that adding them to the node's own gives the
 /// edge-weighted error of any color or gradient fill about them.
+#[must_use]
 pub fn weighted_stats(
     hierarchy: &Hierarchy,
     field: &EdgeField,

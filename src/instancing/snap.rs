@@ -2,10 +2,25 @@
 //! transform refitted to the scene's picture, kept where it changes that picture by less than
 //! the price of the geometry it no longer pays for.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::disallowed_macros,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::cast_precision_loss,
+    clippy::float_cmp,
+))]
+
 use glam::{Vec2, Vec3};
 
 use super::find::{Outline, align};
 use super::{ALIGN, Repeat, Structure, Transform, reach, transformed};
+use crate::error::TraceError;
 use crate::refine::MARGIN;
 use crate::scene::Layer;
 use crate::translucency::raster::NOISE;
@@ -73,7 +88,7 @@ impl Site {
         self.shown(shape)
             .iter()
             .zip(&self.drawn)
-            .map(|(s, d)| crate::uncertainty::excess(s.distance_squared(*d), NOISE as f32) as f64)
+            .map(|(s, d)| f64::from(crate::uncertainty::excess(s.distance_squared(*d), NOISE as f32)))
             .sum()
     }
 }
@@ -142,9 +157,11 @@ fn medoid(cluster: &[Outline]) -> Option<&Outline> {
 
 /// The cluster as it stands, unsnapped: its medoid as the prototype and every member that
 /// aligns to it at its transform, for reading the cells as a lattice (see `dual`).
-pub(super) fn aligned(scene: &Scene, cluster: &[Outline]) -> Option<Repeat> {
-    let lead = medoid(cluster)?;
-    let prototype = transformed(scene.get(lead.id), Transform::translation(-lead.centroid));
+pub(super) fn aligned(scene: &Scene, cluster: &[Outline]) -> Result<Option<Repeat>, TraceError> {
+    let Some(lead) = medoid(cluster) else {
+        return Ok(None);
+    };
+    let prototype = transformed(scene.get(lead.id)?, Transform::translation(-lead.centroid));
     let members: Vec<(usize, Transform)> = cluster
         .iter()
         .filter_map(|o| {
@@ -154,18 +171,24 @@ pub(super) fn aligned(scene: &Scene, cluster: &[Outline]) -> Option<Repeat> {
             align(lead, o).map(|t| (o.id, t))
         })
         .collect();
-    (members.len() >= 2).then_some(Repeat {
+    Ok((members.len() >= 2).then_some(Repeat {
         prototype,
         members,
         structure: Structure::List,
-    })
+    }))
 }
 
 /// The cluster's shapes snapped to the member most others align to, those whose snap pays; a
 /// repeat of the prototype if two or more remain.
-pub(super) fn snap(ctx: &Context, scene: &mut Scene, cluster: &[Outline]) -> Option<Repeat> {
-    let lead = medoid(cluster)?;
-    let prototype = transformed(scene.get(lead.id), Transform::translation(-lead.centroid));
+pub(super) fn snap(
+    ctx: &Context,
+    scene: &mut Scene,
+    cluster: &[Outline],
+) -> Result<Option<Repeat>, TraceError> {
+    let Some(lead) = medoid(cluster) else {
+        return Ok(None);
+    };
+    let prototype = transformed(scene.get(lead.id)?, Transform::translation(-lead.centroid));
     let mut members = Vec::new();
     for outline in cluster {
         if outline.id == lead.id {
@@ -175,7 +198,7 @@ pub(super) fn snap(ctx: &Context, scene: &mut Scene, cluster: &[Outline]) -> Opt
         let Some(t) = align(lead, outline) else {
             continue;
         };
-        let position = scene.position(outline.id);
+        let position = scene.position(outline.id)?;
         let member = scene.shapes[position].clone();
         let placed = stand_in(&prototype, &member, t);
         let site = Site::new(scene, position, placed.min, placed.max);
@@ -192,9 +215,9 @@ pub(super) fn snap(ctx: &Context, scene: &mut Scene, cluster: &[Outline]) -> Opt
         };
         members.push((outline.id, t));
     }
-    (members.len() >= 2).then_some(Repeat {
+    Ok((members.len() >= 2).then_some(Repeat {
         prototype,
         members,
         structure: Structure::List,
-    })
+    }))
 }

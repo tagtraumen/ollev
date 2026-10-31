@@ -1,6 +1,12 @@
 //! Where the time goes: named stages with their total time and number of calls, printed when the
 //! caller asks for the log (see [`crate::diagnostics`]). Timing a stage costs a clock read on each side.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+
 use std::time::Duration;
 
 /// A clock the trace's logs and reports measure with. Where the platform has none (wasm without
@@ -13,6 +19,7 @@ pub struct Clock(
 
 impl Clock {
     /// The clock's reading now.
+    #[must_use]
     pub fn now() -> Self {
         #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
         return Self(std::time::Instant::now());
@@ -21,6 +28,7 @@ impl Clock {
     }
 
     /// The time since [`Clock::now`], zero without a clock.
+    #[must_use]
     pub fn elapsed(&self) -> Duration {
         #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
         return self.0.elapsed();
@@ -82,6 +90,7 @@ impl Timings {
 }
 
 /// Whether detailed logs are wanted (see [`crate::diagnostics`]).
+#[must_use]
 pub fn enabled() -> bool {
     crate::diagnostics::log()
 }

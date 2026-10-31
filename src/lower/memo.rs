@@ -3,6 +3,18 @@
 //! clips it lies in and the lowering's setting; the clips it adds are kept relative to where
 //! they were added and placed after the clips there are when it is replayed.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::disallowed_macros,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::disallowed_methods,
+))]
+
 use std::sync::Arc;
 
 use super::{Capabilities, Lowering};
@@ -208,7 +220,9 @@ pub(super) fn key(o: &Object, clips: &[Clip]) -> Vec<u8> {
             let (pattern, offset) = s.dashes.clone().unwrap_or((Vec::new(), f64::NAN));
             put(&mut key, u64::from(s.dashes.is_some()));
             put(&mut key, pattern.len() as u64);
-            pattern.iter().for_each(|v| put(&mut key, v.to_bits()));
+            for v in pattern {
+                put(&mut key, v.to_bits());
+            }
             put(&mut key, offset.to_bits());
             text(&mut key, format!("{} {:?} {:?}", s.closed, s.cap, s.join));
         }

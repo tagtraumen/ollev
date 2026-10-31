@@ -1,5 +1,22 @@
 //! The equation graph: relations from the contacts of planar regions, and the best cut.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::disallowed_macros,
+    clippy::indexing_slicing,
+    clippy::too_many_lines,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::disallowed_methods,
+))]
+
 use glam::{IVec3, Vec3};
 
 use super::{Hypothesis, bin, by_score, merge_near};
@@ -26,6 +43,7 @@ pub struct Graph {
 }
 
 impl Graph {
+    #[must_use]
     pub fn of(lv: &Leaves) -> Self {
         let mut reach = vec![Vec::new(); lv.n];
         for p in &lv.pairs {
@@ -137,6 +155,7 @@ pub(super) const EXHAUSTIVE: usize = 10;
 /// A relation's shape as a cut: which leaves are under it. A leaf inside one pair and outside
 /// another (bands of a gradient) goes to the side giving the best connected group the most
 /// contact, exhaustively when there are few such leaves, greedily otherwise.
+#[must_use]
 pub fn best_cut(supporting: &[Support], graph: &Graph) -> (f32, Vec<Support>) {
     let insides: HashSet<u32> = supporting.iter().map(|p| p.a).collect();
     let outsides: HashSet<u32> = supporting.iter().map(|p| p.b).collect();
@@ -197,6 +216,7 @@ pub(super) const MIN_INSIDE: u32 = 64;
 /// Relations between neighboring leaves' equations: for inside A over a graded B, `k` from the
 /// slopes and `m` with B's plane at A's centroid; a flat B gives a line of (k, m), fixed by
 /// two pairs crossing. Refitted on their best cuts, pairs claimed in score order.
+#[must_use]
 pub fn equation_graph(lv: &Leaves) -> Vec<Hypothesis> {
     let graph = Graph::of(lv);
     let width = lv.width;
@@ -558,6 +578,7 @@ pub(super) const PER_LIST: usize = 30;
 
 /// Hypothesis lists merged: each list's scores scaled to its best, hypotheses within 0.05 in
 /// `k` and 12 levels in `c` merged by their scaled scores summed.
+#[must_use]
 pub fn merge_lists(lists: &[Vec<Hypothesis>]) -> Vec<Hypothesis> {
     let mut merged: Vec<Hypothesis> = Vec::new();
     for hyps in lists {

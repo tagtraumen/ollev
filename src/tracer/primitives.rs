@@ -1,3 +1,19 @@
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::disallowed_macros,
+    clippy::indexing_slicing,
+    clippy::too_many_lines,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::cast_possible_wrap,
+))]
+
 use glam::Vec2;
 
 use crate::tracer::Cubic;
@@ -29,6 +45,7 @@ pub enum Primitive {
 
 impl Primitive {
     /// Signed distance from `p` to the outline, negative inside.
+    #[must_use]
     pub fn distance(&self, p: Vec2) -> f32 {
         match *self {
             Primitive::Circle { center, radius } => p.distance(center) - radius,
@@ -65,6 +82,7 @@ impl Primitive {
         self.cubics().len()
     }
 
+    #[must_use]
     pub fn params(&self) -> Vec<f32> {
         match *self {
             Primitive::Circle { center, radius } => vec![center.x, center.y, radius],
@@ -82,6 +100,7 @@ impl Primitive {
         }
     }
 
+    #[must_use]
     pub fn with_params(&self, p: &[f32]) -> Primitive {
         match self {
             Primitive::Circle { .. } => Primitive::Circle {
@@ -106,6 +125,7 @@ impl Primitive {
     }
 
     /// The outline as closed cubics.
+    #[must_use]
     pub fn cubics(&self) -> Vec<Cubic> {
         match *self {
             Primitive::Circle { center, radius } => ellipse_cubics(center, Vec2::splat(radius), 0.),
@@ -256,6 +276,7 @@ fn snap_angle(angle: f32) -> f32 {
 
 /// The circle, ellipse or (rounded) rectangle that matches `samples`, those of an outline that
 /// show, closest and within `tolerance` pixels on average, sized from `all` its samples.
+#[must_use]
 pub fn fit_primitive(samples: &[Vec2], all: &[Vec2], tolerance: f32) -> Option<Primitive> {
     let n = all.len() as f32;
     let center = all.iter().sum::<Vec2>() / n;
@@ -271,7 +292,7 @@ pub fn fit_primitive(samples: &[Vec2], all: &[Vec2], tolerance: f32) -> Option<P
         let (mut sxx, mut sxy, mut syy, mut sx, mut sy, mut sz, mut sxz, mut syz) =
             (0f64, 0f64, 0f64, 0f64, 0f64, 0f64, 0f64, 0f64);
         for p in samples {
-            let (x, y) = (p.x as f64, p.y as f64);
+            let (x, y) = (f64::from(p.x), f64::from(p.y));
             let z = x * x + y * y;
             sxx += x * x;
             sxy += x * y;
@@ -288,7 +309,7 @@ pub fn fit_primitive(samples: &[Vec2], all: &[Vec2], tolerance: f32) -> Option<P
         let b = [-sxz, -syz, -sz];
         solve3(a, b).map(|[d, e, f]| {
             let c = Vec2::new((-d / 2.) as f32, (-e / 2.) as f32);
-            let r = ((c.x as f64).powi(2) + (c.y as f64).powi(2) - f)
+            let r = (f64::from(c.x).powi(2) + f64::from(c.y).powi(2) - f)
                 .max(0.)
                 .sqrt() as f32;
             Primitive::Circle {
@@ -351,7 +372,7 @@ pub fn fit_primitive(samples: &[Vec2], all: &[Vec2], tolerance: f32) -> Option<P
             Primitive::Ellipse { radii, angle, .. } => {
                 *angle = snap_angle(*angle);
                 if (radii.x - radii.y).abs() < 0.03 * radii.max_element() {
-                    *radii = Vec2::splat((radii.x + radii.y) / 2.);
+                    *radii = Vec2::splat(f32::midpoint(radii.x, radii.y));
                 }
             }
             Primitive::RoundedRect {
@@ -362,7 +383,7 @@ pub fn fit_primitive(samples: &[Vec2], all: &[Vec2], tolerance: f32) -> Option<P
             } => {
                 *angle = snap_angle(*angle);
                 if (half.x - half.y).abs() < 0.03 * half.max_element() {
-                    *half = Vec2::splat((half.x + half.y) / 2.);
+                    *half = Vec2::splat(f32::midpoint(half.x, half.y));
                 }
                 // Ends rounded all the way make a capsule
                 if *radius > 0.85 * half.min_element() {

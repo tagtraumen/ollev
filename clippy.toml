@@ -1,0 +1,13 @@
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-indexing-slicing-in-tests = true
+
+# An allocation that can fail is made with `crate::error::{filled, with_capacity}`, which give
+# `TraceError::OutOfMemory`
+disallowed-macros = [
+    { path = "std::vec", reason = "use crate::error::filled, which fails with TraceError::OutOfMemory" },
+]
+disallowed-methods = [
+    { path = "std::vec::Vec::with_capacity", reason = "use crate::error::with_capacity, which fails with TraceError::OutOfMemory" },
+]

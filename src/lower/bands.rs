@@ -6,6 +6,19 @@
 //! of equal colour change under a blur of half the narrowest, and 32 exact bands. The SVG
 //! emitter writes the same levels.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_precision_loss,
+    clippy::disallowed_macros,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::disallowed_methods,
+))]
+
 use crate::render::{FillRule, Gradient};
 use glam::{DVec2, Vec2, Vec3};
 
@@ -26,21 +39,25 @@ pub struct Profile<'a> {
 }
 
 impl Profile<'_> {
+    #[must_use]
     pub fn t(&self, d: f32) -> f32 {
         ((d - self.near) / (self.far - self.near).max(1e-6)).clamp(0., 1.)
     }
 
+    #[must_use]
     pub fn at(&self, d: f32) -> Vec3 {
         self.gradient.color(self.from, self.t(d))
     }
 
     /// The ramp's alpha at signed distance `d`.
+    #[must_use]
     pub fn alpha(&self, d: f32) -> f32 {
         self.gradient.rgba(self.from, self.t(d)).1
     }
 
     /// The `bands + 1` breakpoints from `near` to `far` that cut the profile into bands of equal
     /// colour change, so the steep stretches get the narrow bands.
+    #[must_use]
     pub fn breaks(&self, bands: usize) -> Vec<f32> {
         let knots = self.knots();
         let mut steps: Vec<f32> = knots.windows(2).map(|w| w[0].1.distance(w[1].1)).collect();
@@ -72,6 +89,7 @@ impl Profile<'_> {
 
     /// The knots: the ends and the stops, as distances and colours, premultiplied where the
     /// ramp has alpha.
+    #[must_use]
     pub fn knots(&self) -> Vec<(f32, Vec3)> {
         let w = self.far - self.near;
         let opaque = self.gradient.is_opaque();
@@ -91,6 +109,7 @@ impl Profile<'_> {
     }
 
     /// The knots' alphas, in the order of [`Profile::knots`].
+    #[must_use]
     pub fn alphas(&self) -> Vec<f32> {
         std::iter::once(1.)
             .chain(self.gradient.stops().iter().map(|(_, c)| c[3]))
@@ -115,6 +134,7 @@ pub enum Simple {
 
 /// The cheapest drawing of the profile, where it is a step (colours along it monotone) or a
 /// ridge on the curve (one inner extreme, within half its width of the curve).
+#[must_use]
 pub fn simple(profile: &Profile) -> Option<Simple> {
     let knots = profile.knots();
     let (a, b) = (knots[0].1, knots[knots.len() - 1].1);
@@ -264,6 +284,7 @@ pub(super) fn lower(l: &mut super::Lowering, o: &Object) -> Option<Vec<Object>> 
 
 /// The breakpoints on the side of `sign` as radii, widest first, each with the next radius in,
 /// the inner one of its band.
+#[must_use]
 pub fn rings(breaks: &[f32], sign: f32) -> Vec<(f32, f32)> {
     let mut radii: Vec<f32> = breaks.iter().map(|s| sign * s).filter(|&r| r > 0.).collect();
     radii.sort_by(|a, b| b.total_cmp(a));

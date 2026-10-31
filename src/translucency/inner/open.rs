@@ -1,5 +1,29 @@
 //! The outside materials in the open per relation, and the colours they classify.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::disallowed_macros,
+    clippy::disallowed_methods,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+#![cfg_attr(
+    not(feature = "diagnostics"),
+    expect(
+        clippy::struct_field_names,
+        reason = "panic ratchet: remove a lint once the module is clean of it"
+    )
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::cast_precision_loss,
+    clippy::too_many_lines,
+))]
+
 use crate::HashMap;
 
 use super::{
@@ -26,6 +50,7 @@ pub struct Open {
 /// The outside under a relation: outside colours peeling to other outside colours are the missed
 /// layer; a material whose colours more region pixels read as other materials' images is no
 /// source; an inside colour near the rest is background seen bare unless it is an image there.
+#[must_use]
 pub fn open_at(inp: &InnerInputs, k: f64, m: DVec3) -> Open {
     let nm = inp.bmean.len();
     let tol = MATCH_TOL;
@@ -193,6 +218,7 @@ pub(super) fn build_open(
 
 /// Per distinct inside color: the layer alone, else (with `shading`) white or black above
 /// its image.
+#[must_use]
 pub fn classify_colors(
     inp: &InnerInputs,
     op: &Open,
@@ -312,6 +338,7 @@ impl ShadingLines {
 /// [`ShadingLines::near`]'s test over every image: the directions by channel, white's then
 /// black's, and the color's offsets from white and black, their squared lengths and limits.
 /// Every slice cut to one length, so the loop has no bounds checks and vectorizes.
+#[expect(clippy::inline_always, reason = "the lanes vectorize inlined into their loop")]
 #[inline(always)]
 fn near_lanes(near: &mut [bool], lines: [&[f32]; 6], color: [f32; 10]) {
     let n = near.len();
@@ -352,6 +379,7 @@ pub(super) fn shading_residual(o: DVec3, q: DVec3) -> Option<(Class, f64, f64)> 
 
 /// The components of a mask with an interior: a pixel whose eight neighbors (within the
 /// frame) are all in the mask.
+#[must_use]
 pub fn with_interior(mask: &[bool], width: usize, height: usize) -> Vec<bool> {
     let radius = crate::translucency::layer::interior_radius(width);
     // Found within the mask's box grown by the radius and a pixel, cut by the frame: every

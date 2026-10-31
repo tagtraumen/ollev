@@ -2,6 +2,16 @@
 //! and blur filters in the definitions after them. A coordinate's decimals grow with the
 //! object's encoding level.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+
 use std::fmt::Write;
 
 use crate::model::{Curve, Geometry, Instance, Item, Model, Object, Paint};
@@ -129,11 +139,11 @@ impl Writer<'_> {
                 Item::Group { layer, items } => {
                     let count = self.groups.entry(*layer).or_default();
                     *count += 1;
-                    match *count {
+                    // writing to a string does not fail
+                    let _ = match *count {
                         1 => writeln!(svg, "<g id=\"layer-{layer}\">"),
                         c => writeln!(svg, "<g id=\"layer-{layer}-{c}\">"),
-                    }
-                    .unwrap();
+                    };
                     self.items(svg, items, level);
                     svg.push_str("</g>\n");
                 }

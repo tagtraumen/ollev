@@ -2,6 +2,18 @@
 //! draws it: the coverage rasterized past the window's edges by the kernel's reach, blurred
 //! separably over the box it can reach, with the gradient by the points and by σ.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::disallowed_macros,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+
 use glam::Vec2;
 
 use crate::render::raster::{Winding, fill_coverage, rasterize, rasterize_backward};
@@ -11,24 +23,26 @@ use crate::render::scene::{FillRule, FlatPoint};
 pub const REACH: f32 = 3.;
 
 /// The pixels a blur of `sigma` reaches beyond the outline.
+#[must_use]
 pub fn reach(sigma: f32) -> usize {
     (REACH * sigma).ceil() as usize
 }
 
 /// The kernel of a blur of `sigma`: a Gaussian integrated over each pixel, normalized, with
 /// its derivative by `sigma`; `2 reach + 1` taps.
+#[must_use]
 pub fn kernel(sigma: f32) -> (Vec<f32>, Vec<f32>) {
     let r = reach(sigma) as i32;
-    let s = sigma as f64;
+    let s = f64::from(sigma);
     // Φ(a / σ) and its derivative by σ
-    let cdf = |a: f64| 0.5 * (1. + erf(a / (s * std::f64::consts::SQRT_2)));
+    let cdf = |a: f64| f64::midpoint(1., erf(a / (s * std::f64::consts::SQRT_2)));
     let d_cdf = |a: f64| {
         let z = a / s;
         -(-0.5 * z * z).exp() / (2. * std::f64::consts::PI).sqrt() * z / s
     };
     let raw: Vec<(f64, f64)> = (-r..=r)
         .map(|i| {
-            let (lo, hi) = (i as f64 - 0.5, i as f64 + 0.5);
+            let (lo, hi) = (f64::from(i) - 0.5, f64::from(i) + 0.5);
             (cdf(hi) - cdf(lo), d_cdf(hi) - d_cdf(lo))
         })
         .collect();
@@ -79,8 +93,9 @@ pub struct Blurred {
 
 impl Blurred {
     /// `polys` filled under `rule` and blurred by `sigma`, in a `width` x `height` window.
+    #[must_use]
     pub fn new(
-        polys: Vec<Vec<FlatPoint>>,
+        polys: &[Vec<FlatPoint>],
         rule: FillRule,
         sigma: f32,
         width: usize,
@@ -194,6 +209,7 @@ impl Blurred {
     }
 
     /// The blurred coverage at pixel `(x, y)` of the window, zero outside the box.
+    #[must_use]
     pub fn at(&self, x: usize, y: usize) -> f32 {
         if x < self.x0 || y < self.y0 || x >= self.x0 + self.w || y >= self.y0 + self.h {
             return 0.;
@@ -203,6 +219,7 @@ impl Blurred {
 
     /// Backpropagates `d_values` (laid out like `values`) to the flattened points (in the
     /// unshifted frame, as given) and to σ.
+    #[must_use]
     pub fn backward(&self, d_values: &[f32]) -> (Vec<Vec<Vec2>>, f32) {
         let c = &self.winding;
         if self.w == 0 {
@@ -233,7 +250,7 @@ impl Blurred {
                     *acc += k * dv;
                     dot += dv * s;
                 }
-                d_sigma += (dk * dot) as f64;
+                d_sigma += f64::from(dk * dot);
             }
         }
         // Through the horizontal pass to the coverage, and σ's share there
@@ -254,7 +271,7 @@ impl Blurred {
                 }
                 let (alpha, slope) = fill_coverage(c.values[y * c.w + j], self.rule);
                 d_winding[y * c.w + j] = dc * slope;
-                d_sigma += (ds * alpha) as f64;
+                d_sigma += f64::from(ds * alpha);
             }
         }
         (
@@ -287,7 +304,7 @@ mod tests {
         let (w, h) = (24, 22);
         let weight: Vec<f32> = (0..w * h).map(|i| ((i * 37) % 11) as f32 / 11.).collect();
         let energy = |path: &Path| -> (f32, Blurred) {
-            let b = Blurred::new(flatten(path), FillRule::EvenOdd, path.blur, w, h);
+            let b = Blurred::new(&flatten(path), FillRule::EvenOdd, path.blur, w, h);
             let mut e = 0.;
             for y in 0..h {
                 for x in 0..w {
@@ -298,7 +315,7 @@ mod tests {
         };
         let path = square(1.3);
         let (_, b) = energy(&path);
-        let hard = Blurred::new(flatten(&path), FillRule::EvenOdd, 0.01, w, h);
+        let hard = Blurred::new(&flatten(&path), FillRule::EvenOdd, 0.01, w, h);
         let (s0, s1) = (
             hard.values.iter().sum::<f32>(),
             b.values.iter().sum::<f32>(),

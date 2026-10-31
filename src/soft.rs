@@ -2,6 +2,18 @@
 //! where the trace posterized it, read as one region and drawn as one shape with a gradient
 //! where its error plus price beats the bands'.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::disallowed_macros,
+    clippy::indexing_slicing,
+    clippy::too_many_lines,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+
 use glam::{Vec2, Vec3};
 
 use crate::render::distance::Contour;
@@ -37,7 +49,7 @@ pub(crate) fn is_band(s: &Shape) -> bool {
 
 /// What a shape costs at the acceptance price: its segments, its path and its paint.
 pub(crate) fn price(ctx: &Context, s: &Shape, costs: Costs) -> f64 {
-    s.cost_segments() * ctx.accept_cost() + ctx.accept_path_cost() + costs.of(&s.fill) as f64
+    s.cost_segments() * ctx.accept_cost() + ctx.accept_path_cost() + f64::from(costs.of(&s.fill))
 }
 
 /// What the picture does from pixel to pixel over a set of neighbouring pairs: how many, and
@@ -116,7 +128,7 @@ impl Bands {
                     if a == NONE || b == NONE || !band[a as usize] || !band[b as usize] {
                         continue;
                     }
-                    let step = t(i).distance(t(j)) as f64;
+                    let step = f64::from(t(i).distance(t(j)));
                     if a == b {
                         inner[a as usize].pairs += 1;
                         inner[a as usize].step += step;
@@ -131,12 +143,11 @@ impl Bands {
                     // the steeper slope just outside predicts by twice the noise (a ramp's end:
                     // not), counted per crossing so the seam's share of them is its mean
                     if room {
-                        let across = t(i - d).distance(t(j + d)) as f64;
-                        let beyond = t(i - 2 * d)
+                        let across = f64::from(t(i - d).distance(t(j + d)));
+                        let beyond = f64::from(t(i - 2 * d)
                             .distance(t(i - d))
-                            .max(t(j + d).distance(t(j + 2 * d)))
-                            as f64;
-                        let step = across - 3. * beyond > 2. * NOISE as f64;
+                            .max(t(j + d).distance(t(j + 2 * d))));
+                        let step = across - 3. * beyond > 2. * f64::from(NOISE);
                         sharp.pairs += 1;
                         sharp.step += f64::from(u8::from(step));
                     }
@@ -151,13 +162,13 @@ impl Bands {
         let mut linked: HashMap<usize, Vec<usize>> = HashMap::default();
         let mut seamless: HashSet<(usize, usize)> = HashSet::default();
         for (&(a, b), (s, sharp)) in &seams {
-            let bands = mean[a].distance(mean[b]) as f64;
-            let within = 0.5 * (inner[a].mean() + inner[b].mean());
+            let bands = f64::from(mean[a].distance(mean[b]));
+            let within = f64::midpoint(inner[a].mean(), inner[b].mean());
             if s.pairs as f64 >= width && s.mean() <= bands / width + within && sharp.mean() <= 0.5
             {
                 linked.entry(a).or_default().push(b);
                 linked.entry(b).or_default().push(a);
-                if s.mean() <= within + NOISE as f64 {
+                if s.mean() <= within + f64::from(NOISE) {
                     seamless.insert((a, b));
                 }
             }
@@ -223,8 +234,8 @@ impl Bands {
                 let (mut outside, mut rim) = (0f64, 0f64);
                 for y in r.y0..(r.y0 + r.h).min(h) {
                     for x in r.x0..(r.x0 + r.w).min(w) {
-                        let v = r.values[(y - r.y0) * r.w + x - r.x0] as f64;
-                        outside += v * (1. - b.at(y * w + x, w) as f64);
+                        let v = f64::from(r.values[(y - r.y0) * r.w + x - r.x0]);
+                        outside += v * (1. - f64::from(b.at(y * w + x, w)));
                         rim += f64::from(u8::from(v > 0.02 && v < 0.98));
                     }
                 }
@@ -548,7 +559,7 @@ async fn replace(
     }
     crate::progress::poll().await;
     let render = |scene: &Scene| scene.render(window, 0..scene.shapes.len(), [0.; 3]);
-    let before = ctx.error(window, &render(scene)) as f64
+    let before = f64::from(ctx.error(window, &render(scene)))
         + run.iter().map(|&k| price(ctx, &scene.shapes[k], costs)).sum::<f64>();
     let old = scene.shapes[lowest].clone();
     crate::progress::poll().await;
@@ -567,7 +578,7 @@ async fn replace(
     }
     scene.set_fill_at(lowest, fill);
     scene.change();
-    let after = ctx.error(window, &render(scene)) as f64 + price(ctx, &scene.shapes[lowest], costs);
+    let after = f64::from(ctx.error(window, &render(scene))) + price(ctx, &scene.shapes[lowest], costs);
     if crate::diagnostics::log() {
         eprintln!(
             "soft: run of {} bands at {min:.0?}..{max:.0?}, {} px, {}: {before:.2} to {after:.2}",
@@ -644,7 +655,7 @@ mod tests {
                 v.to_array().map(|x| (x * 255.).round() as u8)
             })
             .collect();
-        let ctx = Context::new(&rgb, w, w, 1.);
+        let ctx = Context::new(&rgb, w, w, 1.).unwrap();
         let mut scene = Scene::with_background(w, w, Vec3::splat(0.2));
         for k in 0..4 {
             let r = 28. * (1. - k as f32 / 4.);
@@ -679,7 +690,7 @@ mod tests {
                 v.to_array().map(|x| (x * 255.).round() as u8)
             })
             .collect();
-        let ctx = Context::new(&rgb, w, w, 1.);
+        let ctx = Context::new(&rgb, w, w, 1.).unwrap();
         let mut scene = Scene::with_background(w, w, Vec3::splat(0.2));
         scene.push(Shape::new(disc(c, 7.), core));
         for k in 0..3 {

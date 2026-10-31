@@ -2,20 +2,39 @@
 //! over, and the planar regions of the region proposal (a finer segmentation merged greedily
 //! while one plane fits the union, so a gradient stays one region).
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::disallowed_macros,
+    clippy::disallowed_methods,
+    clippy::float_cmp,
+    clippy::indexing_slicing,
+    clippy::too_many_lines,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::cast_possible_wrap,
+))]
+
 use std::cmp::{Ordering, Reverse};
 use std::collections::{BTreeSet, BinaryHeap};
 
-use super::raster::{Image, NOISE, area_px, gaussian_filter, np_sum, percentile};
+use super::raster::{Image, NOISE, Order, area_px, gaussian_filter, np_sum, percentile};
 
 /// scikit-image 0.26's `felzenszwalb(img, scale, sigma, min_size)` label for label (internal
 /// costs in single precision, as the Cython's `float`): a label per pixel, 0-based, numbered
 /// in raster order of each segment's first pixel.
+#[must_use]
 pub fn felzenszwalb(img: &Image, scale: f64, sigma: f64, min_size: usize) -> Vec<u32> {
     let (w, h) = (img.width, img.height);
     let n = w * h;
     let scale = scale / 255.0;
     let sm: Vec<Vec<f64>> = (0..3)
-        .map(|c| gaussian_filter(&img.channel(c), w, h, sigma, 0, 0))
+        .map(|c| gaussian_filter(&img.channel(c), w, h, sigma, Order::Smooth, Order::Smooth))
         .collect();
     let cost = |p: usize, q: usize| {
         let d0 = sm[0][p] - sm[0][q];
@@ -74,7 +93,7 @@ pub fn felzenszwalb(img: &Image, scale: f64, sigma: f64, min_size: usize) -> Vec
         let c = costs[e as usize];
         let i0 = (cint[s0 as usize] + scale / size[s0 as usize] as f64) as f32;
         let i1 = (cint[s1 as usize] + scale / size[s1 as usize] as f64) as f32;
-        if c < i0.min(i1) as f64 {
+        if c < f64::from(i0.min(i1)) {
             let root = s0.min(s1);
             forest[s0.max(s1) as usize] = root;
             size[root as usize] = size[s0 as usize] + size[s1 as usize];
@@ -292,6 +311,7 @@ impl Ord for Ord64 {
 /// Planar regions: Felzenszwalb, then neighbors merged cheapest first while each plane
 /// predicts the other's sample within `tol` at the 90th percentile and the joint plane's
 /// 95th percentile residual is within it. Returns the surviving Felzenszwalb label plus one.
+#[must_use]
 pub fn equation_regions(img: &Image, scale: f64, min_size: usize, tol: f64) -> Vec<u32> {
     // a merge test on the heap: (joint residual, the absorbing region, the
     // other, how many times each had grown when it was tested), the least first
@@ -313,7 +333,7 @@ pub fn equation_regions(img: &Image, scale: f64, min_size: usize, tol: f64) -> V
     let exact = img.px.iter().zip(&lv).all(|(p, l)| {
         l[0] as f64 / 255.0 == p.x && l[1] as f64 / 255.0 == p.y && l[2] as f64 / 255.0 == p.z
     });
-    assert!(
+    debug_assert!(
         exact,
         "the lab's equation regions are ported for 8-bit images"
     );
@@ -568,6 +588,7 @@ fn sample_of(r: &mut Region) -> (Vec<u32>, usize) {
 /// The equation regions at scale 40, 3 levels, and a least size that is an area of the
 /// drawing (16 px at 330 by the unit squared, so the region count holds across resolutions).
 /// The scale (in levels) and the smoothing stay fixed: the smoothing is against the noise.
+#[must_use]
 pub fn equation_regions_default(img: &Image) -> Vec<u32> {
     equation_regions(img, 40.0, area_px(img.width, 16.0) as usize, EQ_TOL)
 }

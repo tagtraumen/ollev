@@ -1,5 +1,22 @@
 //! Chains of edge points with their ends, split at corners.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_precision_loss,
+    clippy::disallowed_macros,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::disallowed_methods,
+    clippy::too_many_lines,
+))]
+
 use glam::{DVec2, DVec3};
 
 use super::{
@@ -48,6 +65,7 @@ pub struct Chain {
 }
 
 /// Edge and ridge chains of an image, fitted, with their side colors.
+#[must_use]
 pub fn build_chains(img: &Image) -> Vec<Chain> {
     // the shortest chain: 5 px at 330, in the image's unit
     let min_chain = length_px(img.width, MIN_CHAIN as f64);
@@ -75,7 +93,7 @@ pub fn build_chains(img: &Image) -> Vec<Chain> {
                 let i = y * w + x;
                 let (ny, nx) = if is_ridge {
                     let (dy, dx) = em.normal[i];
-                    let (ny, nx) = (dy as f64, dx as f64);
+                    let (ny, nx) = (f64::from(dy), f64::from(dx));
                     let nn = ny.hypot(nx).max(1e-9);
                     (ny / nn, nx / nn)
                 } else {
@@ -112,6 +130,7 @@ pub fn build_chains(img: &Image) -> Vec<Chain> {
 /// A chain cut at corners: where the directions over r px either side differ by over twice
 /// the kink and over 2r px it turns less than 1.5 times that (a smooth arc turns twice).
 /// The corner's own points go to neither side.
+#[must_use]
 pub fn split_at_corners(p: &[DVec2], r: usize) -> Vec<Vec<DVec2>> {
     let n = p.len();
     if n < 2 * r + 3 {
@@ -154,6 +173,7 @@ pub fn split_at_corners(p: &[DVec2], r: usize) -> Vec<Vec<DVec2>> {
 }
 
 /// A chain of points `p`, fitted, with its normals, width and side colors.
+#[must_use]
 pub fn make_chain(img: &Image, l: &[f64], p: Vec<DVec2>, is_ridge: bool) -> Chain {
     let (w, h) = (img.width, img.height);
     let u = unit_of(w);
@@ -206,7 +226,7 @@ pub fn make_chain(img: &Image, l: &[f64], p: Vec<DVec2>, is_ridge: bool) -> Chai
     let centre = is_ridge.then(|| p.iter().map(|q| img.sample(q.x, q.y)).collect());
     let ends = [end_geometry(&cubics, 0), end_geometry(&cubics, 1)];
     Chain {
-        length: *arc.last().unwrap(),
+        length: arc.last().copied().unwrap_or(0.0),
         p,
         kind: if is_ridge { Kind::Ridge } else { Kind::Edge },
         width,
@@ -243,6 +263,7 @@ pub(super) fn end_geometry(cubics: &[Bezier], e: usize) -> End {
 
 /// The point and heading arc length g from p along the circle of curvature k leaving it in
 /// direction hd (a straight line for k near nothing).
+#[must_use]
 pub fn along_circle(p: DVec2, hd: DVec2, k: f64, g: f64) -> (DVec2, DVec2) {
     if k.abs() * g < 1e-4 {
         return (p + g * hd, hd);

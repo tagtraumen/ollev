@@ -2,6 +2,21 @@
 //! by the profile's autocorrelation, the dashes of one period from the profile folded there, and
 //! period and phases by least squares through every dash seen along the profile.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::disallowed_macros,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::disallowed_methods,
+))]
+
 use glam::Vec3;
 
 use crate::translucency::NOISE;
@@ -95,16 +110,16 @@ pub(super) fn profile(
 /// The profile folded at `period`: its mean over each of the period's bins.
 fn fold(x: &[f32], period: f32) -> Vec<f32> {
     let bins = ((period / PROFILE_STEP).round() as usize).max(2);
-    let width = period as f64 / bins as f64;
+    let width = f64::from(period) / bins as f64;
     let bin = |i: usize| {
-        (((i as f64 * PROFILE_STEP as f64).rem_euclid(period as f64) / width) as usize)
+        (((i as f64 * f64::from(PROFILE_STEP)).rem_euclid(f64::from(period)) / width) as usize)
             .min(bins - 1)
     };
     let mut sums = vec![0f64; bins];
     let mut counts = vec![0usize; bins];
     for (i, &v) in x.iter().enumerate() {
         let b = bin(i);
-        sums[b] += v as f64;
+        sums[b] += f64::from(v);
         counts[b] += 1;
     }
     sums.iter()
@@ -184,7 +199,7 @@ pub(super) fn read(x: &[f32], noise: f32, closed: bool, quantum: f32) -> Vec<Rea
         if hi - lo < CONTRAST * noise {
             continue;
         }
-        let mid = (hi + lo) / 2.;
+        let mid = f32::midpoint(hi, lo);
         let width = rough / means.len() as f32;
         let Some(slots) = crossings(&means, mid, width, true) else {
             continue;
@@ -265,7 +280,7 @@ fn common_period(matched: &[(usize, f32, f32, f32)], slots: usize) -> Option<f32
         let mine: Vec<(f64, f64)> = matched
             .iter()
             .filter(|m| m.0 == s)
-            .map(|m| (m.1 as f64, m.2 as f64))
+            .map(|m| (f64::from(m.1), f64::from(m.2)))
             .collect();
         if mine.len() < 2 {
             continue;
@@ -454,7 +469,7 @@ pub(super) fn seen_spans(reading: &Reading, reach: f32, least: f32) -> Vec<(f32,
         .seen
         .iter()
         .map(|&(a, b)| {
-            let (c, d) = ((a + b) / 2., (b - a - 2. * reach).max(least));
+            let (c, d) = (f32::midpoint(a, b), (b - a - 2. * reach).max(least));
             (c - d / 2., c + d / 2.)
         })
         .collect()
@@ -519,7 +534,7 @@ mod tests {
                     rgb[3 * (y * w + x)..3 * (y * w + x) + 3].fill(v);
                 }
             }
-            let ctx = Context::new(&rgb, w, h, 1.);
+            let ctx = Context::new(&rgb, w, h, 1.).unwrap();
             gaps_seen(&ctx, &stroke, Vec3::splat(80. / 255.))
         };
         assert!(seen(230));

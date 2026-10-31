@@ -1,6 +1,15 @@
 //! The differentiable renderer: paths rasterized with exact coverage, and the gradient of the
 //! squared error with respect to their points and colours, for fitting a scene to the picture.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+
 pub mod blur;
 pub mod coverage_cost;
 pub mod distance;
@@ -22,6 +31,7 @@ mod backward;
 
 /// The scene's paths composited bottom to top over `pixels` (row-major RGB in `0..=1`), such
 /// as the already composited content below the paths being fitted.
+#[must_use]
 pub fn render_over(scene: &Scene, mut pixels: Vec<Vec3>) -> Vec<Vec3> {
     let (width, height) = (scene.width, scene.height);
     assert_eq!(pixels.len(), (width * height) as usize);
@@ -30,7 +40,7 @@ pub fn render_over(scene: &Scene, mut pixels: Vec<Vec3>) -> Vec<Vec3> {
         // A blurred path composites its blurred coverage; it has no backward pass
         if path.blur > 0. {
             let (w, h) = (width as usize, height as usize);
-            let b = blur::Blurred::new(flatten(path), path.fill_rule, path.blur, w, h);
+            let b = blur::Blurred::new(&flatten(path), path.fill_rule, path.blur, w, h);
             for y in b.y0..b.y0 + b.h {
                 for x in b.x0..b.x0 + b.w {
                     let alpha = b.values[(y - b.y0) * b.w + x - b.x0] * path.color[3];
@@ -64,6 +74,7 @@ pub fn render_over(scene: &Scene, mut pixels: Vec<Vec3>) -> Vec<Vec3> {
 /// Backpropagates `d_coverage` (d loss / d coverage over the path's box in a `width` x `height`
 /// frame: its winding box, or its blurred box where it is blurred) to the points of each
 /// subpath and to the blur's σ.
+#[must_use]
 pub fn coverage_backward(
     path: &Path,
     width: u32,
@@ -73,7 +84,7 @@ pub fn coverage_backward(
     let polys = flatten(path);
     if path.blur > 0. {
         let (w, h) = (width as usize, height as usize);
-        let b = blur::Blurred::new(polys, path.fill_rule, path.blur, w, h);
+        let b = blur::Blurred::new(&polys, path.fill_rule, path.blur, w, h);
         let (d_flat, d_sigma) = b.backward(d_coverage);
         return (path.points_gradient(&b.polys, &d_flat), d_sigma);
     }
@@ -102,6 +113,7 @@ pub(crate) fn winding_pixels(winding: &Winding, width: u32) -> impl Iterator<Ite
 impl Subpath {
     /// A closed polygon made of straight cubic curves.
     #[cfg(test)]
+    #[must_use]
     pub fn polygon(corners: &[Vec2]) -> Self {
         let points = corners
             .iter()

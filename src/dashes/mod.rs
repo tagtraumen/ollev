@@ -2,6 +2,16 @@
 //! continuation within half a width) are linked, the cheapest vertex-disjoint chains become one
 //! stroke through them, and the pattern is read off as a dash and gap or a repeating period.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_precision_loss,
+    clippy::disallowed_macros,
+    clippy::disallowed_methods,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+
 use glam::Vec2;
 
 use crate::tracer::fit::eval;
@@ -180,8 +190,8 @@ pub async fn group(ctx: &Context, scene: &mut Scene) {
         replacements.into_iter().map(|(_, _, s)| Some(s)).collect();
     let change = scene.change();
     let mut place = |slot: usize, shapes: &mut Vec<Shape>| {
-        for &r in &at_slot[slot] {
-            let mut stroke = strokes[r].take().expect("each chain placed once");
+        // each chain is at one slot, so placed once
+        for mut stroke in at_slot[slot].iter().filter_map(|&r| strokes[r].take()) {
             stroke.changed = change;
             stroke.fitted = change;
             shapes.push(stroke);
@@ -356,7 +366,7 @@ fn fitted(
     for (reading, seen) in readings {
         let mut trial = dashed.clone();
         trial.dashes = Some(reading);
-        let e = tune_pattern(&cost, &mut trial, origin) as f64
+        let e = f64::from(tune_pattern(&cost, &mut trial, origin))
             + trial.segments() as f64 * ctx.segment_cost;
         // Each dash and gap drawn where seen, compared by their paint with the caps' reach, so a
         // dot (a dash of no length) lies where its member does; then the ends made whole, which
@@ -537,6 +547,6 @@ fn try_chain(
         composite_error(ctx, window, &drawn, &drawn, None, None)
     };
     let cost_after = shape.cost_segments() * ctx.segment_cost + ctx.path_cost;
-    let taken = after as f64 + cost_after < before as f64 + cost_before;
+    let taken = f64::from(after) + cost_after < f64::from(before) + cost_before;
     taken.then_some((slot, shape))
 }

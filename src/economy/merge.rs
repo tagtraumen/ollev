@@ -2,6 +2,23 @@
 //! noise, or a sliver) or over its own pixels less the object's (a difference: the object
 //! restores what lies beneath), where the scene's error plus price falls.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::float_cmp,
+    clippy::indexing_slicing,
+    clippy::too_many_lines,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::disallowed_macros,
+))]
+
 use glam::{IVec2, Vec3};
 
 use super::{Judge, window_of};
@@ -156,9 +173,9 @@ fn kinds(judge: &Judge, scene: &Scene, top: usize, below: usize) -> Vec<Kind> {
         return Vec::new();
     }
     let middle = interior.len() / 2;
-    let noise = (*interior.select_nth_unstable_by(middle, f32::total_cmp).1 as f64)
+    let noise = f64::from(*interior.select_nth_unstable_by(middle, f32::total_cmp).1)
         .max(crate::translucency::raster::NOISE);
-    let agree = |a: Vec3, c: Vec3| (a.distance(c) as f64) <= noise;
+    let agree = |a: Vec3, c: Vec3| f64::from(a.distance(c)) <= noise;
     let solid = |f: &Fill| f.gradient.is_none();
     if !solid(&o.fill) {
         return Vec::new();
@@ -224,12 +241,12 @@ fn in_image(
 /// Whether a shape is a sliver: its mean width, twice its area over its perimeter, within
 /// [`SLIVER_WIDTH`].
 fn sliver(s: &Shape) -> bool {
-    let area: f64 = s.raster().values.iter().map(|&v| v as f64).sum();
+    let area: f64 = s.raster().values.iter().map(|&v| f64::from(v)).sum();
     let perimeter: f64 = s
         .loops
         .iter()
         .flatten()
-        .map(|c| c[0].distance(c[3]) as f64)
+        .map(|c| f64::from(c[0].distance(c[3])))
         .sum();
     perimeter > 0. && 2. * area / perimeter <= SLIVER_WIDTH
 }

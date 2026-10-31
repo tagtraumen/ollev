@@ -2,6 +2,23 @@
 //! each other across a gap, with one step k times the other under `o = k b + m`, put the
 //! low-contrast side under a layer (Metelli's episcotister). Their objects seed [`proposals`].
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::disallowed_macros,
+    clippy::indexing_slicing,
+    clippy::too_many_lines,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::disallowed_methods,
+))]
+
 use crate::HashMap;
 
 use super::find_root as find;
@@ -25,6 +42,7 @@ pub struct Pieces {
 /// The leaves joined into objects: adjacent leaves of one material (most of their pixels off
 /// `rim`, [`super::materials::rim_of`]) or with no contour between them are one object; a
 /// blend leaf of no material joins its nearer neighbour.
+#[must_use]
 pub fn pieces(img: &Image, leaves: &[u32], rim: &[bool]) -> Pieces {
     let (w, h) = (img.width, img.height);
     let nl = leaves.iter().max().map_or(0, |&l| l as usize + 1);
@@ -680,6 +698,7 @@ pub struct Proposal {
 
 impl Proposal {
     /// The layer's colour, `m` over `1 - k`.
+    #[must_use]
     pub fn c(&self) -> DVec3 {
         (self.m / (1.0 - self.k)).clamp(DVec3::ZERO, DVec3::ONE)
     }
@@ -688,6 +707,7 @@ impl Proposal {
 /// The layers the veil pairs propose on the objects ([`pieces`]): objects with veil votes
 /// grouped where they touch, relation the median of the votes, largest first. A group needs
 /// a second agreeing contour, as one reading is any two steps in that ratio.
+#[must_use]
 pub fn proposals(img: &Image, pieces: &Pieces) -> Vec<Proposal> {
     let (w, h) = (pieces.w, pieces.h);
     let mut js = junctions(img, pieces);

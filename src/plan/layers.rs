@@ -1,5 +1,24 @@
 //! The translucency decision: the families accepted whole, the beneath beneath them.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::disallowed_macros,
+    clippy::indexing_slicing,
+    clippy::too_many_lines,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+#![cfg_attr(
+    feature = "diagnostics",
+    expect(
+        clippy::cast_precision_loss,
+        reason = "panic ratchet: remove a lint once the module is clean of it"
+    )
+)]
+
 use super::*;
 
 /// The families proposed on a level past the gates at their pin ([`GATE`] materials meeting,
@@ -49,7 +68,7 @@ pub(super) async fn decide_whole(
     detail: f64,
     options: Options,
     timings: &mut Timings,
-) -> Vec<(Scene, f64, crate::translucency::Candidate)> {
+) -> Result<Vec<(Scene, f64, crate::translucency::Candidate)>, TraceError> {
     let without = parts(ctx, scene);
     let mut done = Vec::new();
     // the traces beneath are a level deeper, for the log
@@ -77,7 +96,7 @@ pub(super) async fn decide_whole(
             timings,
             false,
         )
-        .await;
+        .await?;
         crate::progress::poll().await;
         let with_parts = parts(ctx, &with);
         crate::progress::poll().await;
@@ -112,10 +131,10 @@ pub(super) async fn decide_whole(
         done.push((with, better, candidate));
     }
     crate::progress::nest(false);
-    done
+    Ok(done)
 }
 
-/// For the record: a region's IoU against the truth's mask the caller gave (see
+/// For the record: a region's `IoU` against the truth's mask the caller gave (see
 /// [`crate::diagnostics::Diagnostics::truth`]), where it is the frame's size.
 #[cfg(feature = "diagnostics")]
 pub(super) fn truth_iou(mask: &[bool]) -> Option<f64> {
@@ -163,11 +182,11 @@ pub(super) async fn beneath_with(
     levels: bool,
     timings: &mut Timings,
     show: bool,
-) -> Scene {
+) -> Result<Scene, TraceError> {
     let (mut with, on_top, covered) = beneath_layers(
         ctx, opaque, candidate, above, peeled, detail, options, levels, timings, show,
     )
-    .await;
+    .await?;
     timings
         .time("overlay", async || {
             append_overlay(
@@ -187,7 +206,7 @@ pub(super) async fn beneath_with(
             .time("above", async || refit_above(ctx, &mut with, start).await)
             .await;
     }
-    with
+    Ok(with)
 }
 
 /// Refits the parts above (shapes from `start` up) over the completed beneath and the layer's
@@ -227,15 +246,14 @@ async fn beneath_layers(
     levels: bool,
     timings: &mut Timings,
     show: bool,
-) -> (Scene, Option<Scene>, Option<std::sync::Arc<Vec<bool>>>) {
+) -> Result<(Scene, Option<Scene>, Option<std::sync::Arc<Vec<bool>>>), TraceError> {
     let (width, height) = (ctx.width, ctx.height);
     let holes = candidate.holes.clone();
     // the layer's region beside the completed beneath in the peel directory, as `region-N.pgm`
     #[cfg(feature = "diagnostics")]
     if let (Some(dir), Some(_)) = (crate::diagnostics::peel_dir(), &holes) {
         let level = std::fs::read_dir(&dir)
-            .map(|d| d.filter(|e| e.is_ok()).count())
-            .unwrap_or(0);
+            .map_or(0, |d| d.flatten().count());
         let mut pgm = format!("P5\n{width} {height}\n255\n").into_bytes();
         pgm.extend(candidate.mask.iter().map(|&h| if h { 255u8 } else { 0 }));
         let _ = std::fs::write(dir.join(format!("region-{level}.pgm")), pgm);
@@ -273,9 +291,9 @@ async fn beneath_layers(
         let core: Vec<bool> = h.iter().zip(&covered).map(|(&a, &b)| a && b).collect();
         let colour = |i: usize| {
             Vec3::new(
-                peeled[3 * i] as f32,
-                peeled[3 * i + 1] as f32,
-                peeled[3 * i + 2] as f32,
+                f32::from(peeled[3 * i]),
+                f32::from(peeled[3 * i + 1]),
+                f32::from(peeled[3 * i + 2]),
             ) / 255.
         };
         let through = crate::translucency::SHOW_THROUGH;
@@ -325,7 +343,7 @@ async fn beneath_layers(
                 .time("completion", async || {
                     completed_beneath(peeled, h, blend, width, height, detail).await
                 })
-                .await,
+                .await?,
         ),
         None => None,
     };
@@ -339,7 +357,7 @@ async fn beneath_layers(
     });
     let image = completed.as_deref().unwrap_or(peeled);
     let (mut inner_ctx, inner_hierarchy) =
-        crate::hierarchy::analyze(image, width, height, detail, timings).await;
+        crate::hierarchy::analyze(image, width, height, detail, timings).await?;
     let frame = Window::full(width, height);
     let edge = peeled_edge(&candidate.mask, width, height, above);
     let peel = Some((candidate.mask.as_slice(), candidate.k));
@@ -355,18 +373,17 @@ async fn beneath_layers(
         timings,
         show,
     )
-    .await;
+    .await?;
     // the beneath's and the parts above's scenes in the peel directory, as SVGs
     #[cfg(feature = "diagnostics")]
     if let (Some(dir), Some(top)) = (crate::diagnostics::peel_dir(), &on_top) {
         let level = std::fs::read_dir(&dir)
-            .map(|d| d.filter(|e| e.is_ok()).count())
-            .unwrap_or(0);
+            .map_or(0, |d| d.flatten().count());
         let svg = |s: &Scene| crate::emit::svg::encode(&s.model(), &[]);
         let _ = std::fs::write(dir.join(format!("beneath-{level}.svg")), svg(&with));
         let _ = std::fs::write(dir.join(format!("above-{level}.svg")), svg(top));
     }
-    (with, on_top, holes)
+    Ok((with, on_top, holes))
 }
 
 /// The peeled image with its holes filled by completion over the pieces beneath (the leaves
@@ -378,16 +395,16 @@ async fn completed_beneath(
     width: usize,
     height: usize,
     detail: f64,
-) -> Vec<u8> {
+) -> Result<Vec<u8>, TraceError> {
     use crate::translucency::raster::DVec3;
     let mut timings = Timings::default();
     let (_, hierarchy) =
-        crate::hierarchy::analyze(peeled, width, height, detail, &mut timings).await;
+        crate::hierarchy::analyze(peeled, width, height, detail, &mut timings).await?;
     let img: Vec<DVec3> = peeled
         .as_chunks::<3>()
         .0
         .iter()
-        .map(|c| DVec3::new(c[0] as f64, c[1] as f64, c[2] as f64) / 255.)
+        .map(|c| DVec3::new(f64::from(c[0]), f64::from(c[1]), f64::from(c[2])) / 255.)
         .collect();
     let (filled, _, report) = crate::translucency::completion::complete_holes_with_blend(
         &img,
@@ -409,8 +426,7 @@ async fn completed_beneath(
     #[cfg(feature = "diagnostics")]
     if let Some(dir) = crate::diagnostics::peel_dir() {
         let level = std::fs::read_dir(&dir)
-            .map(|d| d.filter(|e| e.is_ok()).count())
-            .unwrap_or(0);
+            .map_or(0, |d| d.flatten().count());
         let mut ppm = format!("P6\n{width} {height}\n255\n").into_bytes();
         ppm.extend_from_slice(&rgb);
         let _ = std::fs::write(dir.join(format!("completed-{level}.ppm")), ppm);
@@ -419,7 +435,7 @@ async fn completed_beneath(
         pgm.extend(holes.iter().map(|&h| if h { 255u8 } else { 0 }));
         let _ = std::fs::write(dir.join(format!("holes-{level}.pgm")), pgm);
     }
-    rgb
+    Ok(rgb)
 }
 
 /// What the holes hold, as a layer of its own: the shapes of the level's opaque trace whose

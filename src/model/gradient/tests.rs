@@ -34,7 +34,7 @@ fn host_t(shape: &GradientShape, p: DVec2) -> f64 {
             let mut line: Vec<DVec2> = Vec::new();
             for c in curve {
                 for s in 0..64 {
-                    let t = s as f64 / 64.;
+                    let t = f64::from(s) / 64.;
                     let u = 1. - t;
                     line.push(
                         c[0] * (u * u * u)
@@ -160,7 +160,7 @@ fn the_host_form_paints_as_the_model() {
         };
         for y in 0..32 {
             for x in 0..32 {
-                let p = DVec2::new(x as f64 + 0.5, y as f64 + 0.5);
+                let p = DVec2::new(f64::from(x) + 0.5, f64::from(y) + 0.5);
                 let (t, want) = (g.t(p), host_t(&shape, p));
                 assert!(
                     (t - want).abs() < slack,

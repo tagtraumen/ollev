@@ -2,6 +2,19 @@
 //! the color error added per boundary pixel removed (the Mumford-Shah boundary cost accepting it),
 //! so cutting the tree at a cost gives the segmentation at that cost.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::disallowed_macros,
+    clippy::indexing_slicing,
+    clippy::too_many_lines,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 
@@ -9,6 +22,7 @@ use crate::render::{Gradient, Stops};
 use glam::{DVec2, DVec3, IVec2, Vec2, Vec3};
 
 use crate::HashMap;
+use crate::error::{Invariant, TraceError, filled, with_capacity};
 
 pub mod analyze;
 mod blends;
@@ -129,7 +143,7 @@ impl Hierarchy {
         colors: &[DVec3],
         width: usize,
         height: usize,
-    ) -> Self {
+    ) -> Result<Self, TraceError> {
         let mut nodes: Vec<Node> = (0..count)
             .map(|_| Node {
                 stats: Stats::default(),
@@ -164,7 +178,7 @@ impl Hierarchy {
 
         // Shared boundary length between neighboring regions, and the summed width of the color
         // transition across their boundary edges (see `transition_width`)
-        let mut neighbors: Vec<HashMap<u32, u32>> = vec![HashMap::default(); count];
+        let mut neighbors: Vec<HashMap<u32, u32>> = filled(HashMap::default(), count)?;
         let mut widths: HashMap<(u32, u32), f64> = HashMap::default();
         let mut link = |i: usize, j: usize, step: usize| {
             let (a, b) = (labels[i], labels[j]);
@@ -231,7 +245,7 @@ impl Hierarchy {
         }
 
         let cost = |nodes: &[Node], a: u32, b: u32, length: u32| {
-            nodes[a as usize].stats.merge_cost(&nodes[b as usize].stats) / length as f64
+            nodes[a as usize].stats.merge_cost(&nodes[b as usize].stats) / f64::from(length)
         };
         let mut heap = BinaryHeap::new();
         for (a, map) in neighbors.iter().enumerate() {
@@ -250,7 +264,7 @@ impl Hierarchy {
         }
 
         // Merged nodes are replaced by a new one, so a queued merge is current while both live
-        let mut alive = vec![true; count];
+        let mut alive = filled(true, count)?;
         let merge = |nodes: &mut Vec<Node>,
                      neighbors: &mut Vec<HashMap<u32, u32>>,
                      alive: &mut Vec<bool>,
@@ -317,7 +331,7 @@ impl Hierarchy {
         }
         // The pixel grid is connected, so one root remains; join any others to be safe
         let mut roots = (0..nodes.len() as u32).filter(|&n| alive[n as usize]);
-        let mut root = roots.next().expect("an image has pixels");
+        let mut root = roots.next().invariant("an image with pixels")?;
         let others: Vec<u32> = roots.collect();
         for other in others {
             root = merge(
@@ -331,8 +345,8 @@ impl Hierarchy {
         }
 
         // Number the leaves depth first, so each node's leaves form a range
-        let mut rank = vec![0; count];
-        let mut order = Vec::with_capacity(count);
+        let mut rank = filled(0, count)?;
+        let mut order = with_capacity(count)?;
         let mut next = 0;
         let mut stack = vec![(root, false)];
         while let Some((node, done)) = stack.pop() {
@@ -352,14 +366,14 @@ impl Hierarchy {
         }
 
         // The pixels sorted by the rank of their leaf, by counting
-        let mut pixel_start = vec![0u32; count + 1];
+        let mut pixel_start = filled(0u32, count.saturating_add(1))?;
         for &label in &labels {
             pixel_start[rank[label as usize] as usize + 1] += 1;
         }
         for k in 0..count {
             pixel_start[k + 1] += pixel_start[k];
         }
-        let mut pixels = vec![0u32; labels.len()];
+        let mut pixels = filled(0u32, labels.len())?;
         let mut fill = pixel_start.clone();
         for (i, &label) in labels.iter().enumerate() {
             let r = rank[label as usize] as usize;
@@ -380,7 +394,7 @@ impl Hierarchy {
         };
         crate::progress::poll().await;
         hierarchy.measure_perimeters(&boundaries).await;
-        hierarchy
+        Ok(hierarchy)
     }
 
     /// Fills in every node's perimeter from the `boundaries` between leaves `(a, b, length)`: a
@@ -393,18 +407,19 @@ impl Hierarchy {
             if k % (POLL / 16) == 0 {
                 crate::progress::poll().await;
             }
-            contribution[a as usize] += length as i64;
-            contribution[b as usize] += length as i64;
+            contribution[a as usize] += i64::from(length);
+            contribution[b as usize] += i64::from(length);
             width_contribution[a as usize] += width;
             width_contribution[b as usize] += width;
             // The lowest common ancestor: up from `a` until the node holds `b`
             let mut at = a;
-            while !self.within(b, at) {
-                at = self.nodes[at as usize]
-                    .parent
-                    .expect("a has an ancestor holding b");
+            // the root holds every node
+            while !self.within(b, at)
+                && let Some(parent) = self.nodes[at as usize].parent
+            {
+                at = parent;
             }
-            contribution[at as usize] -= 2 * length as i64;
+            contribution[at as usize] -= 2 * i64::from(length);
             width_contribution[at as usize] -= 2. * width;
         }
         // Children come before their parents, so one pass sums each subtree
@@ -426,6 +441,7 @@ impl Hierarchy {
 
     /// What lies behind everything: of the two parts the image first splits into, the one along
     /// more of the frame.
+    #[must_use]
     pub fn background(&self, height: usize) -> u32 {
         let width = self.width;
         let frame_length = |node: u32| {
@@ -442,6 +458,7 @@ impl Hierarchy {
     }
 
     /// Whether `node` is `ancestor` or lies within it.
+    #[must_use]
     pub fn within(&self, node: u32, ancestor: u32) -> bool {
         let (lo, hi) = self.nodes[node as usize].leaves;
         let (a_lo, a_hi) = self.nodes[ancestor as usize].leaves;
@@ -449,27 +466,32 @@ impl Hierarchy {
     }
 
     /// The leaf (region of the segmentation) of pixel `i`.
+    #[must_use]
     pub fn leaf(&self, i: usize) -> u32 {
         self.labels[i]
     }
 
     /// The leaf of every pixel.
+    #[must_use]
     pub fn labels(&self) -> &[u32] {
         &self.labels
     }
 
     /// The depth-first ranks of the leaves of `node`, a range.
+    #[must_use]
     pub fn leaf_ranks(&self, node: u32) -> (u32, u32) {
         self.nodes[node as usize].leaves
     }
 
     /// The pixels (row-major indices) of `node`, leaf by leaf in the order of their ranks.
+    #[must_use]
     pub fn pixels(&self, node: u32) -> &[u32] {
         let (lo, hi) = self.nodes[node as usize].leaves;
         &self.pixels[self.pixel_start[lo as usize] as usize..self.pixel_start[hi as usize] as usize]
     }
 
     /// The leaves of `node`.
+    #[must_use]
     pub fn leaves(&self, node: u32) -> &[u32] {
         let (lo, hi) = self.nodes[node as usize].leaves;
         &self.order[lo as usize..hi as usize]
@@ -478,6 +500,7 @@ impl Hierarchy {
     /// The smallest scale in [`MIXED_STEPS`] at which at least `share` of the node's rim is
     /// mixed (see `mixed_rim_at`): one for an anti-aliased edge, the block size for
     /// pixel art that renders a gradient or a blur in blocks, `None` for a crisp edge.
+    #[must_use]
     pub fn antialias_scale(
         &self,
         node: u32,
@@ -563,6 +586,7 @@ impl Hierarchy {
     /// Color statistics of the node's own pixels (outside `covered`, more than `radius` from
     /// anything else) within `band` of its outline, the color a primitive has to match. The
     /// node's stats when under a quarter of the band survives the erosion.
+    #[must_use]
     pub fn own_rim_stats(&self, node: u32, covered: &[u32], radius: i32, band: i32) -> Stats {
         let n = &self.nodes[node as usize];
         let (w, h) = (self.width as i32, (self.labels.len() / self.width) as i32);
@@ -645,11 +669,13 @@ impl Hierarchy {
         }
     }
 
+    #[must_use]
     pub fn contains(&self, node: u32, i: usize) -> bool {
         let (lo, hi) = self.nodes[node as usize].leaves;
         (lo..hi).contains(&self.rank[self.labels[i] as usize])
     }
 
+    #[must_use]
     pub fn width(&self) -> usize {
         self.width
     }

@@ -2,6 +2,23 @@
 //! it as their images under one tint `o = k b + m` (one contour fixes k), read on the leaves
 //! before anything is proposed and on a candidate's rim before it is traced.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::disallowed_macros,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::cast_precision_loss,
+    clippy::disallowed_methods,
+    clippy::too_many_lines,
+))]
+
 use glam::Vec3;
 
 use super::leaves::Leaves;
@@ -75,6 +92,7 @@ const STEP: f32 = 3. * NOISE;
 
 /// Whether the picture holds a contour running on under some tint with k a layer's (within
 /// [`OPACITY_MARGIN`] of clear and opaque) and its colour in gamut, the layer showing.
+#[must_use]
 pub fn layer_witnessed(lv: &Leaves) -> bool {
     let cross = Crossings::new(lv);
     cross.any(|j1, j2| {
@@ -108,6 +126,7 @@ const SLACK: f32 = 3. * NOISE;
 /// Whether a candidate's own relation `o = k b + m` is seen on a contour running on under its
 /// `mask`: on its rim, pixels a step past the anti-aliasing inside and outside that pair
 /// under the relation and whose outsides span a step.
+#[must_use]
 pub fn witnessed_at(target: &[Vec3], width: usize, k: f32, m: Vec3, mask: &[bool]) -> bool {
     let height = target.len() / width.max(1);
     let (w, h) = (width as i64, height as i64);

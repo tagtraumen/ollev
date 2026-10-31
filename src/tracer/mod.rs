@@ -1,6 +1,17 @@
 //! The first stage: the picture segmented into regions and their boundaries fitted with cubics
 //! (with the primitives, circles, ellipses and polygons, that a boundary may be).
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::disallowed_macros,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+
 pub mod angle;
 mod antialias;
 pub mod beautify;
@@ -30,12 +41,13 @@ pub struct Params {
 /// A default detail level from the count of pixels with a clear color change to a neighbor, per
 /// pixel of image width (which grows with the boundaries crossing the image, not with its size).
 /// Flat art stays at 1, busy illustrations and photos go up to 3.
+#[must_use]
 pub fn auto_detail(rgb: &[u8], width: usize, height: usize) -> f64 {
     let color = |i: usize| {
         DVec3::new(
-            rgb[3 * i] as f64,
-            rgb[3 * i + 1] as f64,
-            rgb[3 * i + 2] as f64,
+            f64::from(rgb[3 * i]),
+            f64::from(rgb[3 * i + 1]),
+            f64::from(rgb[3 * i + 2]),
         ) / 255.
     };
     let mut edges = 0usize;
@@ -59,6 +71,7 @@ impl Params {
     /// Scales every threshold that controls how much detail survives. `1` is the default, larger
     /// values keep more regions and split more curves during refinement. The fit tolerance stays
     /// fixed, since tighter fits follow the pixel staircase and trap refinement in wobbly curves.
+    #[must_use]
     pub fn with_detail(detail: f64) -> Self {
         let mut params = Self::default();
         params.segment.contrast /= detail;
@@ -92,7 +105,7 @@ fn rgb_colors(rgb: &[u8]) -> Vec<DVec3> {
     rgb.as_chunks::<3>()
         .0
         .iter()
-        .map(|c| DVec3::new(c[0] as f64, c[1] as f64, c[2] as f64) / 255.)
+        .map(|c| DVec3::new(f64::from(c[0]), f64::from(c[1]), f64::from(c[2])) / 255.)
         .collect()
 }
 
@@ -129,6 +142,7 @@ pub async fn segmentation_colors(
 /// Rows of a pass over the picture between two checkpoints.
 const ROWS: isize = 32;
 
+#[must_use]
 pub fn signed_area(cubics: &[Cubic]) -> f32 {
     cubics
         .iter()

@@ -2,6 +2,23 @@
 //! scikit-image (sums in their order, filters, labels, skeletons): tests at a tolerance on
 //! flat art compare exact sums of levels, and a sum taken in another order flips them.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::disallowed_macros,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::cast_possible_wrap,
+    clippy::disallowed_methods,
+    clippy::too_many_lines,
+))]
+
 use glam::Vec3;
 pub use glam::{DVec2, DVec3};
 
@@ -28,16 +45,19 @@ pub const REFERENCE_WIDTH: f64 = 330.0;
 /// The drawing's length unit in pixels, the width over 330. Constants that measure the
 /// drawing (a reach, a smoothing, a least size) scale by it; constants that measure the
 /// raster (a step's anti-aliasing, the 8-bit noise) stay in pixels and levels.
+#[must_use]
 pub fn unit_of(width: usize) -> f64 {
     width as f64 / REFERENCE_WIDTH
 }
 
 /// A length of `px` pixels at 330 at this image's width, rounded, at least 1.
+#[must_use]
 pub fn length_px(width: usize, px: f64) -> usize {
     ((px * unit_of(width)).round() as usize).max(1)
 }
 
 /// An area of `px2` pixels at 330 at this image's width (the unit squared).
+#[must_use]
 pub fn area_px(width: usize, px2: f64) -> f64 {
     px2 * unit_of(width) * unit_of(width)
 }
@@ -45,6 +65,7 @@ pub fn area_px(width: usize, px2: f64) -> f64 {
 /// The pixels of a mask all of whose pixels within `r` (the square of side 2r + 1, cut by
 /// the frame: the frame counts as inside) are in the mask: the erosion by the square,
 /// separable.
+#[must_use]
 pub fn deep_in(mask: &[bool], width: usize, height: usize, r: usize) -> Vec<bool> {
     let pass = |src: &[bool], along_x: bool| -> Vec<bool> {
         let (n, m) = if along_x {
@@ -65,7 +86,7 @@ pub fn deep_in(mask: &[bool], width: usize, height: usize, r: usize) -> Vec<bool
         let mut prefix = vec![0usize; m + 1];
         for line in 0..n {
             for i in 0..m {
-                prefix[i + 1] = prefix[i] + src[at(line, i)] as usize;
+                prefix[i + 1] = prefix[i] + usize::from(src[at(line, i)]);
             }
             for i in 0..m {
                 let (a, b) = (i.saturating_sub(r), (i + r).min(m - 1));
@@ -89,6 +110,7 @@ pub struct Image {
 impl Image {
     /// From packed 8-bit RGB, each level over 255 (for the lab).
     #[cfg(any(test, feature = "diagnostics"))]
+    #[must_use]
     pub fn from_rgb8(rgb: &[u8], width: usize, height: usize) -> Self {
         let px = rgb
             .as_chunks::<3>()
@@ -96,9 +118,9 @@ impl Image {
             .iter()
             .map(|p| {
                 DVec3::new(
-                    p[0] as f64 / 255.0,
-                    p[1] as f64 / 255.0,
-                    p[2] as f64 / 255.0,
+                    f64::from(p[0]) / 255.0,
+                    f64::from(p[1]) / 255.0,
+                    f64::from(p[2]) / 255.0,
                 )
             })
             .collect();
@@ -107,8 +129,9 @@ impl Image {
 
     /// From the crate's target colors, which are 8-bit levels: each channel rounded back
     /// to its level first, so the doubles are exactly the 8-bit ones.
+    #[must_use]
     pub fn from_target(target: &[Vec3], width: usize) -> Self {
-        let level = |v: f32| (v as f64 * 255.0).round().clamp(0.0, 255.0) / 255.0;
+        let level = |v: f32| (f64::from(v) * 255.0).round().clamp(0.0, 255.0) / 255.0;
         let px = target
             .iter()
             .map(|c| DVec3::new(level(c.x), level(c.y), level(c.z)))
@@ -120,25 +143,30 @@ impl Image {
         }
     }
 
+    #[must_use]
     pub fn len(&self) -> usize {
         self.px.len()
     }
 
     #[cfg(feature = "diagnostics")]
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.px.is_empty()
     }
 
+    #[must_use]
     pub fn channel(&self, c: usize) -> Vec<f64> {
         self.px.iter().map(|p| p[c]).collect()
     }
 
     /// The channel means, numpy's `img.mean(axis=2)`.
+    #[must_use]
     pub fn luminance(&self) -> Vec<f64> {
         self.px.iter().map(|p| (p.x + p.y + p.z) / 3.0).collect()
     }
 
     /// The bilinear color at (x, y), each channel by `map1`.
+    #[must_use]
     pub fn sample(&self, x: f64, y: f64) -> DVec3 {
         let (iy, wy) = axis_weights(y, self.height);
         let (ix, wx) = axis_weights(x, self.width);

@@ -2,8 +2,19 @@
 //! a transform per instance, or by a linear, grid or circular repeat of few parameters; a lattice
 //! of cells on a ground showing in its gaps is also read as a ground with strokes along the gaps.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::float_cmp,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+
 use glam::Vec2;
 
+use crate::error::TraceError;
 use crate::{Context, Scene, Shape};
 
 mod dual;
@@ -28,6 +39,7 @@ pub struct Transform {
 }
 
 impl Transform {
+    #[must_use]
     pub fn translation(offset: Vec2) -> Self {
         Self {
             scale: 1.,
@@ -36,15 +48,18 @@ impl Transform {
         }
     }
 
+    #[must_use]
     pub fn apply(&self, p: Vec2) -> Vec2 {
         self.offset + self.scale * Vec2::from_angle(self.angle).rotate(p)
     }
 
+    #[must_use]
     pub fn is_translation(&self) -> bool {
         self.scale == 1. && self.angle == 0.
     }
 
     /// The SVG matrix `a b c d e f`.
+    #[must_use]
     pub fn matrix(&self) -> [f32; 6] {
         let (s, c) = self.angle.sin_cos();
         let k = self.scale;
@@ -85,8 +100,9 @@ pub enum Structure {
 impl Structure {
     /// The structure's name and parameters: none for a list, the step, the two steps and the
     /// columns of a grid, or the centre and the turn in radians.
+    #[must_use]
     pub fn parameters(&self) -> (&'static str, Vec<f64>) {
-        let v = |v: Vec2| [v.x as f64, v.y as f64];
+        let v = |v: Vec2| [f64::from(v.x), f64::from(v.y)];
         match self {
             Structure::List => ("list", Vec::new()),
             Structure::Linear { step } => ("linear", v(*step).to_vec()),
@@ -100,7 +116,7 @@ impl Structure {
             ),
             Structure::Circular { center, step } => (
                 "circular",
-                v(*center).into_iter().chain([*step as f64]).collect(),
+                v(*center).into_iter().chain([f64::from(*step)]).collect(),
             ),
         }
     }
@@ -238,18 +254,18 @@ fn reach(shape: &Shape) -> f32 {
 
 /// Finds the scene's repeats and keeps them in [`Scene::repeats`], after reading each lattice
 /// on a ground as strokes where that is cheaper (see [`dual::apply`]).
-pub async fn instance(ctx: &Context, scene: &mut Scene) {
+pub async fn instance(ctx: &Context, scene: &mut Scene) -> Result<(), TraceError> {
     scene.unique_ids();
     // A lattice is read from the shapes alike as they stand, before any is snapped
     let taken = crate::HashSet::default();
     let mut lattices: Vec<Repeat> = Vec::new();
     for c in find::clusters(scene, &taken) {
         crate::progress::poll().await;
-        lattices.extend(snap::aligned(scene, &c));
+        lattices.extend(snap::aligned(scene, &c)?);
     }
     crate::progress::poll().await;
     dual::apply(ctx, scene, &lattices);
-    let repeats = repeats_of(ctx, scene).await;
+    let repeats = repeats_of(ctx, scene).await?;
     if crate::diagnostics::log() {
         for r in &repeats {
             eprintln!(
@@ -261,11 +277,12 @@ pub async fn instance(ctx: &Context, scene: &mut Scene) {
         }
     }
     scene.repeats = repeats;
+    Ok(())
 }
 
 /// The repeats of the scene's shapes: clusters of shapes alike, snapped to one prototype where
 /// that pays, their transforms read as a structure where that pays, drawn together.
-async fn repeats_of(ctx: &Context, scene: &mut Scene) -> Vec<Repeat> {
+async fn repeats_of(ctx: &Context, scene: &mut Scene) -> Result<Vec<Repeat>, TraceError> {
     // The shapes a cluster's snap leaves out are clustered again among themselves
     let mut repeats: Vec<Repeat> = Vec::new();
     let mut taken = crate::HashSet::default();
@@ -274,13 +291,13 @@ async fn repeats_of(ctx: &Context, scene: &mut Scene) -> Vec<Repeat> {
         crate::progress::poll().await;
         for cluster in find::clusters(scene, &taken) {
             crate::progress::poll().await;
-            if let Some(repeat) = snap::snap(ctx, scene, &cluster) {
+            if let Some(repeat) = snap::snap(ctx, scene, &cluster)? {
                 taken.extend(repeat.members.iter().map(|m| m.0));
-                repeats.extend(structure::recognize(ctx, scene, repeat));
+                repeats.extend(structure::recognize(ctx, scene, repeat)?);
             }
         }
         if repeats.len() == before {
-            return repeats;
+            return Ok(repeats);
         }
     }
 }

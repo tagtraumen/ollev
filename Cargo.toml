@@ -1,6 +1,6 @@
 [package]
 name = "ollev"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.88"
 description = "Raster images traced into layered vector scenes: shapes, strokes, gradients, blurs, repeats and translucent layers"
@@ -22,3 +22,26 @@ svg = ["dep:resvg"]
 diagnostics = ["svg"]
 # glam's argument checks as panics (Graphite's debug builds turn them on); no behaviour change.
 glam-assert = ["glam/glam-assert"]
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+pedantic = { level = "deny", priority = -1 }
+# A module split in files shares its parent's names through `use super::*`
+wildcard_imports = "allow"
+# The geometry's own notation: x, y, w, h, a, b, dx, dy
+many_single_char_names = "allow"
+similar_names = "allow"
+# No panics in library code: every failure is a `TraceError`
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+unreachable = "deny"
+todo = "deny"
+unimplemented = "deny"
+panic_in_result_fn = "deny"
+unwrap_in_result = "deny"
+string_slice = "deny"
+indexing_slicing = "deny"
+arithmetic_side_effects = "deny"

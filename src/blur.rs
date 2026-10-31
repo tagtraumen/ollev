@@ -2,6 +2,16 @@
 //! drawn with a Gaussian blur over its coverage. The blur is an option of the shape like a
 //! gradient, priced in segments and kept where the error it removes pays for it.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::disallowed_macros,
+    clippy::float_cmp,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -63,7 +73,7 @@ pub fn fit_blur(
             let crop = |w: Window| w.pixels(ctx.width).map(|i| below[i]).collect();
             let place = Place::over(ctx, scene, &wide, position, MARGIN, crop)?;
             let cost = place.cost(ctx, shape.fill);
-            let hard = cost.value(&shape.path(place.window.origin())) as f64;
+            let hard = f64::from(cost.value(&shape.path(place.window.origin())));
             let g = Rc::new((place, cost, hard));
             given_at.borrow_mut().push((room, g.clone()));
             g
@@ -81,7 +91,7 @@ pub fn fit_blur(
     let delta = |blurred: &Shape| -> Option<f64> {
         let p = places(blurred)?;
         let origin = p.given.0.window.origin();
-        Some(p.own_cost().value(&blurred.path(origin)) as f64 - p.given.2)
+        Some(f64::from(p.own_cost().value(&blurred.path(origin))) - p.given.2)
     };
     let clips = std::iter::once(shape.clip).chain(parent.filter(|_| shape.clip.is_none()).map(Some));
     let mut best: Option<(f64, Shape)> = None;

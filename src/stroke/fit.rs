@@ -1,5 +1,21 @@
 //! A stroke's fit: its outline sampled into a strip and moved by the coverage gradient.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::disallowed_macros,
+    clippy::disallowed_methods,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::too_many_lines,
+))]
+
 use super::*;
 
 /// A piece of a stroke's outline: its points, each with the centerline sample it comes from

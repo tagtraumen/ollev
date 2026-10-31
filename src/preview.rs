@@ -3,8 +3,21 @@
 //! flat regions drawn in their mean colours over the picture's mean, the regions' outlines
 //! the pixel cracks between them as polygons (the finest level's fitted with cubics).
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::disallowed_macros,
+    clippy::disallowed_methods,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+
 use glam::{DVec2, DVec3, IVec2};
 
+use crate::error::{TraceError, area};
 use crate::model::{Curve, FillRule, Geometry, Item, Model, Object, Paint};
 use crate::tracer::planar::{ChainUse, PlanarMap};
 
@@ -13,13 +26,18 @@ pub const FIRST: usize = 1 << 12;
 
 /// Shows the host each first look at the `width` by `height` picture segmented at `detail`:
 /// the levels of [`FIRST`] pixels times a power of four up to a third of the picture's.
-pub(crate) async fn preview(rgb: &[u8], width: usize, height: usize, detail: f64) {
-    let pixels = width * height;
+pub(crate) async fn preview(
+    rgb: &[u8],
+    width: usize,
+    height: usize,
+    detail: f64,
+) -> Result<(), TraceError> {
+    let pixels = area(width, height, 1)?;
     let levels: Vec<usize> = std::iter::successors(Some(FIRST), |p| Some(4 * p))
         .take_while(|&p| 3 * p <= pixels)
         .collect();
     let Some(&finest) = levels.last() else {
-        return;
+        return Ok(());
     };
     let size = |p: usize| {
         let s = (pixels as f64 / p as f64).sqrt();
@@ -29,18 +47,19 @@ pub(crate) async fn preview(rgb: &[u8], width: usize, height: usize, detail: f64
     };
     // The finest level from the picture, the coarser from it
     let (fw, fh, fs) = size(finest);
-    let fine = crate::input::downsampled(rgb, width, height, fw, fh, fs);
+    let fine = crate::input::downsampled(rgb, width, height, fw, fh, fs)?;
     for &p in &levels {
         crate::progress::poll().await;
         let (w, h, s) = size(p);
         let small = if p == finest {
             fine.clone()
         } else {
-            crate::input::downsampled(&fine, fw, fh, w, h, fw as f64 / w as f64)
+            crate::input::downsampled(&fine, fw, fh, w, h, fw as f64 / w as f64)?
         };
         let model = regions(&small, w, h, s, (width, height), detail, p == finest).await;
         crate::progress::preview(model);
     }
+    Ok(())
 }
 
 /// The flat regions of the `w` by `h` picture `small`, drawn at `s` times its size over a

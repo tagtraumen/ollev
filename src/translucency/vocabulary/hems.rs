@@ -1,5 +1,22 @@
 //! The layer's lines: thin colour lines, hem lines and their chains.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::disallowed_macros,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::disallowed_methods,
+    clippy::too_many_lines,
+))]
+
 use glam::DVec2;
 
 use super::{
@@ -14,6 +31,7 @@ pub const DIRS: [(isize, isize); 4] = [(0, 1), (1, 0), (1, 1), (1, -1)];
 /// Thin lines of any colour: per pixel the most it lies off the colour segment between the
 /// pixels r away along one of four directions, and that direction. An anti-aliased step lies
 /// on the segment, a line of a third colour does not, darker or lighter (as pale hems).
+#[must_use]
 pub fn colour_lines(img: &Image) -> (Vec<f64>, Vec<u8>) {
     colour_lines_at(img, unit_of(img.width))
 }
@@ -31,6 +49,7 @@ thread_local! {
 }
 
 /// [`colour_lines`] at the unit `u`, for a window of an image whose unit is the whole's.
+#[must_use]
 pub fn colour_lines_at(img: &Image, u: f64) -> (Vec<f64>, Vec<u8>) {
     let key = (
         u.to_bits(),
@@ -73,6 +92,7 @@ fn colour_lines_of(img: &Image, u: f64) -> (Vec<f64>, Vec<u8>) {
 /// The centre pixels of lines: at least as strong as both neighbours across the line (the
 /// direction its test found), kept by hysteresis (weak pixels, 8-connected to a strong
 /// one), the edge detector's rule.
+#[must_use]
 pub fn thin_lines(
     strength: &[f64],
     dir: &[u8],
@@ -169,6 +189,7 @@ pub(super) fn gauss1d(v: &[f64], s: f64) -> Vec<f64> {
 /// Hems, lines the layer's edge carries: along the region's outline, the offset across it
 /// (within 3 px) where the line strength peaks above 6 NOISE; runs at least 5 px long, gaps
 /// of 2 px bridged (anti-aliasing breaks diagonals), offsets median-filtered and smoothed.
+#[must_use]
 pub fn hem_lines(
     region: &[bool],
     strength: &[f64],
@@ -217,6 +238,7 @@ pub fn hem_lines(
 
 /// Chains of a thin mask's skeleton (cut at its junctions), as polylines through the
 /// pixel centres, smoothed, at least 5 px long (at 330).
+#[must_use]
 pub fn line_chains(mask: &[bool], width: usize, height: usize, min_px: f64) -> Vec<Vec<DVec2>> {
     let sk = skeletonize(mask, width, height);
     trace_chains(&sk, width, height, length_px(width, min_px).max(3))

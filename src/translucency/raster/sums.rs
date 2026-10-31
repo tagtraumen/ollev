@@ -1,8 +1,26 @@
 //! Sums, means, medians and ranges in numpy's order of operations.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::disallowed_macros,
+    clippy::disallowed_methods,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::cast_possible_wrap,
+    clippy::too_many_lines,
+))]
+
 use super::DVec3;
 
 /// numpy's pairwise sum of a contiguous run (`pairwise_sum_DOUBLE`).
+#[must_use]
 pub fn pairwise(a: &[f64]) -> f64 {
     let n = a.len();
     if n < 8 {
@@ -34,12 +52,14 @@ pub fn pairwise(a: &[f64]) -> f64 {
 }
 
 /// numpy's sum of a 1-d array (`np.sum`, `.sum()`): the identity plus the pairwise sum.
+#[must_use]
 pub fn np_sum(a: &[f64]) -> f64 {
     0.0 + pairwise(a)
 }
 
 /// numpy's `np.add.reduceat` over one segment: its first element plus the pairwise sum of
 /// the rest.
+#[must_use]
 pub fn reduceat_sum(a: &[f64]) -> f64 {
     if a.is_empty() {
         return 0.0;
@@ -57,12 +77,14 @@ pub fn rows_sum(rows: impl IntoIterator<Item = DVec3>) -> DVec3 {
 }
 
 /// numpy's `X.mean(0)` of rows: their sum in order over their count.
+#[must_use]
 pub fn rows_mean(rows: &[DVec3]) -> DVec3 {
     rows_sum(rows.iter().copied()) / rows.len() as f64
 }
 
 /// The sum of the elements of a (rows, 3) array (`(A * B).sum()`): pairwise over the
 /// array's elements in row-major order.
+#[must_use]
 pub fn sum_all3(rows: &[DVec3]) -> f64 {
     let flat: Vec<f64> = rows.iter().flat_map(|r| [r.x, r.y, r.z]).collect();
     np_sum(&flat)
@@ -79,7 +101,7 @@ pub fn median(v: &mut [f64]) -> f64 {
     if n % 2 == 1 {
         v[n / 2]
     } else {
-        (v[n / 2 - 1] + v[n / 2]) / 2.0
+        f64::midpoint(v[n / 2 - 1], v[n / 2])
     }
 }
 
@@ -108,6 +130,7 @@ pub fn percentile(v: &mut [f64], q: f64) -> f64 {
 }
 
 /// numpy's `np.median(rows, axis=0)` per channel.
+#[must_use]
 pub fn median_rows(rows: &[DVec3]) -> DVec3 {
     let mut out = DVec3::ZERO;
     let mut v = Vec::with_capacity(rows.len());
@@ -121,6 +144,7 @@ pub fn median_rows(rows: &[DVec3]) -> DVec3 {
 
 /// numpy's `np.arange(start, stop, step)` for floats: the length by the ceiling of the
 /// span over the step, the values `start + i * ((start + step) - start)` past the second.
+#[must_use]
 pub fn arange(start: f64, stop: f64, step: f64) -> Vec<f64> {
     let n = ((stop - start) / step).ceil();
     if n <= 0.0 {
@@ -139,6 +163,7 @@ pub fn arange(start: f64, stop: f64, step: f64) -> Vec<f64> {
 }
 
 /// numpy's `np.linspace(start, stop, num)`: `i * step + start`, the last value pinned.
+#[must_use]
 pub fn linspace(start: f64, stop: f64, num: usize) -> Vec<f64> {
     if num == 1 {
         return vec![start];
@@ -150,6 +175,7 @@ pub fn linspace(start: f64, stop: f64, num: usize) -> Vec<f64> {
 }
 
 /// numpy's `np.radians`.
+#[must_use]
 pub fn radians(deg: f64) -> f64 {
     deg * (std::f64::consts::PI / 180.0)
 }

@@ -29,6 +29,17 @@
 //! - **Fidelity.** [`Model::fidelity`] is what an emitter may miss the model's render by; it
 //!   draws nothing.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::disallowed_macros,
+    clippy::indexing_slicing,
+    clippy::too_many_lines,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+
 use std::cell::OnceCell;
 use std::sync::Arc;
 
@@ -380,14 +391,16 @@ impl Object {
             Some(s) => Geometry::Stroke(StrokeGeometry {
                 centerline: s.centerline.iter().map(to64).collect(),
                 closed: s.closed,
-                width: s.width as f64,
+                width: f64::from(s.width),
                 cap: s.cap,
                 join: s.join,
                 corners: s.corners.clone(),
-                dashes: s
-                    .dashes
-                    .as_ref()
-                    .map(|d| (d.array.iter().map(|&v| v as f64).collect(), d.offset as f64)),
+                dashes: s.dashes.as_ref().map(|d| {
+                    (
+                        d.array.iter().map(|&v| f64::from(v)).collect(),
+                        f64::from(d.offset),
+                    )
+                }),
             }),
             None => Geometry::Fill {
                 loops: loops64(&shape.loops),
@@ -401,8 +414,8 @@ impl Object {
         Object {
             geometry,
             paint,
-            opacity: shape.fill.opacity as f64,
-            blur: shape.blur as f64,
+            opacity: f64::from(shape.fill.opacity),
+            blur: f64::from(shape.blur),
             clip,
         }
     }
@@ -410,6 +423,7 @@ impl Object {
     /// The box `(x0, y0, w, h)` the object paints, for the lab.
     #[cfg(feature = "diagnostics")]
     #[doc(hidden)]
+    #[must_use]
     pub fn painted_box(&self) -> (usize, usize, usize, usize) {
         let r = self.painted();
         (r.x0, r.y0, r.w, r.h)

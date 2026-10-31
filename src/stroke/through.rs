@@ -1,5 +1,21 @@
 //! Strokes that continue one another across a gap joined into one.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::disallowed_macros,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::disallowed_methods,
+    clippy::too_many_lines,
+))]
+
 use super::*;
 
 /// The bridge cubic and score where a stroke end at `pa` leaving along `ta` continues as one
@@ -157,7 +173,7 @@ pub(super) fn bridge_cost(
             }
             let (weight, target) = ctx.weighted_target(i);
             let Some((place, shape)) = was else {
-                line += (weight * c * (target - bridge.fill.color).length_squared()) as f64;
+                line += f64::from(weight * c * (target - bridge.fill.color).length_squared());
                 continue;
             };
             let Some(k) = place.window.index(i, ctx.width) else {
@@ -175,8 +191,8 @@ pub(super) fn bridge_cost(
             } else {
                 place.below[k]
             };
-            line += (weight * c * (target - bridge.fill.color).length_squared()) as f64;
-            before += (weight * c * (target - shown).length_squared()) as f64;
+            line += f64::from(weight * c * (target - bridge.fill.color).length_squared());
+            before += f64::from(weight * c * (target - shown).length_squared());
         }
     }
     (line, before)
@@ -283,10 +299,10 @@ pub(super) fn drop_patches(
             let shape = scene.shapes.remove(k);
             scene.change();
             let kept = Place::new(ctx, scene, &shape, k, MARGIN).is_none_or(|place| {
-                let with = place.error(ctx, &shape) as f64
+                let with = f64::from(place.error(ctx, &shape))
                     + shape.cost_segments() * ctx.segment_cost
                     + ctx.path_cost;
-                with <= place.before as f64
+                with <= f64::from(place.before)
             });
             if kept {
                 scene.shapes.insert(k, shape);
@@ -307,7 +323,7 @@ pub fn continue_through(ctx: &Context, scene: &mut Scene) {
     let mut joins = 0;
     loop {
         // the open strokes of the scene, by position
-        let positions: Vec<usize> = scene
+        let (positions, strokes): (Vec<usize>, Vec<&Stroke>) = scene
             .shapes
             .iter()
             .enumerate()
@@ -317,13 +333,9 @@ pub fn continue_through(ctx: &Context, scene: &mut Scene) {
                     && shape.fill.gradient.is_none()
                     && !stroke.closed
                     && stroke.dashes.is_none())
-                .then_some(position)
+                .then_some((position, stroke))
             })
-            .collect();
-        let strokes: Vec<&Stroke> = positions
-            .iter()
-            .map(|&p| scene.shapes[p].stroke.as_ref().expect("a stroke"))
-            .collect();
+            .unzip();
         let candidates = continuations(ctx, &strokes, |i, j| {
             scene.shapes[positions[i]].layer == scene.shapes[positions[j]].layer
         });
@@ -331,10 +343,14 @@ pub fn continue_through(ctx: &Context, scene: &mut Scene) {
         for (i, ea, j, eb, bridge) in candidates {
             let (pi, pj) = (positions[i], positions[j]);
             let (a, b) = (&scene.shapes[pi], &scene.shapes[pj]);
+            // the positions are of strokes
+            let (Some(stroke_a), Some(stroke_b)) = (&a.stroke, &b.stroke) else {
+                continue;
+            };
             let ((stroke, fill), bridge) = joined(
-                (a.stroke.as_ref().expect("a stroke"), &a.fill),
+                (stroke_a, &a.fill),
                 ea,
-                (b.stroke.as_ref().expect("a stroke"), &b.fill),
+                (stroke_b, &b.fill),
                 eb,
                 bridge,
             );
@@ -366,7 +382,7 @@ pub fn continue_through(ctx: &Context, scene: &mut Scene) {
                 .map(|place| place.error(ctx, &joined_shape));
             let accepted = match (before, after) {
                 (Some(before), Some(after)) => {
-                    after as f64 + price_after < before as f64 + price_before
+                    f64::from(after) + price_after < f64::from(before) + price_before
                 }
                 _ => false,
             };

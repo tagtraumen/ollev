@@ -2,11 +2,29 @@
 //! the region ([`open_beyond`]) and the region placed by the beneath's continuity
 //! ([`continuity`]).
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::disallowed_macros,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::cast_precision_loss,
+    clippy::disallowed_methods,
+    clippy::too_many_lines,
+))]
+
 use crate::HashSet;
 
 use super::raster::{ChebTree, Conn, DVec3, Image, SHOW_THROUGH, cheb, dilate, unit_of};
 
 /// How far beyond a region its open colours are read: 20 px at 330.
+#[must_use]
 pub fn reach(img: &Image) -> usize {
     ((20.0 * unit_of(img.width)) as usize).max(1)
 }
@@ -14,6 +32,7 @@ pub fn reach(img: &Image) -> usize {
 /// The colors seen in the open beyond `reach` of a region, distinct: what a beneath may be
 /// where it is not continuous with the pixel across the boundary (a layer's edge on a
 /// silhouette, one thing under it and another beside it).
+#[must_use]
 pub fn open_beyond(img: &Image, region: &[bool], reach: usize) -> Vec<DVec3> {
     let near = dilate(region, img.width, img.height, Conn::Four, reach);
     let mut seen = HashSet::<[u64; 3]>::default();
@@ -29,6 +48,7 @@ pub fn open_beyond(img: &Image, region: &[bool], reach: usize) -> Vec<DVec3> {
 /// The region moved ring by ring to where peeling under (k, c) leaves the beneath continuous with
 /// the outside: a boundary pixel whose peel invents a step (or leaves the gamut) and removes none
 /// goes; an outside neighbour joins where its peel continues outward; each pixel moves once.
+#[must_use]
 pub fn continuity(
     img: &Image,
     region: &[bool],

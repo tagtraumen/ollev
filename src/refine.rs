@@ -1,5 +1,23 @@
 //! Fitting one shape's outline to the image, with everything below it held fixed.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::disallowed_macros,
+    clippy::disallowed_methods,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+#![cfg_attr(
+    not(feature = "diagnostics"),
+    expect(
+        clippy::large_types_passed_by_value,
+        reason = "panic ratchet: remove a lint once the module is clean of it"
+    )
+)]
+
 use crate::render::coverage_cost::CoverageCost;
 use crate::render::{Adam, ParamKind};
 use crate::tracer::fit::untangle;
@@ -41,7 +59,7 @@ pub fn refine(
     clip: Option<&[f32]>,
     above: Option<&Layer>,
 ) -> f32 {
-    let cost = coverage_cost(ctx, window, shape.fill, below, clip, above);
+    let cost = coverage_cost(ctx, window, &shape.fill, below, clip, above);
     fit(&cost, shape, window.origin(), ctx.pull)
 }
 
@@ -113,8 +131,8 @@ pub fn fit(cost: &CoverageCost, shape: &mut Shape, origin: Vec2, pull: f32) -> f
         }
         adam.step_flat(&mut params, &kinds, &flat);
         untangle_all(&mut params, &lengths);
-        if blurred {
-            let sigma = params.last_mut().expect("the blur's σ");
+        // the blur's σ is the last parameter
+        if blurred && let Some(sigma) = params.last_mut() {
             *sigma = sigma.max(LEAST_SIGMA);
         }
     }
@@ -144,7 +162,7 @@ pub fn fit(cost: &CoverageCost, shape: &mut Shape, origin: Vec2, pull: f32) -> f
 fn coverage_cost(
     ctx: &Context,
     window: Window,
-    fill: Fill,
+    fill: &Fill,
     below: &[Vec3],
     clip: Option<&[f32]>,
     above: Option<&Layer>,
@@ -327,11 +345,12 @@ impl Place {
     }
 
     /// The error of drawing a shape with `fill` here, for evaluating and fitting outlines.
+    #[must_use]
     pub fn cost(&self, ctx: &Context, fill: Fill) -> CoverageCost {
         coverage_cost(
             ctx,
             self.window,
-            fill,
+            &fill,
             &self.below,
             self.clip.as_deref(),
             self.above.as_ref(),
@@ -390,6 +409,7 @@ impl Place {
     /// Per pixel of the window, whether a shape's outline is free to go anywhere there: pixels
     /// left out of the error, hidden under the shapes above, or outside the clip, and their four
     /// neighbors, since an outline along such pixels runs on their edge.
+    #[must_use]
     pub fn free(&self, ctx: &Context) -> Vec<bool> {
         self.grown(ctx, |_| false)
     }
@@ -402,6 +422,7 @@ impl Place {
 
     /// [`Place::free`] with the pixels the weights count at less than full too: the regions of
     /// shapes drawn later, which cover them. What an outline there shows is no evidence.
+    #[must_use]
     pub fn hidden(&self, ctx: &Context) -> Vec<bool> {
         let weights = ctx.weights.as_ref();
         self.grown(ctx, |i| {
@@ -471,7 +492,7 @@ pub fn simplify_with(
             continue;
         }
         let simpler_error = fit(cost, &mut simpler, origin, ctx.pull);
-        if ((simpler_error - error) as f64) >= saved * ctx.segment_cost {
+        if f64::from(simpler_error - error) >= saved * ctx.segment_cost {
             break;
         }
         *shape = simpler;
@@ -590,7 +611,7 @@ pub async fn settle(ctx: &Context, scene: &mut Scene) {
             let cost = coverage_cost(
                 ctx,
                 window,
-                shape.fill,
+                &shape.fill,
                 &below,
                 clip.as_deref(),
                 above.as_ref(),

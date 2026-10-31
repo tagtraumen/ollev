@@ -2,6 +2,23 @@
 //! relation points on it and its largest components, grouped into colour families before any
 //! region is grown (a region per family, k pinned on it), and the `fresh` ranker of a region.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_precision_loss,
+    clippy::disallowed_macros,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::disallowed_methods,
+    clippy::too_many_lines,
+))]
+
 use super::homothety;
 use super::layer::Explained;
 use super::lines::{OneSide, one_side_seeds};
@@ -177,6 +194,7 @@ pub struct Family {
 
 /// The points grouped by color alone, a point joining the first family whose color is
 /// near; families by their summed score (ties in their order).
+#[must_use]
 pub fn colour_families(points: &[Point]) -> Vec<Family> {
     let mut sorted: Vec<&Point> = points.iter().collect();
     sorted.sort_by(|a, b| (-a.score).total_cmp(&-b.score));
@@ -201,6 +219,7 @@ pub fn colour_families(points: &[Point]) -> Vec<Family> {
 /// The share of the region's pixels whose color is no outside material's within the
 /// show-through, the outside taken without the pixels the relation explains and two pixels
 /// clear of the region, as the layer elsewhere (a missed part, a trim) is no open material.
+#[must_use]
 pub fn fresh(img: &Image, region: &[bool], explained: &Explained, rim: &[bool]) -> f64 {
     let near = dilate(region, img.width, img.height, Conn::Four, clear_of(img));
     let open: Vec<bool> = explained

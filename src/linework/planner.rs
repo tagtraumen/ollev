@@ -1,5 +1,16 @@
 //! Where a candidate goes in the stack, and its stand-in shapes left out or refitted.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::disallowed_macros,
+    clippy::indexing_slicing,
+    clippy::too_many_lines,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+
 use super::*;
 
 // ----------------------------------------------------------------------------- the planner
@@ -96,7 +107,7 @@ pub(super) fn composite_into(
                 continue;
             }
             let (f, alpha) = fill.paint_pixel(x, y);
-            let a = (covered * alpha) as f64;
+            let a = f64::from(covered * alpha);
             if a <= 0.0 {
                 continue;
             }
@@ -218,7 +229,7 @@ impl Site {
             let saved = field.residual(p, self.with(j, 0.0, DVec3::ZERO) - o)
                 - field.residual(p, self.with(j, a, paint(j)) - o);
             plain += saved;
-            edge += (field.weight(p, lambda) as f64 - 1.0) * saved;
+            edge += (f64::from(field.weight(p, lambda)) - 1.0) * saved;
         }
         (plain, edge)
     }
@@ -249,7 +260,7 @@ impl Site {
         if n < 3 {
             return None;
         }
-        let pull = 1e-4 * n as f64;
+        let pull = 1e-4 * f64::from(n);
         ata.w_axis.w += pull;
         atb.w += pull;
         if ata.determinant().abs() < 1e-12 {
@@ -316,7 +327,7 @@ pub(super) fn joint_coverage(shapes: &[crate::Shape], window: crate::Window) -> 
     let mut left = vec![1.0f64; window.width * window.height];
     for s in shapes {
         for (l, c) in left.iter_mut().zip(s.coverage(window)) {
-            *l *= 1.0 - c as f64;
+            *l *= 1.0 - f64::from(c);
         }
     }
     left.into_iter().map(|l| 1.0 - l).collect()
@@ -588,7 +599,7 @@ pub(super) fn joint_saving(
         let o = img.px[p];
         let saved = field.residual(p, *b - o) - field.residual(p, *a - o);
         plain += saved;
-        edge += (field.weight(p, lambda) as f64 - 1.0) * saved;
+        edge += (f64::from(field.weight(p, lambda)) - 1.0) * saved;
     }
     (plain, edge)
 }
@@ -644,7 +655,7 @@ pub(super) fn joint_move(
         let (mut num, mut den) = (DVec3::ZERO, DVec3::ZERO);
         for (j, (a, b)) in zero.iter().zip(&one).enumerate() {
             let p = image_index(window, j, img.width);
-            let wt = field.weight(p, lambda) as f64;
+            let wt = f64::from(field.weight(p, lambda));
             let slope = *b - *a;
             num += wt * slope * (img.px[p] - *a);
             den += wt * slope * slope;
@@ -682,7 +693,7 @@ pub(super) fn joint_move(
             let (mut b0, mut b1) = (DVec3::ZERO, DVec3::ZERO);
             for (j, (a, b)) in zero.iter().zip(&one).enumerate() {
                 let p = image_index(window, j, img.width);
-                let wt = field.weight(p, lambda) as f64;
+                let wt = f64::from(field.weight(p, lambda));
                 let slope = *b - *a;
                 let (u, v) = (slope * (1.0 - t(j)), slope * t(j));
                 let r = img.px[p] - *a;

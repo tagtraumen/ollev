@@ -2,6 +2,23 @@
 //! boundary runs half the shorter's length are one object, slivers joined to their lines, so a
 //! mass of strands traced as many shapes is one occluder with one contour.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::disallowed_macros,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::disallowed_methods,
+    clippy::too_many_lines,
+))]
+
 use std::collections::BTreeMap;
 
 use super::leaves::root as find;
@@ -68,10 +85,11 @@ fn boundary_distance(shapes: &[u32], w: usize, h: usize) -> Vec<f64> {
             d[i] = v;
         }
     }
-    d.iter().map(|&v| v as f64 / 3.0).collect()
+    d.iter().map(|&v| f64::from(v) / 3.0).collect()
 }
 
 /// The grain of `shapes` (a label per pixel, dense from 0) outside `region`.
+#[must_use]
 pub fn grain_objects(shapes: &[u32], region: &[bool], w: usize, h: usize) -> Grain {
     let n = shapes.iter().max().map_or(0, |&l| l as usize + 1);
     let unit = unit_of(w);

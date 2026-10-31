@@ -2,6 +2,19 @@
 //! `emit::verify`): the squared colour distance beyond the range the original takes over a
 //! pixel's 3 x 3 neighbourhood (an anti-aliasing pixel of position) and beyond the noise.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::disallowed_macros,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::disallowed_methods,
+))]
+
 use glam::Vec3;
 
 use super::Lowering;
@@ -58,7 +71,7 @@ pub(super) fn miss(l: &Lowering, original: &[Object], form: &[Object]) -> f64 {
                 .as_ref()
                 .and_then(|t| t.get((y0 + y) * w + x0 + x))
                 .map_or(floor, |&t| t.max(floor));
-            let over = ((e.clamp(lo[i], hi[i]) - e).length() - tolerance).max(0.) as f64;
+            let over = f64::from(((e.clamp(lo[i], hi[i]) - e).length() - tolerance).max(0.));
             miss += over * over;
         }
     }

@@ -2,6 +2,22 @@
 //! (`a α² + b α + c`), from the outline's pixels and row prefix sums: equal to
 //! [`crate::render::render_over`] and its backward pass, at a cost growing with the outline.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::disallowed_methods,
+    clippy::indexing_slicing,
+    clippy::too_many_lines,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::cast_precision_loss,
+))]
+
 use glam::Vec2;
 
 use crate::render::blur::Blurred;
@@ -59,6 +75,7 @@ struct Cell {
 
 impl CoverageCost {
     /// Costs `a[i] α² + b[i] α + c[i]` for the pixels of a `width` x `height` window, row-major.
+    #[must_use]
     pub fn new(width: usize, height: usize, a: Vec<f32>, b: Vec<f32>, c: &[f32]) -> Self {
         let prefix = |v: &[f32]| {
             let mut out = Vec::with_capacity((width + 1) * height);
@@ -66,7 +83,7 @@ impl CoverageCost {
                 let mut acc = 0f64;
                 out.push(0.);
                 for &x in row {
-                    acc += x as f64;
+                    acc += f64::from(x);
                     out.push(acc);
                 }
             }
@@ -79,11 +96,12 @@ impl CoverageCost {
             sum_b: prefix(&b),
             a,
             b,
-            constant: c.iter().map(|&c| c as f64).sum(),
+            constant: c.iter().map(|&c| f64::from(c)).sum(),
         }
     }
 
     /// The error with `path` drawn, its color aside.
+    #[must_use]
     pub fn value(&self, path: &Path) -> f32 {
         if path.blur > 0. {
             return self.blurred(path, false).0;
@@ -119,6 +137,7 @@ impl CoverageCost {
 
     /// The error with `path` drawn, its color aside, and its gradient with respect to the points
     /// of each subpath.
+    #[must_use]
     pub fn evaluate(&self, path: &Path) -> (f32, Vec<Vec<Vec2>>) {
         if path.blur > 0. {
             let (value, d_points, _) = self.blurred(path, true);
@@ -200,10 +219,13 @@ impl CoverageCost {
                     });
                     last = (c.row, c.col);
                 }
-                let cell = cells.last_mut().expect("just pushed");
-                cell.area += c.area.v;
-                cell.cover += c.cover.v;
-                cell_of[k as usize] = (cells.len() - 1) as u32;
+                // the cell of this pixel, pushed for its first contribution
+                let at = cells.len().saturating_sub(1);
+                if let Some(cell) = cells.last_mut() {
+                    cell.area += c.area.v;
+                    cell.cover += c.cover.v;
+                }
+                cell_of[k as usize] = at as u32;
             }
             let error = self.sweep(cells, bbox, path.fill_rule);
 
@@ -237,9 +259,10 @@ impl CoverageCost {
     /// The error with the blurred `path` drawn (see [`crate::render::blur`]), its color aside,
     /// over the box its blur reaches; with `gradient`, its gradient by the points of each
     /// subpath and by the blur's σ.
+    #[must_use]
     pub fn blurred(&self, path: &Path, gradient: bool) -> (f32, Vec<Vec<Vec2>>, f32) {
         let polys = flatten(path);
-        let blurred = Blurred::new(polys, path.fill_rule, path.blur, self.width, self.height);
+        let blurred = Blurred::new(&polys, path.fill_rule, path.blur, self.width, self.height);
         let mut error = self.constant;
         let mut d_values = Vec::with_capacity(if gradient { blurred.values.len() } else { 0 });
         for y in 0..blurred.h {
@@ -247,7 +270,7 @@ impl CoverageCost {
             let values = &blurred.values[y * blurred.w..(y + 1) * blurred.w];
             for (x, &alpha) in values.iter().enumerate() {
                 let (a, b) = (self.a[row + x], self.b[row + x]);
-                error += (alpha * (alpha * a + b)) as f64;
+                error += f64::from(alpha * (alpha * a + b));
                 if gradient {
                     d_values.push(2. * alpha * a + b);
                 }
@@ -297,7 +320,7 @@ impl CoverageCost {
                 let col = cell.col as usize;
                 let (sa, sb) = span(next, col);
                 let (alpha, slope) = fill_coverage(acc, rule);
-                let (alpha, slope) = (alpha as f64, slope as f64);
+                let (alpha, slope) = (f64::from(alpha), f64::from(slope));
                 error += alpha * alpha * sa + alpha * sb;
                 d_runs.push((slope * (2. * alpha * sa + sb)) as f32);
 
@@ -305,14 +328,14 @@ impl CoverageCost {
                 let winding = acc + cell.area;
                 let (alpha, slope) = fill_coverage(winding, rule);
                 let (a, b) = (self.a[i], self.b[i]);
-                error += (alpha * alpha * a + alpha * b) as f64;
+                error += f64::from(alpha * alpha * a + alpha * b);
                 cell.d_area = slope * (2. * alpha * a + b);
                 acc += cell.cover;
                 next = col + 1;
             }
             let (sa, sb) = span(next, width);
             let (alpha, slope) = fill_coverage(acc, rule);
-            let (alpha, slope) = (alpha as f64, slope as f64);
+            let (alpha, slope) = (f64::from(alpha), f64::from(slope));
             error += alpha * alpha * sa + alpha * sb;
             let mut suffix = (slope * (2. * alpha * sa + sb)) as f32;
 
@@ -398,7 +421,7 @@ mod tests {
         let d_image: Vec<Vec3> = (0..w * h)
             .map(|i| {
                 let d = image[i] - target[i];
-                dense += (weight[i] * d.length_squared()) as f64;
+                dense += f64::from(weight[i] * d.length_squared());
                 2. * weight[i] * d
             })
             .collect();
@@ -418,7 +441,7 @@ mod tests {
         assert_eq!(value, cost.value(&path));
 
         assert!(
-            (value as f64 - dense).abs() < 1e-3 * dense,
+            (f64::from(value) - dense).abs() < 1e-3 * dense,
             "{value} vs {dense}"
         );
         for (sparse, dense) in grad.iter().zip(&dense_grad.paths[0].subpaths) {

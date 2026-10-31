@@ -2,6 +2,23 @@
 //! over contact points) and the equation graph (slope pairs and crossings scored as cuts),
 //! merged into one list; and the shading pass, shadows and highlights as their own class.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::disallowed_macros,
+    clippy::disallowed_methods,
+    clippy::too_many_lines,
+))]
+
 use crate::{HashMap, HashSet};
 
 use glam::{IVec3, Vec3};
@@ -25,7 +42,7 @@ pub struct Hypothesis {
 
 /// The values of `k` the Hough passes vote at: 0.05 to 0.95 in steps of 0.025.
 fn k_grid() -> impl Iterator<Item = f32> {
-    (0..=36).map(|i| (0.05 + 0.025 * i as f64) as f32)
+    (0..=36).map(|i| (0.05 + 0.025 * f64::from(i)) as f32)
 }
 
 /// A color quantized to steps of `levels` 8-bit levels, for the Hough cells and bins.
@@ -89,6 +106,7 @@ fn votes(lv: &Leaves) -> Vec<Vote> {
 /// The adjacency Hough over contact points (b, o), each fitting only where the slopes do: per
 /// `k` a point votes for `m = o - k b` in cells of 6 levels, a cell needing two distinct
 /// backgrounds. Scored by contact, near duplicates merged, then refined.
+#[must_use]
 pub fn plane_pass(lv: &Leaves) -> Vec<Hypothesis> {
     let votes = votes(lv);
     if votes.len() < 2 {

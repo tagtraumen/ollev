@@ -1,5 +1,22 @@
 //! Branching skeletons as networks of strokes cut at their knots.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::disallowed_macros,
+    clippy::indexing_slicing,
+    clippy::too_many_lines,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::disallowed_methods,
+))]
+
 use super::*;
 
 /// An arm of a network: a chain between junctions, walked from one end to the other.
@@ -215,8 +232,9 @@ pub(super) fn network(
                 Some((b, eb)) => {
                     if b == start.0 && eb == start.1 {
                         // around a loop: back at the start, bridged across the last knot
-                        let first = chain[0];
-                        bridge(*chain.last().unwrap(), first, &mut chain);
+                        if let (Some(&first), Some(&last)) = (chain.first(), chain.last()) {
+                            bridge(last, first, &mut chain);
+                        }
                         return (chain, true);
                     }
                     (a, e) = (b, eb);
@@ -279,7 +297,7 @@ pub(super) fn spread(points: &[Vec2]) -> Spread {
         xy += d.x * d.y;
         yy += d.y * d.y;
     }
-    let top = 0.5 * (xx + yy) + (0.25 * (xx - yy).powi(2) + xy * xy).sqrt();
+    let top = f32::midpoint(xx, yy) + (0.25 * (xx - yy).powi(2) + xy * xy).sqrt();
     let axis = if xy.abs() > 1e-6 {
         Vec2::new(xy, top - xx).normalize()
     } else if xx >= yy {
@@ -322,7 +340,7 @@ pub(super) fn axis_chain(
         top,
         axis,
     } = spread(&inside);
-    let bottom = 0.5 * (xx + yy) - (0.25 * (xx - yy).powi(2) + xy * xy).sqrt();
+    let bottom = f32::midpoint(xx, yy) - (0.25 * (xx - yy).powi(2) + xy * xy).sqrt();
     // No axis where the spread is the same every way (a dot)
     if top < 1.5 * bottom.max(1e-3) {
         return None;

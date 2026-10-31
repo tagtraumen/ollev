@@ -2,6 +2,23 @@
 //! is in gamut and within the noise (over k) of a color seen in the open, nearer one than the
 //! pixel itself; open colors are those whose peel leaves the gamut, as they cannot lie under it.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::disallowed_macros,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::cast_possible_wrap,
+    clippy::disallowed_methods,
+    clippy::too_many_lines,
+))]
+
 use crate::HashMap;
 
 use super::raster::{ChebTree, DVec3, Image, NOISE};
@@ -18,6 +35,7 @@ fn code_of(c: DVec3) -> u32 {
 }
 
 /// The distinct colors of an image, sorted, and per pixel the index of its color.
+#[must_use]
 pub fn distinct_colors(img: &Image) -> (Vec<DVec3>, Vec<u32>) {
     let codes: Vec<u32> = img.px.iter().map(|c| code_of(*c)).collect();
     let mut u: Vec<u32> = codes.clone();
@@ -28,9 +46,9 @@ pub fn distinct_colors(img: &Image) -> (Vec<DVec3>, Vec<u32>) {
         .iter()
         .map(|&c| {
             DVec3::new(
-                (c >> 16) as f64 / 255.0,
-                ((c >> 8) & 255) as f64 / 255.0,
-                (c & 255) as f64 / 255.0,
+                f64::from(c >> 16) / 255.0,
+                f64::from((c >> 8) & 255) / 255.0,
+                f64::from(c & 255) / 255.0,
             )
         })
         .collect();
@@ -126,6 +144,7 @@ pub fn explained_pixels(
 
 /// The interior rule's reach: a pixel is deep when its neighbours within this are in the
 /// mask, one unit (1 px at 330, the 3 x 3 square), as a rim or a strand is a unit wide.
+#[must_use]
 pub fn interior_radius(width: usize) -> usize {
     super::raster::length_px(width, 1.0)
 }

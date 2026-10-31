@@ -1,5 +1,22 @@
 //! Relations proposed by votes and refitted, and the palettes of a region.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::disallowed_macros,
+    clippy::disallowed_methods,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::too_many_lines,
+))]
+
 use glam::DVec3;
 
 use super::{
@@ -53,8 +70,10 @@ pub fn vote_cells(mt: &Matcher, k: f64, per_k: usize) -> Vec<(f64, DVec3)> {
             j += 1;
         }
         let c = cmat / nmat;
-        if cells.last() == Some(&c) {
-            *tot.last_mut().unwrap() += best;
+        if cells.last() == Some(&c)
+            && let Some(tot) = tot.last_mut()
+        {
+            *tot += best;
         } else {
             cells.push(c);
             tot.push(best);
@@ -69,8 +88,10 @@ pub fn vote_cells(mt: &Matcher, k: f64, per_k: usize) -> Vec<(f64, DVec3)> {
     let mut pv: Vec<f64> = Vec::new();
     for p in pc {
         let c = p / no;
-        if u5.last() == Some(&c) {
-            *pv.last_mut().unwrap() += s.sw[(p % no) as usize];
+        if u5.last() == Some(&c)
+            && let Some(pv) = pv.last_mut()
+        {
+            *pv += s.sw[(p % no) as usize];
         } else {
             u5.push(c);
             pv.push(s.sw[(p % no) as usize]);
@@ -98,6 +119,7 @@ pub fn vote_cells(mt: &Matcher, k: f64, per_k: usize) -> Vec<(f64, DVec3)> {
 
 /// The pixels of `mask` whose color is, within the show-through, a color of one of the
 /// outside palette's materials.
+#[must_use]
 pub fn shared_colors(img: &Image, mask: &[bool], outside: &Palette) -> Vec<bool> {
     let b: Vec<DVec3> = outside
         .colors
@@ -122,6 +144,7 @@ pub fn shared_colors(img: &Image, mask: &[bool], outside: &Palette) -> Vec<bool>
 /// The palette of a region, with `drop_shared` without the colors within the show-through of
 /// an outside material: those are the material seen bare, and would join the inside clusters
 /// into one.
+#[must_use]
 pub fn inside_palette(
     img: &Image,
     region: &[bool],
@@ -141,6 +164,7 @@ pub fn inside_palette(
 /// The inside palette of a region and the palette of what is outside it (the whole image
 /// off the region, two pixels away from it past its rim, or the mask `outside`), the outside
 /// clustered by place and color.
+#[must_use]
 pub fn region_palettes(
     img: &Image,
     region: &[bool],
@@ -153,6 +177,7 @@ pub fn region_palettes(
 }
 
 /// The outside palette of [`region_palettes`].
+#[must_use]
 pub fn outside_palette(
     img: &Image,
     region: &[bool],

@@ -2,6 +2,23 @@
 //! hems along its edge, lines inside), each fitted against the composite drawn so far so it
 //! pays for what the output lacks. Coordinates are SVG units: pixel centres at x + 0.5.
 
+// Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
+#![expect(
+    clippy::arithmetic_side_effects,
+    clippy::cast_possible_truncation,
+    clippy::disallowed_macros,
+    clippy::indexing_slicing,
+    reason = "panic ratchet: remove a lint once the module is clean of it"
+)]
+// clean of these, which the parent module still expects
+#![cfg_attr(not(test), deny(
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::disallowed_methods,
+    clippy::too_many_lines,
+))]
+
 use glam::{DVec2, DVec3};
 
 use super::lines::{Bezier, FIT_TOL, bez, fit_cubics, ridge_radii, smooth_open, trace_chains};
@@ -78,6 +95,7 @@ impl Options {
     }
 
     /// Whether `mark` is kept by the rule given.
+    #[must_use]
     pub fn keeps(&self, mark: &Mark) -> bool {
         (self.keep)(mark, self.segment_cost)
     }
@@ -106,7 +124,7 @@ impl Options {
             let d = comp[p];
             let n = d + a * (colour - d);
             let saved = field.residual(p, d - img.px[p]) - field.residual(p, n - img.px[p]);
-            g += (field.weight(p, term.lambda) as f64 - 1.0) * saved;
+            g += (f64::from(field.weight(p, term.lambda)) - 1.0) * saved;
         }
         g
     }
@@ -162,6 +180,7 @@ pub struct TintShape {
 
 /// The region's outline as cubics: its crack loops smoothed over half a pixel, fitted to
 /// half the lines' tolerance.
+#[must_use]
 pub fn outline(region: &[bool], width: usize, height: usize) -> Vec<Vec<Bezier>> {
     let u = unit_of(width);
     crack_loops(region, width, height)
@@ -288,6 +307,7 @@ pub async fn emit(
 /// Whether a stroke's colour is the layer's own (its body colour mixed with white or black):
 /// its chroma along the layer's within the show-through, or none. So the layer's deeper
 /// folds are its own, and strands of another hue crossing it are not.
+#[must_use]
 pub fn of_layer_hue(colour: DVec3, c: DVec3) -> bool {
     let chroma = |v: DVec3| v - DVec3::splat((v.x + v.y + v.z) / 3.0);
     let (a, b) = (chroma(colour), chroma(c));
@@ -300,6 +320,7 @@ pub fn of_layer_hue(colour: DVec3, c: DVec3) -> bool {
 
 /// The layer's marks as model objects without its shape (the lenses, the tints, then the
 /// strokes); the lenses are clipped to the layer's shape as drawn (see [`crate::Scene::marks`]).
+#[must_use]
 pub fn objects(v: &Vocabulary) -> Vec<crate::model::Object> {
     use crate::model::{Geometry, Object, Paint, StrokeGeometry};
     use crate::render::FillRule;
