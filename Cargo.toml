@@ -1,6 +1,6 @@
 [package]
 name = "ollev"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 rust-version = "1.88"
 description = "Raster images traced into layered vector scenes: shapes, strokes, gradients, blurs, repeats and translucent layers"
@@ -12,8 +12,8 @@ categories = ["graphics", "multimedia::images"]
 include = ["src/**/*", "Cargo.toml", "README.md", "LICENSE-MIT", "LICENSE-APACHE"]
 
 [dependencies]
-glam = "0.33.12"
-resvg = { version = "0.48.1", optional = true }
+glam = "0.34"
+resvg = { version = "0.49", optional = true }
 
 [features]
 # The SVG writer and its verify loop (`emit`), rendering each output with resvg.
