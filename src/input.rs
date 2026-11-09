@@ -120,8 +120,10 @@ impl Default for Stages {
     }
 }
 
-/// How a host traces an image.
+/// How a host traces an image: [`TraceOptions::default`] with the fields to change set on it,
+/// since options may be added.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct TraceOptions {
     /// The detail slider: a shape, stroke or mark is drawn where it removes residual beyond this
     /// multiple of the picture's uncertainty, so lower is more detail.
@@ -134,6 +136,12 @@ pub struct TraceOptions {
     /// picture's opaque part ([`crate::model::Model::clip`], its alpha at a half), its colours
     /// still read over the matte.
     pub keep_transparency: bool,
+    /// Whether the model is clipped to the image's rectangle (on by default): a shape the
+    /// trace lets run past the picture's edge is cut at it, a filled shape's outline itself,
+    /// a stroke or a blurred shape by a clip to the rectangle, and a repeated shape reaching
+    /// out is drawn as objects of its own. Off, shapes may reach past the edge, as far as
+    /// their fit runs where the picture shows nothing of them.
+    pub clip_to_image: bool,
     /// The most pixels traced: a larger picture is traced at the size that holds this many
     /// and its model scaled back up (the trace's time and memory grow with its pixels).
     pub max_pixels: Option<usize>,
@@ -154,6 +162,7 @@ impl Default for TraceOptions {
             detail: Detail::Auto,
             matte: [1.; 3],
             keep_transparency: false,
+            clip_to_image: true,
             max_pixels: None,
             host: Capabilities::ALL,
             stages: Stages::DEFAULT,

@@ -48,8 +48,11 @@ pub(crate) async fn preview(
     // The finest level from the picture, the coarser from it
     let (fw, fh, fs) = size(finest);
     let fine = crate::input::downsampled(rgb, width, height, fw, fh, fs)?;
+    // each level taking the time of its pixels
+    let steps: Vec<(&'static str, f64)> = levels.iter().map(|&p| ("level", p as f64)).collect();
+    crate::progress::enter(&steps, true);
     for &p in &levels {
-        crate::progress::poll().await;
+        crate::progress::step("level").await;
         let (w, h, s) = size(p);
         let small = if p == finest {
             fine.clone()
@@ -59,6 +62,7 @@ pub(crate) async fn preview(
         let model = regions(&small, w, h, s, (width, height), detail, p == finest).await;
         crate::progress::preview(model);
     }
+    crate::progress::leave();
     Ok(())
 }
 

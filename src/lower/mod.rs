@@ -216,8 +216,9 @@ pub(crate) async fn keep(model: &Model, host: &Capabilities, memo: &std::sync::M
     for items in std::iter::once(&out.items).chain(&out.definitions) {
         objects_of(items, &mut objects);
     }
-    for o in objects {
-        crate::progress::poll().await;
+    let of = objects.len();
+    for (k, o) in objects.into_iter().enumerate() {
+        crate::progress::at(k, of).await;
         let key = memo::key(o, &lowering.clips);
         if lock(memo).touch(&key) {
             continue;

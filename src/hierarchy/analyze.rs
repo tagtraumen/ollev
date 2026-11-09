@@ -34,6 +34,9 @@ pub async fn analyze(
     // The segmentation only gives the leaves; the hierarchy decides what merges beyond them
     params.segment.boundary_cost *= LEAF_BOUNDARY_COST;
     crate::progress::stage("analyze").await;
+    let work = crate::plan::Work::new(width.saturating_mul(height));
+    crate::progress::enter(&work.analyze(None), true);
+    crate::progress::step("smooth").await;
     let colors = timings
         .time("smooth", async || {
             let colors = crate::tracer::segmentation_colors(rgb, width, height, &params).await;
@@ -49,12 +52,17 @@ pub async fn analyze(
             colors
         })
         .await;
+    crate::progress::step("seed").await;
     // Merging starts from the runs of equal colors, which every merge would keep together
     let (seeds, count) = timings
         .time("seed", async || {
             crate::tracer::segment::equal_color_regions(rgb, width, height)
         })
         .await;
+    // the merging takes the time of the runs it starts from
+    let [_, _, segment, _, _] = work.analyze(Some(count));
+    crate::progress::weigh(&[segment, ("analyze", work.reading(Some(count)))]);
+    crate::progress::step("segment").await;
     let segment = &params.segment;
     let mut labels = timings
         .time("segment", async || {
@@ -64,15 +72,18 @@ pub async fn analyze(
         })
         .await;
     let count = labels.iter().max().map_or(0, |&l| l as usize + 1);
+    crate::progress::step("dissolve").await;
     let count = timings
         .time("dissolve", async || {
             super::dissolve_blends(&mut labels, count, &colors, width, height)
         })
         .await;
+    crate::progress::step("tree").await;
     let hierarchy = timings
         .time("tree", async || {
             super::Hierarchy::build(labels, count, &colors, width, height).await
         })
         .await?;
+    crate::progress::leave();
     Ok((ctx, hierarchy))
 }

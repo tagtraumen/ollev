@@ -70,8 +70,10 @@ pub(super) async fn merge_all(
     // A shape whose retrace lost, which a merge seldom wins back at the acceptance price, is
     // not traced again
     let mut lost = crate::HashSet::default();
-    for id in ids {
-        crate::progress::poll().await;
+    let of = ids.len();
+    for (n, id) in ids.into_iter().enumerate() {
+        crate::progress::glimpse(scene);
+        crate::progress::at(n, of).await;
         let Some(top) = scene.shapes.iter().position(|s| s.id == id) else {
             continue;
         };

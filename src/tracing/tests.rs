@@ -272,3 +272,93 @@ fn every_stage_can_be_switched_off() {
         assert!(stages.path_gradients || !along, "{stages:?}");
     }
 }
+
+/// The whole trace's progress never goes back and runs to near the end, with every stage;
+/// it moves in many small steps, not only at the stages' starts, and each stage's own
+/// fraction stays within it.
+#[test]
+fn the_whole_trace_progress_never_goes_back() {
+    let size = 96;
+    let rgba = picture(size);
+    for stages in [crate::Stages::DEFAULT, crate::Stages::ALL] {
+        let options = TraceOptions {
+            stages,
+            ..TraceOptions::default()
+        };
+        let mut seen: Vec<f64> = Vec::new();
+        let model = trace_with(&image(&rgba, size), &options, |p: &Progress| {
+            assert!((0. ..=1.).contains(&p.fraction), "{} at {}", p.stage, p.fraction);
+            seen.push(p.overall);
+        })
+        .unwrap();
+        assert!(!model.objects().is_empty());
+        assert!(seen.windows(2).all(|w| w[0] <= w[1]), "{stages:?}: progress went back");
+        let last = seen.last().copied().unwrap_or_default();
+        assert!(last > 0.9 && last <= 1., "{stages:?}: the trace ended at {last}");
+        let mut steps = seen.clone();
+        steps.dedup();
+        assert!(steps.len() > 100, "{stages:?}: {} distinct points", steps.len());
+        let jump = seen.windows(2).map(|w| w[1] - w[0]).fold(0., f64::max);
+        assert!(jump < 0.25, "{stages:?}: a jump of {jump}");
+    }
+}
+
+/// The host is shown the scene as the stages after the drawing change it, not only as
+/// shapes are added.
+#[test]
+fn the_scene_shows_as_it_is_redrawn() {
+    let size = 96;
+    let rgba = picture(size);
+    let mut revision = 0;
+    let mut stages = Vec::new();
+    trace_with(&image(&rgba, size), &TraceOptions::default(), |p: &Progress| {
+        if p.revision() != revision {
+            revision = p.revision();
+            stages.push(p.stage);
+        }
+    })
+    .unwrap();
+    assert!(stages.contains(&"draw"), "{stages:?}");
+    assert!(
+        stages.iter().any(|s| ["redraw", "shapes", "passes"].contains(s)),
+        "{stages:?}"
+    );
+}
+
+/// With `clip_to_image` every object lies within the picture or is clipped to it; without, a
+/// shape may reach past the edge.
+#[test]
+fn the_model_is_clipped_to_the_image() {
+    let size = 96;
+    // a disc cut by the picture's corner, which the fit completes past it
+    let mut rgba = Vec::new();
+    for y in 0..size {
+        for x in 0..size {
+            let (dx, dy) = (x as f64 - 8., y as f64 - 8.);
+            let disc = dx * dx + dy * dy < 30. * 30.;
+            rgba.extend(if disc { [200, 40, 40, 255] } else { [240, 240, 230, 255] });
+        }
+    }
+    let within = |model: &Model| {
+        model.objects().iter().all(|o| {
+            o.clip.is_some()
+                || match &o.geometry {
+                    crate::model::Geometry::Fill { loops, .. } => {
+                        loops.iter().flatten().flatten().all(|p| {
+                            (-1e-6..=size as f64 + 1e-6).contains(&p.x)
+                                && (-1e-6..=size as f64 + 1e-6).contains(&p.y)
+                        })
+                    }
+                    crate::model::Geometry::Stroke(_) => true,
+                }
+        })
+    };
+    let clipped = trace(&image(&rgba, size), &TraceOptions::default()).unwrap();
+    assert!(within(&clipped));
+    let options = TraceOptions {
+        clip_to_image: false,
+        ..TraceOptions::default()
+    };
+    let free = trace(&image(&rgba, size), &options).unwrap();
+    assert!(!within(&free), "the disc stays within the picture unclipped");
+}

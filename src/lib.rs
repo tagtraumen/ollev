@@ -56,6 +56,7 @@ macro_rules! internal {
 
 internal!(
     blur,
+    bounds,
     cleanup,
     complete,
     context,

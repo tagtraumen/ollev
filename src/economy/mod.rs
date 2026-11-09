@@ -175,19 +175,28 @@ pub async fn economize(
     let mut report = Report::default();
     let fixed = fixed(scene);
     let units = units(&judge, scene, &fixed);
+    // the steps' weights for the progress, roughly their time
+    crate::progress::enter(
+        &[("worth", 1.), ("drop", 1.), ("merge", 6.), ("loops", 2.)],
+        true,
+    );
+    crate::progress::step("worth").await;
     let log = crate::diagnostics::log();
     // Each unit's worth once, the cheapest tried first and judged again as the scene stands
     let mut order: Vec<(f64, usize)> = Vec::new();
     for (u, unit) in units.iter().enumerate() {
-        crate::progress::poll().await;
+        crate::progress::at(u, units.len()).await;
         let margin = worth(&judge, scene, &unit.ids).0 - unit.price;
         if margin < 0. {
             order.push((margin, u));
         }
     }
     order.sort_by(|a, b| a.0.total_cmp(&b.0));
-    for (_, u) in order {
-        crate::progress::poll().await;
+    crate::progress::step("drop").await;
+    let of = order.len();
+    for (n, (_, u)) in order.into_iter().enumerate() {
+        crate::progress::glimpse(scene);
+        crate::progress::at(n, of).await;
         let unit = &units[u];
         let (worth, window, without) = worth(&judge, scene, &unit.ids);
         if worth >= unit.price {
@@ -210,8 +219,11 @@ pub async fn economize(
             report.dropped += 1;
         }
     }
+    crate::progress::step("merge").await;
     report.merged = merge::merge_all(&judge, scene, &fixed, tolerances).await;
+    crate::progress::step("loops").await;
     report.loops_dropped = drop_loops(&judge, scene, &fixed).await;
+    crate::progress::leave();
     report
 }
 
@@ -316,7 +328,8 @@ async fn drop_loops(judge: &Judge<'_>, scene: &mut Scene, fixed: &crate::HashSet
     let width = scene.width;
     let mut dropped = 0;
     for k in 1..scene.shapes.len() {
-        crate::progress::poll().await;
+        crate::progress::glimpse(scene);
+        crate::progress::at(k, scene.shapes.len()).await;
         let id = scene.shapes[k].id;
         if fixed.contains(&id) || repeated.contains(&id) || scene.shapes[k].stroke.is_some() {
             continue;

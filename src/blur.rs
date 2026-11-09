@@ -183,7 +183,8 @@ pub async fn blur_scene(ctx: &Context, scene: &mut Scene) -> usize {
         scene.composite_onto(full, 0, &mut below);
     }
     for position in 1..scene.shapes.len() {
-        crate::progress::poll().await;
+        crate::progress::glimpse(scene);
+        crate::progress::at(position, scene.shapes.len()).await;
         let s = &scene.shapes[position];
         if s.layer.is_some()
             || s.stroke.is_some()

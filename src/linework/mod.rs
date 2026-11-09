@@ -117,6 +117,9 @@ pub async fn into_scene(
     lambda: f64,
     keep: Keep,
 ) -> Planned {
+    // the steps' weights for the progress, roughly their time
+    crate::progress::enter(&[("read", 1.), ("propose", 2.), ("choose", 4.)], true);
+    crate::progress::step("read").await;
     let (w, h) = (ctx.width, ctx.height);
     let target = Image::from_target(&ctx.target, w);
     let full = crate::Window::full(w, h);
@@ -173,10 +176,13 @@ pub async fn into_scene(
     // dashes, its members together or alone) compete with each other, the best taken first
     // and the rest refitted with it drawn
     let mut groups: Vec<Vec<Candidate>> = Vec::new();
-    let ridges = (lines.iter().filter(|l| l.ridge).map(|l| (&chains, l)))
-        .chain(followed_lines.iter().map(|l| (&followed_chains, l)));
-    for (pool, l) in ridges {
-        crate::progress::poll().await;
+    let ridges: Vec<_> = (lines.iter().filter(|l| l.ridge).map(|l| (&chains, l)))
+        .chain(followed_lines.iter().map(|l| (&followed_chains, l)))
+        .collect();
+    crate::progress::step("propose").await;
+    let of = ridges.len();
+    for (n, (pool, l)) in ridges.into_iter().enumerate() {
+        crate::progress::at(n, of).await;
         let g = stroke_candidates(&target, &comp, field, &weak, &opt, pool, l);
         groups.push(g.into_iter().map(Candidate::Stroke).collect());
     }
@@ -231,8 +237,11 @@ pub async fn into_scene(
         }
         Some(ch)
     };
-    for mut g in groups {
-        crate::progress::poll().await;
+    crate::progress::step("choose").await;
+    let of = groups.len();
+    for (n, mut g) in groups.into_iter().enumerate() {
+        crate::progress::glimpse(scene);
+        crate::progress::at(n, of).await;
         loop {
             let mut chosen: Chosen = None;
             let mut seen: Option<(usize, Choice)> = None;
@@ -350,6 +359,7 @@ pub async fn into_scene(
             g.remove(i);
         }
     }
+    crate::progress::leave();
     out
 }
 

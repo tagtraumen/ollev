@@ -28,7 +28,10 @@ for object in model.objects() {
 ```
 
 `trace_with` takes a progress callback as well: it hears the stage and how far it is, and
-the trace stops (within a fraction of a second) when the callback breaks.
+the trace stops (within a fraction of a second) when the callback breaks. `progress.overall`
+is how much of the whole trace is done, from 0 to 1 and never going back, for a progress
+bar: each part of the trace weighted by an estimate of its time, refined as the trace learns
+the picture (its runs of colour, its planned shapes, its translucent layers).
 
 A host that must not block, such as a UI thread or wasm in a browser, runs the trace in time
 slices with `Tracing`. No threads and no executor: each `step` runs the trace on the caller's
@@ -38,9 +41,10 @@ at most on a desktop CPU; the host supplies the clock. Dropping the handle cance
 the handle is `Send`, stepped on one thread at a time.
 
 At a pause, `progress.model()` is the latest scene the trace kept for showing, in the form the
-finished trace returns: a large picture's flat regions within milliseconds, then the trace's
-own scenes as they grow. It is cheap enough to ask for every second or two, since what was
-lowered for an earlier call is kept; `progress.revision()` tells when the scene changed.
+finished trace returns: a large picture's flat regions within milliseconds, then the plan in
+flat colours, then the trace's own scenes as each shape is fitted and as the later stages change
+them. It is cheap enough to ask for every second or two, since what was lowered for an earlier
+call is kept; `progress.revision()` tells when the scene changed.
 
 ```rust
 let mut tracing = ollev::Tracing::new(&image, &ollev::TraceOptions::default())?;
@@ -59,7 +63,8 @@ let model = loop {
 
 We strive to reduce panics throughout the library. If you encounter panics through either programming logic errors or failed allocations please report them.
 
-`TraceOptions` holds:
+`TraceOptions` is built from its default with the fields to change set on it (it is
+`#[non_exhaustive]`, so options can be added), and holds:
 
 - `tolerance`: the detail slider, as a multiple of the picture's own uncertainty; lower keeps
   more detail.
@@ -68,6 +73,8 @@ We strive to reduce panics throughout the library. If you encounter panics throu
   (`Detail::Scaled`, 2 for the level read itself) or given (`Detail::Absolute`).
 - `matte` and `keep_transparency`: what transparent pixels are composited over, and whether
   the model is clipped to the picture's opaque part.
+- `clip_to_image`: whether the model is clipped to the image's rectangle (on by default): a
+  filled shape running past the edge is cut there, a stroke or blurred shape is clipped.
 - `max_pixels`: a larger picture is traced at the size that holds this many pixels and its
   model scaled back up.
 - `host`: what the host draws (`Capabilities`); every feature it lacks (even-odd fills, path

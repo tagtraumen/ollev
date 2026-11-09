@@ -258,10 +258,16 @@ pub async fn segment_seeded(
     seeds: &[u32],
     count: usize,
 ) -> Segmentation {
+    // the steps' weights for the progress, roughly their time on a photo
+    crate::progress::enter(
+        &[("moments", 1.), ("links", 2.), ("contrast", 8.), ("energy", 2.)],
+        true,
+    );
+    crate::progress::step("moments").await;
     let mut moments = vec![Moments::default(); count];
     for (i, (&c, &seed)) in colors.iter().zip(seeds).enumerate() {
         if i % (MERGES_PER_POLL * 64) == 0 {
-            crate::progress::poll().await;
+            crate::progress::at(i, colors.len()).await;
         }
         let pixel = Moments::pixel((i % width) as f64 + 0.5, (i / width) as f64 + 0.5, c);
         moments[seed as usize] = moments[seed as usize].add(&pixel);
@@ -270,9 +276,10 @@ pub async fn segment_seeded(
         .into_iter()
         .map(|m| Region::new(m, params))
         .collect();
+    crate::progress::step("links").await;
     for y in 0..height {
         if y % 16 == 0 {
-            crate::progress::poll().await;
+            crate::progress::at(y, height).await;
         }
         for x in 0..width {
             let i = y * width + x;
@@ -311,8 +318,11 @@ pub async fn segment_seeded(
     // Geometry comes from local contrast alone, so a smooth ramp becomes one region however far
     // apart its end colors are; a final energy pass removes what is too small to be worth its
     // boundary
+    crate::progress::step("contrast").await;
     merge(&mut regions, &mut parent, params, Criterion::Contrast).await;
+    crate::progress::step("energy").await;
     merge(&mut regions, &mut parent, params, Criterion::Energy).await;
+    crate::progress::leave();
 
     // Compact the surviving regions into consecutive labels
     let mut compact = HashMap::default();
@@ -407,10 +417,17 @@ async fn merge(
     // Per region, the neighbours a contrast merge was refused with because the merged colors
     // did not fit, retried once either side grows
     let mut misfits: HashMap<u32, Vec<u32>> = HashMap::default();
+    // How far the pass is, by the regions merged of those it starts with
+    let live = parent
+        .iter()
+        .enumerate()
+        .filter(|&(a, &p)| p as usize == a)
+        .count();
+    let mut merged = 0;
     while let Some(c) = heap.pop() {
         popped += 1;
         if popped.is_multiple_of(MERGES_PER_POLL) {
-            crate::progress::poll().await;
+            crate::progress::at(merged, live).await;
         }
         if heap.len() > 2 * compacted + 1024 {
             heap.retain(|c| is_current(regions, parent, c));
@@ -455,6 +472,7 @@ async fn merge(
         kept.moments = moments;
         kept.version += 1;
         parent[gone as usize] = keep;
+        merged += 1;
 
         let neighbors: Vec<u32> = match criterion {
             Criterion::Contrast => {

@@ -152,14 +152,26 @@ impl Tracing {
             width: w,
             height: h,
             clip,
+            clip_to_image: options.clip_to_image,
             host: options.host,
             memo: Mutex::default(),
         });
         let place = Place::new(finish.clone());
+        // The result's lowering for the host after the trace, where the host needs one
+        let lowering = if options.host == Capabilities::ALL {
+            0.
+        } else {
+            crate::plan::LOWERING
+        };
         Ok(Self {
             trace: Some(Box::pin(async move {
+                crate::progress::enter(&[("trace", 1.), ("lower", lowering)], true);
+                crate::progress::step("trace").await;
                 let scene = crate::plan::traced(&rgb, tw, th, detail, plan).await?.0;
-                finish.finished(&scene).await
+                crate::progress::step("lower").await;
+                let model = finish.finished(&scene).await;
+                crate::progress::leave();
+                model
             })),
             place,
             #[cfg(feature = "diagnostics")]
@@ -199,7 +211,7 @@ impl Tracing {
 }
 
 /// What turns a scene into the host's model: scaled back to the image's size, clipped to its
-/// opaque part where transparency is kept, and lowered to what the host draws, each object
+/// rectangle and to its opaque part where asked, and lowered to what the host draws, each object
 /// lowered once over the partial scenes and the result.
 #[derive(Debug)]
 pub(crate) struct Finish {
@@ -207,6 +219,7 @@ pub(crate) struct Finish {
     width: usize,
     height: usize,
     clip: Option<crate::model::Clip>,
+    clip_to_image: bool,
     host: Capabilities,
     memo: Mutex<crate::lower::Memo>,
 }
@@ -220,6 +233,9 @@ impl Finish {
         }
         if self.scale != 1. {
             model = model.scaled(self.scale, self.width, self.height);
+        }
+        if self.clip_to_image {
+            crate::bounds::clip(&mut model);
         }
         if let Some(clip) = &self.clip {
             model.clips.push(clip.clone());
