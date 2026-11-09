@@ -63,8 +63,9 @@ pub async fn recolor(ctx: &Context, scene: &mut Scene) -> Result<(), TraceError>
     // The coverage of the kept shapes above the one at hand, per pixel
     let mut above = filled(0f32, area(width, height, 1)?)?;
     let mut keep = filled(true, scene.shapes.len())?;
-    for k in (0..scene.shapes.len()).rev() {
-        crate::progress::poll().await;
+    let n = scene.shapes.len();
+    for k in (0..n).rev() {
+        crate::progress::at(n - k, n).await;
         // Pixels the shape shows, and those it shows without anti-aliasing, which give the color
         let mut shown = Vec::new();
         let (mut all, mut interior) = (Stats::default(), Stats::default());

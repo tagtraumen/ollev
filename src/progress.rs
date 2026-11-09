@@ -2,6 +2,12 @@
 //! (the [`Ask`] futures below). [`drive`] polls it, telling the host's callback of each
 //! checkpoint between two polls; a callback that breaks leaves the trace suspended there, to be
 //! resumed by the next [`drive`] (or dropped, which cancels it). No executor and no waker.
+//!
+//! How much of the whole trace is done ([`Progress::overall`]) is read off nested [`Span`]s:
+//! the trace's own stages, a stage's steps, a trace beneath a layer within its step, each with
+//! weights for the time its parts take. A step entered splits what is left of its span among
+//! itself and the steps after it, so a part that turns out larger or never runs moves the
+//! split of the rest, never what is done.
 
 // Panic ratchet: the lints this module has yet to meet, each removed as it is cleared
 #![expect(
@@ -18,9 +24,9 @@ use std::panic::Location;
 use std::pin::Pin;
 use std::task::Poll;
 
-use crate::Scene;
 use crate::error::{Invariant, TraceError};
 use crate::model::{Fidelity, Model};
+use crate::{Scene, Shape};
 
 #[cfg(feature = "diagnostics")]
 mod gaps;
@@ -33,6 +39,11 @@ pub struct Progress<'a> {
     pub stage: &'static str,
     /// How much of the stage is done, from 0 to 1, where the stage knows (else 0).
     pub fraction: f64,
+    /// How much of the whole trace is done, from 0 to 1: never less than at an earlier
+    /// checkpoint, 1 only once the trace is done. The trace's parts are weighted by the time
+    /// they take on typical pictures, the families of translucent layers by how many there
+    /// turn out to be, so the time left is an estimate.
+    pub overall: f64,
     /// The scene as it stands, where the trace has just changed it.
     pub scene: Option<&'a Scene>,
     /// The latest scene kept for showing, and how many were kept up to it.
@@ -104,17 +115,23 @@ pub(crate) struct Place {
 /// What the checkpoints of a trace reach while it is polled (see [`TRACK`]).
 #[derive(Default)]
 struct Track {
-    stage: (&'static str, f64),
+    /// The stage the host is told of, with where it starts and ends in the whole trace.
+    stage: (&'static str, f64, f64),
+    /// How much of the whole trace is done (see [`Progress::overall`]).
+    overall: f64,
+    /// The spans the trace is in, outermost first.
+    spans: Vec<Span>,
     /// How deep the traces beneath peeled layers are nested where the trace is.
     depth: usize,
     /// Whether a checkpoint has suspended the trace in the poll.
     asked: bool,
     /// The scene the suspending checkpoint shows, lent until the trace is polled again.
     shown: Option<Scene>,
-    /// The latest scene kept for showing, its count of shapes (see [`keep`]), and how many
-    /// were kept.
+    /// The latest scene kept for showing, its count of objects and of the scene's changes (see
+    /// [`keep`]), and how many were kept.
     latest: Option<Model>,
     kept: usize,
+    kept_changes: u64,
     revision: u64,
     /// Whether the latest is a first look (see [`preview`]).
     first_look: bool,
@@ -122,6 +139,86 @@ struct Track {
     fidelity: Option<Fidelity>,
     #[cfg(feature = "diagnostics")]
     gaps: Option<gaps::Gaps>,
+}
+
+/// A part of the whole trace, from where it was entered to `end`, split into weighted steps
+/// (see [`enter`]).
+struct Span {
+    end: f64,
+    /// The steps by name with their weights, and the one the span is in (none before the
+    /// first).
+    steps: Vec<(&'static str, f64)>,
+    step: Option<usize>,
+    /// Where the step the span is in starts and ends in the whole trace.
+    from: f64,
+    to: f64,
+    /// Whether the span's scenes are the picture's own, which the host is shown.
+    shown: bool,
+    /// The stage the host was told of where the span was entered.
+    outer: (&'static str, f64, f64),
+}
+
+impl Track {
+    /// Moves the whole trace's progress to `at`, where that is further.
+    fn reach(&mut self, at: f64) {
+        self.overall = self.overall.max(at.min(1.));
+    }
+
+    /// Enters the step `name` of the innermost span, the next one by that name: it takes its
+    /// weight's share of what is left of the span. A name the span does not list leaves it.
+    fn step(&mut self, name: &str) {
+        let at = self.overall;
+        let Some(span) = self.spans.last_mut() else {
+            return;
+        };
+        let next = span.step.map_or(0, |k| k + 1);
+        let Some(k) = span.steps.iter().skip(next).position(|s| s.0 == name) else {
+            return;
+        };
+        let k = k + next;
+        span.step = Some(k);
+        span.from = at;
+        span.to = span.share(k);
+    }
+
+    /// Whether a scene kept now is the picture's own.
+    fn shown(&self) -> bool {
+        self.depth == 0 && self.spans.iter().all(|s| s.shown)
+    }
+
+    /// How much of the stage the host is told of is done.
+    fn fraction(&self) -> f64 {
+        let (_, from, to) = self.stage;
+        if to > from {
+            ((self.overall - from) / (to - from)).clamp(0., 1.)
+        } else {
+            0.
+        }
+    }
+
+    /// Where the step the innermost span is in starts and ends, or what is left of the
+    /// whole trace outside any.
+    fn range(&self) -> (f64, f64) {
+        match self.spans.last() {
+            Some(s) if s.step.is_some() => (s.from, s.to),
+            Some(s) => (self.overall, s.end),
+            None => (self.overall, 1.),
+        }
+    }
+}
+
+impl Span {
+    /// Where step `k` ends, entered at `from`: its weight's share of the span left after it
+    /// and the steps after it.
+    fn share(&self, k: usize) -> f64 {
+        let rest: f64 = self.steps.iter().skip(k).map(|s| s.1).sum();
+        let weight = self.steps.get(k).map_or(0., |s| s.1);
+        if rest > 0. {
+            self.from + (self.end - self.from).max(0.) * weight / rest
+        } else {
+            self.from
+        }
+    }
 }
 
 impl Place {
@@ -137,7 +234,8 @@ impl Place {
     pub(crate) fn progress(&self) -> Progress<'_> {
         Progress {
             stage: self.track.stage.0,
-            fraction: self.track.stage.1,
+            fraction: self.track.fraction(),
+            overall: self.track.overall,
             scene: self.track.shown.as_ref(),
             latest: self.track.latest.as_ref(),
             revision: self.track.revision,
@@ -245,13 +343,14 @@ pub(crate) struct Ask {
 enum Set {
     Nothing,
     Stage(&'static str),
+    Step(&'static str),
     At(usize, usize),
 }
 
 impl Ask {
-    /// Polls the checkpoint, lending the trace's track `scene` on suspending; the scene comes
-    /// back on the poll that is ready.
-    fn ask(&mut self, scene: &mut Option<Scene>) -> Poll<()> {
+    /// Polls the checkpoint, lending the trace's track `scene` on suspending (kept for showing
+    /// where `kept`); the scene comes back on the poll that is ready.
+    fn ask(&mut self, scene: &mut Option<Scene>, kept: bool) -> Poll<()> {
         TRACK.with_borrow_mut(|track| {
             let Some(track) = track else {
                 return Poll::Ready(());
@@ -268,14 +367,25 @@ impl Ask {
             }
             match self.set {
                 Set::Nothing => {}
-                Set::Stage(stage) => track.stage = (stage, 0.),
-                Set::At(done, of) => track.stage.1 = done as f64 / of.max(1) as f64,
+                Set::Stage(stage) => {
+                    track.step(stage);
+                    let (from, to) = track.range();
+                    track.stage = (stage, from, to);
+                }
+                Set::Step(step) => track.step(step),
+                Set::At(done, of) => {
+                    let (from, to) = track.range();
+                    track.reach(from + (to - from) * (done as f64 / of.max(1) as f64).min(1.));
+                }
             }
             track.asked = true;
             if let Some(shown) = scene.as_ref()
-                && track.depth == 0
+                && kept
+                && track.shown()
             {
-                keep(track, shown, false);
+                keep(track, shown.shapes.len(), shown.changes(), false, || {
+                    shown.model()
+                });
             }
             track.shown = scene.take();
             Poll::Pending
@@ -287,7 +397,7 @@ impl Future for Ask {
     type Output = ();
 
     fn poll(mut self: Pin<&mut Self>, _: &mut std::task::Context) -> Poll<()> {
-        self.ask(&mut None)
+        self.ask(&mut None, false)
     }
 }
 
@@ -297,6 +407,8 @@ pub(crate) struct Show {
     scene: Option<Scene>,
     /// Whether the host sees the scene.
     visible: bool,
+    /// Whether the scene is kept for showing (see [`keep`]).
+    kept: bool,
 }
 
 impl Future for Show {
@@ -307,9 +419,10 @@ impl Future for Show {
             ask,
             scene,
             visible,
+            kept,
         } = &mut *self;
         let mut shown = if *visible { scene.take() } else { None };
-        let poll = ask.ask(&mut shown);
+        let poll = ask.ask(&mut shown, *kept);
         if shown.is_some() {
             *scene = shown;
         }
@@ -322,15 +435,17 @@ fn with_track<R>(f: impl FnOnce(&mut Track) -> R) -> Option<R> {
     TRACK.with_borrow_mut(|track| track.as_mut().map(f))
 }
 
-/// Keeps `scene` as the latest to show, where `always` or where its count of shapes has moved
-/// by a 32nd since the last kept (a model per scene shown would cost the square of the shapes);
-/// a first look gives way only to as many shapes as it has regions.
-fn keep(track: &mut Track, scene: &Scene, always: bool) {
-    let n = scene.shapes.len();
-    let fewer = n < track.kept && !track.first_look;
-    if always || fewer || n >= track.kept + (track.kept / 32).max(1) {
-        track.latest = Some(scene.model());
+/// Keeps `model` as the latest to show, a scene of `n` objects after `changes` changes to it,
+/// where `always` or where its objects or changes have moved by a 32nd of the objects since
+/// the last kept (a model per change would cost the square of the shapes); a first look gives
+/// way only to as many objects as it has regions.
+fn keep(track: &mut Track, n: usize, changes: u64, always: bool, model: impl FnOnce() -> Model) {
+    let moved = (n.abs_diff(track.kept) as u64).max(changes.abs_diff(track.kept_changes));
+    let held = track.first_look && n < track.kept;
+    if always || (!held && moved >= (track.kept as u64 / 32).max(1)) {
+        track.latest = Some(model());
         track.kept = n;
+        track.kept_changes = changes;
         track.first_look = false;
         track.revision += 1;
     }
@@ -345,7 +460,7 @@ pub(crate) fn driven() -> bool {
 /// look before its first scene.
 pub(crate) fn preview(model: Model) {
     with_track(|t| {
-        if t.depth == 0 {
+        if t.shown() {
             t.kept = model.objects().len();
             t.latest = Some(model);
             t.first_look = true;
@@ -358,8 +473,40 @@ pub(crate) fn preview(model: Model) {
 /// stage leaves it whole.
 pub(crate) fn snapshot(scene: &Scene) {
     with_track(|t| {
-        if t.depth == 0 {
-            keep(t, scene, true);
+        if t.shown() {
+            keep(t, scene.shapes.len(), scene.changes(), true, || {
+                scene.model()
+            });
+        }
+    });
+}
+
+/// Keeps the picture's own `scene` as the scene to show where it has changed enough since the
+/// last kept (see [`keep`]): a stage changing the scene in place shows it as it goes.
+pub(crate) fn glimpse(scene: &Scene) {
+    with_track(|t| {
+        if t.shown() {
+            keep(t, scene.shapes.len(), scene.changes(), false, || {
+                scene.model()
+            });
+        }
+    });
+}
+
+/// [`glimpse`] of `scene` with the shapes `planned` to be drawn after it on top, as they are
+/// before their fit (or kept `always`): the whole plan shows from the start of the drawing,
+/// each shape fitted in its turn.
+pub(crate) fn glimpse_over(scene: &Scene, planned: &[Shape], always: bool) {
+    with_track(|t| {
+        if t.shown() {
+            let n = scene.shapes.len().saturating_add(planned.len());
+            keep(t, n, scene.changes(), always, || {
+                let mut model = scene.model();
+                model.items.extend(planned.iter().map(|s| {
+                    crate::model::Item::Object(Box::new(crate::model::Object::of_shape(s, None)))
+                }));
+                model
+            });
         }
     });
 }
@@ -381,6 +528,79 @@ pub(crate) fn nest(deeper: bool) {
     with_track(|t| t.depth = if deeper { t.depth + 1 } else { t.depth - 1 });
 }
 
+/// Enters a span of `steps` (by name, with their weights for the time they take) over what is
+/// left of the step the trace is in; its scenes are the picture's own where `shown`. Each
+/// [`enter`] is closed by a [`leave`].
+pub(crate) fn enter(steps: &[(&'static str, f64)], shown: bool) {
+    with_track(|t| {
+        let end = t.range().1;
+        let at = t.overall;
+        t.spans.push(Span {
+            end,
+            steps: steps.to_vec(),
+            step: None,
+            from: at,
+            to: at,
+            shown,
+            outer: t.stage,
+        });
+    });
+}
+
+/// Leaves the innermost span (see [`enter`]), done: the trace is at its end, and the host is
+/// told of the stage it was entered in again.
+pub(crate) fn leave() {
+    with_track(|t| {
+        if let Some(span) = t.spans.pop() {
+            t.reach(span.end);
+            t.stage = span.outer;
+        }
+    });
+}
+
+/// Weighs the named steps anew, each the one the trace is in or a later one of the innermost
+/// span listing it, where the trace learns how much they hold: what is left of each span is
+/// split again from its current step's start, and the spans within moved to end with their
+/// steps. A step entered at weight 0 does not run, and stays at 0.
+pub(crate) fn weigh(steps: &[(&'static str, f64)]) {
+    with_track(|t| {
+        for &(name, weight) in steps {
+            let found = t.spans.iter_mut().rev().find_map(|span| {
+                let current = span.step.unwrap_or(0);
+                span.steps.iter_mut().skip(current).find(|s| s.0 == name)
+            });
+            if let Some(step) = found
+                && step.1 > 0.
+            {
+                step.1 = weight;
+            }
+        }
+        // Outermost first, each span within ending where its parent's step now ends
+        let mut end: Option<f64> = None;
+        for span in &mut t.spans {
+            if let Some(end) = end {
+                span.end = end;
+            }
+            if let Some(k) = span.step {
+                span.to = span.share(k);
+                end = Some(span.to);
+            } else {
+                end = Some(span.end);
+            }
+        }
+        // the stage the host is told of ends with its step
+        let name = t.stage.0;
+        if let Some(to) = t.spans.iter().rev().find_map(|s| {
+            s.step
+                .and_then(|k| s.steps.get(k))
+                .is_some_and(|step| step.0 == name)
+                .then_some(s.to)
+        }) {
+            t.stage.2 = to;
+        }
+    });
+}
+
 #[track_caller]
 fn ask(set: Set) -> Ask {
     Ask {
@@ -391,13 +611,20 @@ fn ask(set: Set) -> Ask {
     }
 }
 
-/// Enters `stage` and asks the host.
+/// Enters `stage`, a step of the innermost span by the same name, and asks the host.
 #[track_caller]
 pub(crate) fn stage(stage: &'static str) -> Ask {
     ask(Set::Stage(stage))
 }
 
-/// Tells the host `done` of `of` steps of the stage are done.
+/// Enters the step `step` of the innermost span (see [`enter`]), within the stage the host is
+/// told of, and asks the host.
+#[track_caller]
+pub(crate) fn step(step: &'static str) -> Ask {
+    ask(Set::Step(step))
+}
+
+/// Tells the host `done` of `of` parts of the step the trace is in are done.
 #[track_caller]
 pub(crate) fn at(done: usize, of: usize) -> Ask {
     ask(Set::At(done, of))
@@ -417,5 +644,16 @@ pub(crate) fn scene(scene: Scene, show: bool) -> Show {
         ask: ask(Set::Nothing),
         scene: Some(scene),
         visible: show,
+        kept: true,
+    }
+}
+
+/// [`scene`] lent to the host but not kept for showing: the stage keeps what it shows itself
+/// (see [`glimpse_over`]).
+#[track_caller]
+pub(crate) fn lend(scene: Scene, show: bool) -> Show {
+    Show {
+        kept: false,
+        ..self::scene(scene, show)
     }
 }

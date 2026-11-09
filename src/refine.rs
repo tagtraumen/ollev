@@ -589,7 +589,8 @@ fn chord_length(c: &crate::tracer::Cubic) -> f32 {
 /// since its fit; shapes nothing around has changed for are left as they are.
 pub async fn settle(ctx: &Context, scene: &mut Scene) {
     for k in 1..scene.shapes.len() {
-        crate::progress::poll().await;
+        crate::progress::glimpse(scene);
+        crate::progress::at(k, scene.shapes.len()).await;
         let mut shape = scene.shapes[k].clone();
         let window = Window::around(
             shape.paint_min(),

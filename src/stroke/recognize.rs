@@ -144,7 +144,8 @@ fn fill_under(
 pub async fn recognize(ctx: &Context, hierarchy: &Hierarchy, scene: &mut Scene) {
     let mut k = 1;
     while k < scene.shapes.len() {
-        crate::progress::poll().await;
+        crate::progress::glimpse(scene);
+        crate::progress::at(k, scene.shapes.len()).await;
         // A stroke interpolates edges, which only anti-aliased edges ask for (pixel art stays
         // blocks, a blurred shape soft); a shape anti-aliased but not smooth (of more than one
         // colour) is tried only where its skeleton branches, as a network

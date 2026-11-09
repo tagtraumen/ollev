@@ -183,6 +183,18 @@ pub(super) async fn beneath_with(
     timings: &mut Timings,
     show: bool,
 ) -> Result<Scene, TraceError> {
+    // Its own trace, hidden from the host, within the step it is traced in
+    let work = Work::new(ctx.width * ctx.height).planned(opaque.shapes.len());
+    // the holes completed first, by a read of the peeled picture
+    let completion = if candidate.holes.is_some() {
+        work.beneath(options.stages) / 4.
+    } else {
+        0.
+    };
+    let steps: Vec<super::weights::Step> = std::iter::once(("completion", completion))
+        .chain(work.level(options.stages, false, levels))
+        .collect();
+    crate::progress::enter(&steps, false);
     let (mut with, on_top, covered) = beneath_layers(
         ctx, opaque, candidate, above, peeled, detail, options, levels, timings, show,
     )
@@ -206,6 +218,7 @@ pub(super) async fn beneath_with(
             .time("above", async || refit_above(ctx, &mut with, start).await)
             .await;
     }
+    crate::progress::leave();
     Ok(with)
 }
 
@@ -337,6 +350,7 @@ async fn beneath_layers(
             .collect();
         (std::sync::Arc::new(core), blend)
     });
+    crate::progress::step("completion").await;
     let completed = match &holes {
         Some((h, blend)) => Some(
             timings
@@ -398,8 +412,11 @@ async fn completed_beneath(
 ) -> Result<Vec<u8>, TraceError> {
     use crate::translucency::raster::DVec3;
     let mut timings = Timings::default();
+    // a read of its own, not the beneath's
+    crate::progress::enter(&[("analyze", 1.)], false);
     let (_, hierarchy) =
         crate::hierarchy::analyze(peeled, width, height, detail, &mut timings).await?;
+    crate::progress::leave();
     let img: Vec<DVec3> = peeled
         .as_chunks::<3>()
         .0

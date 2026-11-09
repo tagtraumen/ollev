@@ -116,7 +116,7 @@ pub async fn polish(ctx: &Context, scene: &mut Scene, edge: Option<EdgeTerm>) ->
     // The parameters and gradient of the last step, for the curvature
     let mut last: Option<(Vec<f32>, Vec<f32>)> = None;
     for step in 0..=STEPS {
-        crate::progress::poll().await;
+        crate::progress::at(step, STEPS).await;
         set_params(scene, &slots, &params);
         let (pixels, below) = forward(scene, window, &slots).await;
         let (value, d_image) = image_loss(ctx, window, &pixels, &loss);

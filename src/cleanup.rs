@@ -45,7 +45,8 @@ pub async fn cleanup(ctx: &Context, scene: &mut Scene) {
     let mut cleaned = 0;
     let mut removed = 0;
     for k in 1..scene.shapes.len() {
-        crate::progress::poll().await;
+        crate::progress::glimpse(scene);
+        crate::progress::at(k, scene.shapes.len()).await;
         if scene.shapes[k].primitive.is_some() {
             continue;
         }

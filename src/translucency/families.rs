@@ -240,8 +240,8 @@ pub async fn ranked_candidates(
     // Each family's region grown: the minimum cut of the segmentation's leaves under the
     // head's relation, with its size and the time it took
     let mut regions: Vec<Option<(Vec<bool>, usize, f64)>> = Vec::with_capacity(top.len());
-    for &(_, f) in &top {
-        crate::progress::poll().await;
+    for (n, &(_, f)) in top.iter().enumerate() {
+        crate::progress::at(n, top.len()).await;
         let p0 = &f.members[0];
         let clock = crate::timing::Clock::now();
         let region = region_graph::region(

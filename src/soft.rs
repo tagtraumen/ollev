@@ -615,7 +615,8 @@ pub async fn soften_scene(ctx: &Context, scene: &mut Scene, paths: bool) -> usiz
     let mut replaced = 0;
     let mut lowest = 0;
     while lowest < scene.shapes.len() {
-        crate::progress::poll().await;
+        crate::progress::glimpse(scene);
+        crate::progress::at(lowest, scene.shapes.len()).await;
         if !is_band(&scene.shapes[lowest]) {
             lowest += 1;
             continue;

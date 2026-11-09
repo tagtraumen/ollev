@@ -111,6 +111,10 @@ pub(super) async fn decide_in_window(
                        peel: bool|
            -> Result<(Context, Scene), TraceError> {
         let mut timings = Timings::default();
+        // its own trace, hidden from the host
+        let pixels = window.width * window.height;
+        let steps = Work::new(pixels).level(options.stages, false, false);
+        crate::progress::enter(&steps, false);
         let (mut c, h) =
             crate::hierarchy::analyze(&rgb, window.width, window.height, detail, &mut timings)
                 .await?;
@@ -130,13 +134,19 @@ pub(super) async fn decide_in_window(
             false,
         )
         .await?;
+        crate::progress::leave();
         Ok((c, scene))
     };
     let cropped = candidate.crop(window, width);
     let above: Option<Vec<bool>> = above.map(|e| window.pixels(width).map(|i| e[i]).collect());
     let edge = peeled_edge(&cropped.mask, window.width, window.height, above.as_deref());
+    // the picture traced in the window, then the peeled picture
+    crate::progress::enter(&[("plain", 1.), ("peeled", 1.)], true);
+    crate::progress::step("plain").await;
     let (local, plain) = trace(crop(&original), None, false).await?;
+    crate::progress::step("peeled").await;
     let (_, mut with) = trace(crop(peeled), Some(&edge), true).await?;
+    crate::progress::leave();
     let Some(overlay) = cropped.overlay(window.width, window.height) else {
         return Ok(None);
     };

@@ -626,7 +626,8 @@ pub async fn glow_scene(ctx: &Context, scene: &mut Scene) -> usize {
     let mut now = scene.render(full, 0..scene.shapes.len(), [1.; 3]);
     let (mut done, mut k) = (0, 0);
     while k < scene.shapes.len() {
-        crate::progress::poll().await;
+        crate::progress::glimpse(scene);
+        crate::progress::at(k, scene.shapes.len()).await;
         if is_band(&scene.shapes[k])
             && let Some(top) = propose(ctx, scene, &bands, &now, k).await
         {

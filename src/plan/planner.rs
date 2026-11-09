@@ -419,8 +419,9 @@ impl<'a> Planner<'a> {
         let mut plan = Vec::new();
         {
             // Children come before their parents in the node order
-            for node in 0..self.hierarchy.nodes.len() as u32 {
-                crate::progress::poll().await;
+            let nodes = self.hierarchy.nodes.len();
+            for node in 0..nodes as u32 {
+                crate::progress::at(node as usize, nodes).await;
                 let (cost, model) = self.draw(node);
                 self.drawn[node as usize] = cost;
                 self.color[node as usize] = model.at(self.stats(node).centroid());
